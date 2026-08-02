@@ -195,6 +195,11 @@ tr:hover td { background:#f5f7fa; }
       <div class="metric-card"><div class="num" style="color:#722ed1" :title="'精确值: ' + (summary.total_tokens || 0)">{{ fmtTokens(summary.total_tokens) }}</div><div class="label">总 Tokens</div></div>
       <div class="metric-card"><div class="num" style="color:#eb2f96">{{ summary.avg_latency_ms ? fmtNum(summary.avg_latency_ms, 0) : '0' }}</div><div class="label">平均延迟(ms)</div></div>
     </div>
+    <div style="margin:16px 0 8px;color:#909399;font-size:13px">按天 Token 用量趋势（{{ metricsRangeLabel }}，共 {{ dailyStats.length }} 天）</div>
+    <div style="background:#fff;border:1px solid #ebeef5;border-radius:6px;padding:12px;margin-bottom:16px">
+      <canvas id="dailyChart" style="width:100%;height:260px;display:block"></canvas>
+      <div style="color:#909399;font-size:12px;margin-top:8px">折线：每日 Token 总用量，悬停数据点可看具体值（当前简化版不显示悬浮提示，可直接看下方表格）</div>
+    </div>
     <div style="margin-bottom:12px;color:#909399;font-size:13px">每上游 {{ metricsRangeLabel }}统计</div>
     <table><thead><tr><th>上游</th><th>状态</th><th>探测健康度</th><th>请求数</th><th>成功</th><th>失败</th><th>请求成功率</th><th>延迟(ms)</th><th>Tokens</th></tr></thead>
       <tbody><tr v-for="s in upstreamStats">
@@ -467,6 +472,7 @@ new Vue({
     summary: {},
     upstreamStats: [],
     apiKeyStats: [],
+    dailyStats: [],
     apiKeys: [],
     configArr: [],
     editableConfigs: ['retry.upstream_timeout', 'retry.fast_fail_minutes', 'retry.fast_fail_probe_minutes', 'retry.max_retries'],
@@ -717,6 +723,106 @@ new Vue({
       self.api('/admin/metrics/summary?range=' + self.metricsRange).then(function(r) { self.summary = r.data || {}; }).catch(function(){});
       self.api('/admin/metrics/upstreams?range=' + self.metricsRange).then(function(r) { self.upstreamStats = r.data || []; }).catch(function(){});
       self.api('/admin/metrics/keys?range=' + self.metricsRange).then(function(r) { self.apiKeyStats = r.data || []; }).catch(function(){});
+      self.api('/admin/metrics/daily?range=' + self.metricsRange).then(function(r) {
+        self.dailyStats = r.data || [];
+        self.$nextTick(function() { self.drawDailyChart(); });
+      }).catch(function(){});
+    },
+    // 绘制按天 Token 用量折线图（纯 canvas 手绘，零依赖）
+    drawDailyChart: function() {
+      var self = this;
+      var canvas = document.getElementById('dailyChart');
+      if (!canvas) return;
+      var data = self.dailyStats || [];
+      if (!data.length) return;
+      // 适配高清屏
+      var dpr = window.devicePixelRatio || 1;
+      var cssW = canvas.parentElement ? canvas.parentElement.clientWidth - 24 : canvas.clientWidth;
+      if (cssW <= 0) cssW = 800;
+      var cssH = 260;
+      canvas.style.width = cssW + 'px';
+      canvas.style.height = cssH + 'px';
+      canvas.width = cssW * dpr;
+      canvas.height = cssH * dpr;
+      var ctx = canvas.getContext('2d');
+      ctx.scale(dpr, dpr);
+
+      var pad = { top: 28, right: 16, bottom: 32, left: 64 };
+      var w = cssW - pad.left - pad.right;
+      var h = cssH - pad.top - pad.bottom;
+      var n = data.length;
+      var maxT = 1;
+      data.forEach(function(d) { if (d.tokens > maxT) maxT = d.tokens; });
+      // 最大值向上取整到好看的刻度（1/2/5 进制）
+      var niceMax = 1;
+      var mag = Math.pow(10, Math.floor(Math.log10(maxT)));
+      var norm = maxT / mag;
+      if (norm <= 1) niceMax = 1 * mag; else if (norm <= 2) niceMax = 2 * mag; else if (norm <= 5) niceMax = 5 * mag; else niceMax = 10 * mag;
+
+      // 背景网格 + Y 轴刻度
+      ctx.font = '11px sans-serif';
+      ctx.strokeStyle = '#f0f0f0';
+      ctx.fillStyle = '#909399';
+      var yTicks = 4;
+      for (var i = 0; i <= yTicks; i++) {
+        var y = pad.top + h - h * i / yTicks;
+        ctx.beginPath();
+        ctx.moveTo(pad.left, y);
+        ctx.lineTo(pad.left + w, y);
+        ctx.stroke();
+        var val = niceMax * i / yTicks;
+        ctx.fillText(self.fmtTokens(Math.round(val)), pad.left - 6, y + 4);
+        ctx.textAlign = 'right';
+        ctx.textBaseline = 'middle';
+      }
+
+      // X 轴刻度（日期标签，太多时抽样）
+      var maxLabels = Math.max(2, Math.floor(w / 70));
+      var step = Math.ceil(n / maxLabels);
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'top';
+      data.forEach(function(d, i) {
+        if (i % step !== 0 && i !== n - 1) return;
+        var x = pad.left + w * (n === 1 ? 0.5 : i / (n - 1));
+        var label = d.date ? d.date.substring(5) : ''; // MM-DD
+        ctx.fillText(label, x, pad.top + h + 8);
+      });
+
+      // 折线（Token 用量）+ 渐变填充
+      var x = function(i) { return pad.left + w * (n === 1 ? 0.5 : i / (n - 1)); };
+      var y = function(v) { return pad.top + h - h * v / niceMax; };
+
+      var grad = ctx.createLinearGradient(0, pad.top, 0, pad.top + h);
+      grad.addColorStop(0, 'rgba(114, 46, 209, 0.18)');
+      grad.addColorStop(1, 'rgba(114, 46, 209, 0.01)');
+
+      ctx.beginPath();
+      data.forEach(function(d, i) {
+        if (i === 0) ctx.moveTo(x(i), y(d.tokens));
+        else ctx.lineTo(x(i), y(d.tokens));
+      });
+      ctx.strokeStyle = '#722ed1';
+      ctx.lineWidth = 2;
+      ctx.lineJoin = 'round';
+      ctx.stroke();
+      // 面积填充
+      ctx.lineTo(x(n - 1), pad.top + h);
+      ctx.lineTo(x(0), pad.top + h);
+      ctx.closePath();
+      ctx.fillStyle = grad;
+      ctx.fill();
+
+      // 数据点
+      data.forEach(function(d, i) {
+        var px = x(i), py = y(d.tokens);
+        ctx.beginPath();
+        ctx.arc(px, py, 3, 0, Math.PI * 2);
+        ctx.fillStyle = '#722ed1';
+        ctx.fill();
+        ctx.strokeStyle = '#fff';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+      });
     },
     ruleStrategyLabel: function(s) {
       if (!s) return '继承默认';

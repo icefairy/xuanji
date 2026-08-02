@@ -272,6 +272,7 @@ func buildServeMux(cfg *config.Config, rt *router.Router, hc *health.Checker, re
 	mux.HandleFunc("GET /admin/metrics/summary", adminAuth(admHandler.MetricsSummary))
 	mux.HandleFunc("GET /admin/metrics/upstreams", adminAuth(admHandler.MetricsUpstreams))
 	mux.HandleFunc("GET /admin/metrics/hourly", adminAuth(admHandler.MetricsHourly))
+	mux.HandleFunc("GET /admin/metrics/daily", adminAuth(admHandler.MetricsDaily))
 	mux.HandleFunc("GET /admin/metrics/keys", adminAuth(admHandler.MetricsByAPIKey))
 	mux.HandleFunc("GET /admin/config/retry", adminAuth(admHandler.GetRetryConfig))
 	mux.HandleFunc("GET /admin/logs", adminAuth(admHandler.RequestLogs))
