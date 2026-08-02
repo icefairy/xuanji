@@ -246,6 +246,12 @@ tr:hover td { background:#f5f7fa; }
 
   <!-- 系统设置 -->
   <div class="tab-content" v-if="tab === 'settings'">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+      <div style="color:#303133;font-weight:600;font-size:14px">账号安全</div>
+      <button class="btn" @click="openPwdDialog">修改密码</button>
+    </div>
+    <div style="color:#909399;font-size:12px;margin-bottom:16px">当前登录账号：{{ username || '-' }}。定期修改密码可防止管理后台被未授权访问。</div>
+
     <div style="margin-bottom:12px;color:#303133;font-weight:600;font-size:14px">系统配置</div>
     <table><thead><tr><th>配置项</th><th>当前值</th><th>操作</th></tr></thead>
       <tbody><tr v-for="c in configArr">
@@ -393,6 +399,19 @@ tr:hover td { background:#f5f7fa; }
       <div class="modal-footer"><button class="btn" @click="showConfigDialog=false">取消</button><button class="btn btn-primary" @click="doSaveConfig">保存</button></div>
     </div>
   </div>
+
+  <!-- 修改密码 -->
+  <div class="modal" v-if="showPwdDialog" @click.self="showPwdDialog=false">
+    <div class="modal-content" style="max-width:440px"><h3>修改密码</h3>
+      <div class="form-group"><label>旧密码</label><input type="password" v-model="pwdForm.old_password" placeholder="输入当前密码" /></div>
+      <div class="form-group"><label>新密码（至少 6 位）</label><input type="password" v-model="pwdForm.new_password" placeholder="输入新密码" /></div>
+      <div class="form-group"><label>确认新密码</label><input type="password" v-model="pwdForm.confirm" placeholder="再次输入新密码" /></div>
+      <div class="modal-footer">
+        <button class="btn" @click="showPwdDialog=false">取消</button>
+        <button class="btn btn-primary" @click="doChangePwd" :disabled="pwdSaving">{{ pwdSaving ? '提交中...' : '确定修改' }}</button>
+      </div>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -453,6 +472,10 @@ new Vue({
     editableConfigs: ['retry.upstream_timeout', 'retry.fast_fail_minutes', 'retry.fast_fail_probe_minutes', 'retry.max_retries'],
     showConfigDialog: false,
     configForm: { key: '', value: '' },
+    username: localStorage.getItem('xuanji_user') || '',
+    showPwdDialog: false,
+    pwdForm: { old_password: '', new_password: '', confirm: '' },
+    pwdSaving: false,
     endpoints: [
       { path: 'GET /healthz', desc: '健康检查' },
       { path: 'GET /v1/models', desc: '模型列表（OpenAI 兼容）' },
@@ -531,7 +554,9 @@ new Vue({
       axios.post('/admin/login', { username: self.loginUsername, password: self.loginPassword })
         .then(function(r) {
           self.token = r.data.token;
+          self.username = r.data.username || self.loginUsername || '';
           localStorage.setItem('xuanji_jwt', self.token);
+          localStorage.setItem('xuanji_user', self.username);
           self.loginUsername = '';
           self.loginPassword = '';
           self.loginLoading = false;
@@ -619,6 +644,31 @@ new Vue({
           self.showConfigDialog = false;
           alert('保存成功，已热重载生效');
           self.api('/admin/config').then(function(r) { var arr = []; for (var k in r.data) { arr.push({ key: k, value: r.data[k] }); } self.configArr = arr; }).catch(function(){});
+        });
+    },
+    openPwdDialog: function() {
+      this.pwdForm = { old_password: '', new_password: '', confirm: '' };
+      this.showPwdDialog = true;
+    },
+    doChangePwd: function() {
+      var self = this;
+      var oldPwd = String(self.pwdForm.old_password || '');
+      var newPwd = String(self.pwdForm.new_password || '');
+      var confirm = String(self.pwdForm.confirm || '');
+      if (oldPwd === '') { alert('请输入旧密码'); return; }
+      if (newPwd.length < 6) { alert('新密码至少 6 位'); return; }
+      if (newPwd !== confirm) { alert('两次输入的新密码不一致'); return; }
+      self.pwdSaving = true;
+      self.api('/admin/password', { method: 'PUT', body: { old_password: oldPwd, new_password: newPwd } })
+        .then(function() {
+          self.pwdSaving = false;
+          self.showPwdDialog = false;
+          alert('密码修改成功，下次登录请使用新密码');
+          self.pwdForm = { old_password: '', new_password: '', confirm: '' };
+        })
+        .catch(function() {
+          // api() 已弹出具体错误（如"旧密码错误"），这里只清理状态
+          self.pwdSaving = false;
         });
     },
     openAddDiscount: function() {
