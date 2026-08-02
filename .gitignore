@@ -1,0 +1,33 @@
+# 环境变量（含密钥，禁止提交）
+.env
+*.env
+!.env.example
+
+# 本地运行配置（含真实上游地址/密钥，禁止提交）
+config.yaml
+config.local.yaml
+
+# 数据库文件（含 API Key 等敏感数据）
+*.db
+*.db-shm
+*.db-wal
+data/
+
+# 构建产物
+/bin/
+/dist/
+*.exe
+
+# Go
+/vendor/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# 系统
+.DS_Store
+
+# 临时调试
+cmd/dbgconv/
