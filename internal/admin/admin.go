@@ -596,6 +596,14 @@ type hourlyBucket struct {
 	Tokens    int64  `json:"tokens"`
 }
 
+// dailyBucket 是 GET /admin/metrics/daily 的单个元素（按天聚合）。
+type dailyBucket struct {
+	Date      string `json:"date"`
+	Requests  int64  `json:"requests"`
+	Successes int64  `json:"successes"`
+	Tokens    int64  `json:"tokens"`
+}
+
 // apiKeyMetrics 是 GET /admin/metrics/keys 的单个元素（按下游 API Key 聚合）。
 type apiKeyMetrics struct {
 	Name         string  `json:"name"`
@@ -663,7 +671,84 @@ func (h *Handler) MetricsHourly(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, out)
 }
 
-// GetRetryConfig 返回当前重试配置（GET /admin/config/retry）。
+// MetricsDaily 返回按天聚合的趋势（支持 ?range=today|3d|7d|30d|all）。
+// 无请求的日期也会补零返回，保证折线图连续完整。
+func (h *Handler) MetricsDaily(w http.ResponseWriter, r *http.Request) {
+	if h.store == nil {
+		writeJSON(w, []dailyBucket{})
+		return
+	}
+	since := metricsSince(r)
+	loc := time.FixedZone("CST", 8*3600)
+	now := time.Now().In(loc)
+
+	// 查询按天聚合（ts 存 UTC，转本地日期分组）
+	q := `SELECT strftime('%Y-%m-%d', ts, '+8 hours') as day,
+	             COUNT(*) as requests,
+	             COALESCE(SUM(CASE WHEN status < 400 THEN 1 ELSE 0 END), 0) as successes,
+	             COALESCE(SUM(tokens), 0) as tokens
+	      FROM request_log`
+	var args []any
+	if since != "" {
+		q += ` WHERE ts >= ?`
+		args = append(args, since)
+	}
+	q += ` GROUP BY day ORDER BY day ASC`
+	rows, err := h.store.DB().Query(q, args...)
+	if err != nil {
+		writeJSON(w, []dailyBucket{})
+		return
+	}
+	defer rows.Close()
+
+	agg := map[string]dailyBucket{}
+	for rows.Next() {
+		var b dailyBucket
+		if err := rows.Scan(&b.Date, &b.Requests, &b.Successes, &b.Tokens); err != nil {
+			continue
+		}
+		agg[b.Date] = b
+	}
+
+	// 确定起始日期：since 对应那天（today 取今天）；all 取最早有数据的日期
+	var start time.Time
+	switch r.URL.Query().Get("range") {
+	case "today":
+		start = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
+	case "all":
+		if len(agg) == 0 {
+			writeJSON(w, []dailyBucket{})
+			return
+		}
+		first := ""
+		for d := range agg {
+			if first == "" || d < first {
+				first = d
+			}
+		}
+		t, _ := time.ParseInLocation("2006-01-02", first, loc)
+		start = t
+	default:
+		start = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
+		if since != "" {
+			if t, err := time.Parse(time.RFC3339, since); err == nil {
+				start = time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, loc)
+			}
+		}
+	}
+
+	// 从 start 到 now 逐天补零
+	var out []dailyBucket
+	for d := start; !d.After(now); d = d.AddDate(0, 0, 1) {
+		key := d.Format("2006-01-02")
+		if b, ok := agg[key]; ok {
+			out = append(out, b)
+		} else {
+			out = append(out, dailyBucket{Date: key})
+		}
+	}
+	writeJSON(w, out)
+}
 func (h *Handler) GetRetryConfig(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, map[string]interface{}{
 		"max_retries":       h.cfg.Retry.MaxRetries,
