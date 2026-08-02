@@ -119,6 +119,36 @@
 - 请求统计：今日 / 3天 / 7天 / 30天 / 全部 五个维度，每上游请求数、延迟、成功率、Token 总量
 - **Token 计数**：流式响应注入 `stream_options.include_usage` 并逐 chunk 解析，非流式回退 tiktoken 估算
 
+### 🧠 思考深度归一化（Thinking Effort 协议翻译）
+
+不同模型控制"思考强度"的参数五花八门：OpenAI 用 `reasoning_effort`，DeepSeek 用 `reasoning_effort` + `thinking.type`，商汤用 `output_config.effort`，Kimi K2/GLM 只有 `thinking.type` 开关……客户端挨个适配太痛苦。
+
+**璇玑在网关层做了归一化：下游永远用 OpenAI 标准协议，网关按目标模型自动翻译。**
+
+客户端只需传标准参数（与 OpenAI o 系列一致）：
+
+```json
+{
+  "model": "任意模型",
+  "reasoning_effort": "none | low | medium | high"
+}
+```
+
+网关按上游真实模型自动转换：
+
+| 目标模型族 | none（关闭思考） | 强度控制 |
+|---|---|---|
+| **DeepSeek V4** (flash/pro) | `thinking.type=disabled` | `reasoning_effort: low/high/max`（原生透传，pro 的 low 档自动抬到 high） |
+| **商汤** sensenova-* | `thinking.type=disabled` | 自动转 `output_config.effort: low/medium/high` |
+| **Kimi K3** | 始终思考 → 映射为 `low` | `reasoning_effort: low/high/max`（原生透传） |
+| **Kimi K2.x** | `thinking.type=disabled` | 只开关，无强度档 → `thinking.type=enabled` |
+| **GLM-4.5** | `thinking.type=disabled` | 只开关，无强度档 → `thinking.type=enabled` |
+| **OpenAI o3/o4/GPT-5** | `reasoning_effort=none` | 原生支持，完全透传 |
+
+- 请求体没有 `reasoning_effort` 时**零开销**（原样透传，不改 body）
+- 未知模型也原样透传，绝不破坏请求
+- 单条请求即可控制，无需每模型单独适配——**一套代码接入所有思考模型**
+
 ### 🔌 开箱即用的渠道适配
 
 - **Ollama 上游**：配置 `type: ollama` 的上游后，通过 OpenAI `POST /v1/chat/completions` 入口自动转换协议转发（无需额外配置）
