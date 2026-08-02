@@ -12,10 +12,12 @@
 </p>
 
 > **OpenAI / Anthropic 协议汇聚 · 负载 · 分流网关**  
-> *Go 生态 · 单二进制 · 零外部依赖*
+> *Go 生态 · 单二进制 · 零外部依赖 · one-api / LiteLLM 轻量替代*
 
 璇玑（北斗第一星，古代天文仪器的轴心枢纽）——汇聚万向，运转分流。  
 用 Go 自研的轻量 AI 网关，为 Hermes、Claude Code、OpenCode 等各类 AI 工具提供一个统一入口，汇聚多家上游（硅基流动、商汤、DeepSeek 系中转、vLLM、OpenRouter 等），按成本与健康状态自动分流。
+
+**它是 one-api / new-api / LiteLLM / Portkey / Kong AI Gateway 等网关的轻量替代品**：同样解决"多家上游统一入口、API Key 管理、成本控制、故障切换"，但体积、依赖、部署成本低一个量级；同时它也是 **CC Switch 这类桌面配置切换器的服务端替代方案**——不需要切换，网关自动调度。
 
 > **GitHub**：[https://github.com/icefairy/xuanji](https://github.com/icefairy/xuanji) — 欢迎 Issue、PR、Star ⭐
 
@@ -212,15 +214,68 @@ go build ./... && go test ./...
 
 ## 与同类项目对比
 
+### 对比 OneAPI / New-API（服务端网关）
+
 | 特性 | 璇玑 Xuanji | OneAPI / New-API |
 |------|------------|------------------|
 | 二进制大小 | ~18MB | ~50MB+（Java/.NET） |
-| 外部依赖 | 零 | 需 MySQL/Redis |
+| 外部依赖 | 零（SQLite 内置） | 需 MySQL/Redis |
 | 协议转换 | OpenAI + Anthropic 互转 | 仅 OpenAI |
 | 流式兼容 | 逐行 SSE 透传，不丢字段 | 部分流式字段丢失 |
 | 客户端断连保护 | ✅ 不误拉黑 | ❌ 无此机制 |
 | 配置热重载 | CRUD 即生效 | 需重启 |
 | 延迟路由 | 支持（健康探测实时数据） | 不支持 |
+| 部署运维 | 单二进制，Docker 一行 | 多组件 + 依赖数据库 |
+| 多机共享 | ✅ SQLite 文件级共享 | 需独立 DB + Redis |
+
+### 对比 LiteLLM（Python 网关）
+
+[LiteLLM](https://github.com/BerriAI/litellm) 是目前 GitHub stars 最高的开源 LLM 网关（Python，YC 背景，41k+ stars），定位是开发者友好的统一接入层，支持 100+ 供应商。
+
+| 维度 | 璇玑 Xuanji | LiteLLM |
+|------|------------|---------|
+| 语言/形态 | Go 单二进制 | Python（需 Python 运行时 + pip 依赖） |
+| 体积 | ~18MB 二进制 | 依赖树数百 MB，镜像 ~1GB+ |
+| 部署 | 复制即跑 / docker 一行 | 需装 Python 环境，配置 YAML |
+| 协议 | OpenAI + Anthropic 双原生 | 以 OpenAI 兼容为主，Anthropic 靠转换 |
+| 流式透传 | 逐行 SSE，不丢字段 | 部分场景有字段重写 |
+| 配置 | 数据库化 + Web CRUD 热重载 | YAML 配置 + 部分需重启 |
+| 管理界面 | 内置完整 Web 管理页 | 管理 UI 较简陋 |
+| 语言门槛 | 无（二进制分发） | 需熟悉 Python 生态 |
+
+**璇玑优势**：LiteLLM 是"Python 库 + 网关"模式，适合在 Python 代码里直接调；璇玑是独立部署的二进制网关，不绑架你的技术栈，部署成本低一个量级。追求轻量、不想养 Python 服务的人会喜欢璇玑。
+
+### 对比 Portkey / Kong AI Gateway（企业级网关）
+
+[Portkey](https://portkey.ai) 和 Kong AI Gateway 是面向企业的商业网关，功能全面（治理、审计、guardrails、SSO），但定位是**企业基础设施**。
+
+| 维度 | 璇玑 Xuanji | Portkey / Kong |
+|------|------------|----------------|
+| 目标用户 | 个人/小团队/自建派 | 企业/大团队 |
+| 部署 | 开源免费自托管 | 商业授权/云服务，费用高 |
+| 形态 | 单二进制 | 多服务 + 控制面/数据面 |
+| 学习成本 | 低，文档精简 | 高，概念多（网关/插件/策略） |
+| 核心诉求 | 轻量 + 成本优先 + 不中断 | 治理 + 合规 + 可观测 |
+| 开源程度 | 全开源（Apache 2.0） | 核心闭源 / 部分开源 |
+
+**璇玑优势**：企业级网关是为"管人、管合规"设计的，杀鸡用牛刀；璇玑是为"自己爽、省钱、不中断"设计的。个人开发者、小团队、自建 AI 基础设施的人用璇玑，两小时就能跑起来，不用读三百页文档。
+
+### 对比 CC Switch（客户端配置切换器）
+
+最近社区流行的 [CC Switch](https://github.com/farion1231/cc-switch) 是**桌面客户端**（Tauri 2），它解决的问题是：手动编辑 Claude Code / Codex / Gemini CLI 等工具的配置文件来切换 API 供应商，CC Switch 用可视化界面帮你一键切换。
+
+璇玑走的是完全不同的路线——**不需要切换**：
+
+| 维度 | 璇玑 Xuanji | CC Switch |
+|------|------------|-----------|
+| 形态 | 服务端网关，一个地址 | 桌面客户端，每台机器装一个 |
+| 切换方式 | **无需切换**：工具永远指向网关，网关自动选上游 | 手动点选，切换后大多要重启终端 |
+| 故障转移 | 自动：失败切同层下一个 → 整层失败升层级，**工作流不中断** | 手动：发现限流/失败后人工切换 |
+| 多机共享 | ✅ 多实例共享同一数据库 | ❌ 各机器独立配置 |
+| 配置管理 | Web 管理页，CRUD 即热重载 | 桌面 GUI + 配置文件写入 |
+| MCP / Skills | 不涉及（纯网关，不碰工具配置） | 管理工具侧配置 |
+
+**一句话总结**：CC Switch 是"多套配置之间的切换器"，璇玑是"所有配置之上的调度器"。用璇玑之后，你不再需要"切换"这个动作——Claude Code 配一次 `ANTHROPIC_BASE_URL` 指向网关，之后所有渠道变更都在网关后台完成，客户端无感。
 
 ## License
 
