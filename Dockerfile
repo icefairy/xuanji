@@ -1,6 +1,9 @@
 # ---- 构建阶段 ----
 FROM golang:1.26-alpine AS builder
 
+# 国内网络环境：Go 模块走 goproxy.cn（直连 proxy.golang.org 会被墙）
+ENV GOPROXY=https://goproxy.cn,direct
+
 WORKDIR /build
 
 # 依赖缓存（go.mod 不变时不重复拉取）
