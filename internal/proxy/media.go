@@ -61,7 +61,7 @@ func (h *Handler) ImageGenerations(w http.ResponseWriter, r *http.Request) {
 
 	candidates := h.selectCandidates(upstreams, strategy, model)
 	for i, up := range candidates {
-		handled, retryable, ferr := h.forwardMediaJSON(rec, r.Context(), body, up, model, mediaImagePath, "images", i == len(candidates)-1)
+		handled, retryable, ferr := h.forwardMediaJSON(rec, r, r.Context(), body, up, model, mediaImagePath, "images", i == len(candidates)-1)
 		if ferr != nil && h.health != nil {
 			h.health.MarkFailure(up.Name)
 		}
@@ -120,7 +120,7 @@ func (h *Handler) AudioSpeech(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(model, "mimo-v2.5-tts") {
 			handled, retryable, ferr = h.forwardMimoTTS(rec, r.Context(), body, up, model, i == len(candidates)-1)
 		} else {
-			handled, retryable, ferr = h.forwardMediaJSON(rec, r.Context(), body, up, model, mediaAudioSpeechPath, "audio", i == len(candidates)-1)
+			handled, retryable, ferr = h.forwardMediaJSON(rec, r, r.Context(), body, up, model, mediaAudioSpeechPath, "audio", i == len(candidates)-1)
 		}
 		if ferr != nil && h.health != nil {
 			h.health.MarkFailure(up.Name)
@@ -201,7 +201,7 @@ func (h *Handler) AudioTranscriptions(w http.ResponseWriter, r *http.Request) {
 // forwardMediaJSON 向上游转发 JSON 请求体，响应原样透传（JSON 或二进制均可）。
 // 用于 ImageGenerations 和 AudioSpeech 这类 JSON 请求端点。
 // endpoint 是记录用的端点名（"images" / "audio"）。
-func (h *Handler) forwardMediaJSON(w http.ResponseWriter, ctx context.Context, body []byte, up *config.Upstream, model, pathSuffix, endpoint string, last bool) (handled, retryable bool, err error) {
+func (h *Handler) forwardMediaJSON(w http.ResponseWriter, r *http.Request, ctx context.Context, body []byte, up *config.Upstream, model, pathSuffix, endpoint string, last bool) (handled, retryable bool, err error) {
 	start := time.Now()
 	var status int
 	defer func() {
@@ -219,6 +219,7 @@ func (h *Handler) forwardMediaJSON(w http.ResponseWriter, ctx context.Context, b
 			Status:     status,
 			DurationMS: time.Since(start).Milliseconds(),
 			Tokens:     0,
+			APIKey:     h.recordAPIKey(r),
 		})
 	}()
 	reqBody := body
@@ -301,6 +302,7 @@ func (h *Handler) forwardAudioTranscription(w http.ResponseWriter, r *http.Reque
 			Status:     status,
 			DurationMS: time.Since(start).Milliseconds(),
 			Tokens:     0,
+			APIKey:     h.recordAPIKey(r),
 		})
 	}()
 	var reqBody io.Reader

@@ -36,6 +36,20 @@ type Handler struct {
 	log      *slog.Logger
 	recorder *store.Recorder // 指标记录器；nil 时跳过记录
 	timeout  time.Duration   // 上游请求超时；默认 60s，可用 SetTimeout 覆盖
+	keyName  func(r *http.Request) string // 下游 API Key 展示名（统计用）；nil 时记录空
+}
+
+// SetKeyName 注入下游 API Key 展示名解析器（统计按 Key 维度用；nil 时记录空）。
+func (h *Handler) SetKeyName(fn func(r *http.Request) string) {
+	h.keyName = fn
+}
+
+// recordAPIKey 解析当前请求的下游 API Key 展示名（未注入解析器时返回空）。
+func (h *Handler) recordAPIKey(r *http.Request) string {
+	if h.keyName == nil {
+		return ""
+	}
+	return h.keyName(r)
 }
 
 // SetTimeout 设置上游请求超时（来自 retry.upstream_timeout 配置）。
@@ -157,6 +171,7 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, claudeReq 
 			Status:     status,
 			DurationMS: time.Since(start).Milliseconds(),
 			Tokens:     0,
+			APIKey:     h.recordAPIKey(r),
 		})
 	}()
 	// 模型映射（model_mapping 只改 model 字段）
