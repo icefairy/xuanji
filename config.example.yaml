@@ -1,0 +1,72 @@
+# 璇玑网关配置示例
+# 复制为 config.yaml 并填写真实上游信息。
+#
+# 字段说明：
+#   server.port                监听端口，默认 8787
+#   server.api_keys            允许访问网关的 API key 列表（逗号分隔），支持 ${VAR} 占位符
+#                              为空 = 不鉴权（开发模式）；配置后 /v1/* 需 Authorization: Bearer <key>
+#   upstreams[].name           上游唯一名称，供 routing.rules 引用
+#   upstreams[].type           openai | openai-compatible | anthropic（默认 openai）
+#   upstreams[].base_url       上游 OpenAI 兼容端点地址，末尾含 /v1
+#   upstreams[].api_key        上游密钥，可用 ${VAR} 占位符，从 .env 读取
+#   upstreams[].priority       主备策略排序，数字小=主（同 tier 内生效）
+#   upstreams[].tier           成本层级：free | subscription | payg（默认 payg）
+#                              路由排序：tier 优先（免费>包月>按量），同层再按 priority
+#   upstreams[].weight         加权策略权重
+#   upstreams[].models         该上游可服务的模型列表
+#   upstreams[].health_check   健康检查（path/interval/timeout）
+#   upstreams[].quota          配额余量分流（rolling/weekly/monthly）
+#   routing.default_strategy   默认分流策略 quota | latency | primary_backup | weighted
+#   routing.rules[].model      模型匹配，支持 * 通配
+#   routing.rules[].upstreams  命中的上游组（按 name 引用）
+#   routing.rules[].strategy   该规则的策略，缺省继承 default_strategy
+#   storage.sqlite_path        SQLite 持久化文件路径；留空则不记录请求指标
+server:
+  port: 8787
+  # api_keys: ${XUANJI_API_KEYS}   # 多个 key 用逗号分隔；留空则不鉴权
+
+upstreams:
+  - name: vllm-local
+    type: openai
+    base_url: http://192.168.1.10:3001/v1
+    api_key: ${VLLM_KEY}
+    tier: payg
+    priority: 1
+    weight: 100
+    models:
+      - qwen3.6:35b
+      - dall-e-3        # 文生图
+      - tts-1            # 语音合成
+      - whisper-1        # 语音转文字
+    health_check:
+      path: /models
+      interval: 30s
+      timeout: 5s
+
+  - name: opencode-go
+    type: openai
+    base_url: https://opencode.ai/v1
+    api_key: ${OPENCODE_KEY}
+    tier: subscription
+    priority: 2
+    weight: 50
+    quota:
+      rolling: 5h
+      weekly: 7d
+      monthly: 30d
+    models:
+      - gpt-5
+      - claude-sonnet
+
+routing:
+  default_strategy: primary_backup
+  rules:
+    - model: "qwen*"
+      upstreams: [vllm-local]
+      strategy: primary_backup
+    - model: "gpt-5"
+      upstreams: [opencode-go]
+      strategy: quota
+
+storage:
+  sqlite_path: data/xuanji.db   # SQLite 持久化文件；留空则不记录请求指标

@@ -1,0 +1,13 @@
+services:
+  xuanji:
+    build: .
+    image: xuanji:latest
+    container_name: xuanji
+    restart: unless-stopped
+    ports:
+      - "8787:8787"
+    volumes:
+      - ./data:/data
+    environment:
+      - TZ=Asia/Shanghai
+    command: ["--port", "8787", "--db", "/data/xuanji.db"]
