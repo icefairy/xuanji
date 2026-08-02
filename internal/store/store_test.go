@@ -232,3 +232,67 @@ func TestSeedDefaults(t *testing.T) {
 		t.Errorf("SeedDefaults overwrote existing server.port = %q, want 9999", v)
 	}
 }
+
+// TestDeleteUpstream_CleansRuleReferences 验证删除上游时同步清理路由规则中的引用，
+// 避免规则残留已删除上游名（孤儿引用）导致页面显示"删不掉"的上游。
+func TestDeleteUpstream_CleansRuleReferences(t *testing.T) {
+	s := openTestStore(t)
+
+	// 创建两个上游
+	for _, name := range []string{"up-a", "up-b"} {
+		if err := s.CreateUpstream(&UpstreamRow{
+			Name: name, Type: "openai", BaseURL: "http://x/" + name,
+			Tier: "free", Priority: 10, Weight: 1,
+		}); err != nil {
+			t.Fatalf("CreateUpstream(%s): %v", name, err)
+		}
+	}
+	// 规则 1 引用 up-a + up-b；规则 2 只引用 up-a
+	if err := s.CreateRoutingRule(&RoutingRuleRow{
+		Model: "model-x", Strategy: "primary_backup",
+		Upstreams: `["up-a","up-b"]`,
+	}); err != nil {
+		t.Fatalf("CreateRoutingRule 1: %v", err)
+	}
+	if err := s.CreateRoutingRule(&RoutingRuleRow{
+		Model: "model-y", Strategy: "",
+		Upstreams: `["up-a"]`,
+	}); err != nil {
+		t.Fatalf("CreateRoutingRule 2: %v", err)
+	}
+
+	// 删除 up-a：upstreams 表删除 + 两个规则里的引用都应被清理
+	if err := s.DeleteUpstream("up-a"); err != nil {
+		t.Fatalf("DeleteUpstream: %v", err)
+	}
+
+	// upstreams 表里不应再有 up-a
+	var n int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM upstreams WHERE name='up-a'`).Scan(&n); err != nil || n != 0 {
+		t.Errorf("upstreams 表仍存在 up-a (n=%d, err=%v)", n, err)
+	}
+	// 规则 1 只剩 up-b
+	rows, err := s.ListRoutingRules()
+	if err != nil {
+		t.Fatalf("ListRoutingRules: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("rules count = %d, want 2", len(rows))
+	}
+	for _, r := range rows {
+		if r.Upstreams == `["up-a","up-b"]` {
+			t.Errorf("规则 %s 仍引用已删除的 up-a: %s", r.Model, r.Upstreams)
+		}
+		if r.Model == "model-x" && r.Upstreams != `["up-b"]` {
+			t.Errorf("规则 model-x upstreams = %s, want [\"up-b\"]", r.Upstreams)
+		}
+		if r.Model == "model-y" && r.Upstreams != `[]` {
+			t.Errorf("规则 model-y upstreams = %s, want []", r.Upstreams)
+		}
+	}
+
+	// 删除不存在的上游不应报错（幂等）
+	if err := s.DeleteUpstream("no-such-upstream"); err != nil {
+		t.Errorf("DeleteUpstream(nonexistent) = %v, want nil", err)
+	}
+}

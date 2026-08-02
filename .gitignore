@@ -31,3 +31,6 @@ data/
 
 # 临时调试
 cmd/dbgconv/
+
+# 本地文章/草稿（不对外发布）
+docs/articles/

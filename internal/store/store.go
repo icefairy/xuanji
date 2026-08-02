@@ -3,6 +3,7 @@ package store
 
 import (
 	"database/sql"
+	"encoding/json"
 	"log/slog"
 	"sync"
 	"time"
@@ -531,10 +532,63 @@ func (s *Store) SetUpstreamEnabled(name string, enabled int) error {
 	return err
 }
 
-// DeleteUpstream 删除上游。
+// DeleteUpstream 删除上游，并同步清理所有路由规则中对该上游的引用
+// （避免规则残留已不存在的上游名，导致"删不掉、页面仍显示"的孤儿引用）。
 func (s *Store) DeleteUpstream(name string) error {
-	_, err := s.db.Exec(`DELETE FROM upstreams WHERE name = ?`, name)
-	return err
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.Exec(`DELETE FROM upstreams WHERE name = ?`, name); err != nil {
+		return err
+	}
+	// 清理所有规则 JSON 里的引用
+	rows, err := tx.Query(`SELECT id, upstreams FROM routing_rules`)
+	if err != nil {
+		return err
+	}
+	type ruleRow struct {
+		id       int64
+		upstreams string
+	}
+	var toUpdate []ruleRow
+	for rows.Next() {
+		var rr ruleRow
+		if err := rows.Scan(&rr.id, &rr.upstreams); err != nil {
+			continue
+		}
+		var ups []string
+		if err := json.Unmarshal([]byte(rr.upstreams), &ups); err != nil {
+			continue
+		}
+		filtered := ups[:0]
+		changed := false
+		for _, u := range ups {
+			if u == name {
+				changed = true
+				continue
+			}
+			filtered = append(filtered, u)
+		}
+		if changed {
+			toUpdate = append(toUpdate, ruleRow{rr.id, mustJSON(filtered)})
+		}
+	}
+	rows.Close()
+	for _, rr := range toUpdate {
+		if _, err := tx.Exec(`UPDATE routing_rules SET upstreams=?, updated_at=datetime('now') WHERE id=?`, rr.upstreams, rr.id); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// mustJSON 将 []string 编码为 JSON 字符串（忽略错误，调用方保证可序列化）。
+func mustJSON(v []string) string {
+	b, _ := json.Marshal(v)
+	return string(b)
 }
 
 // ===== Routing Rules CRUD =====
