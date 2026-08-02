@@ -19,6 +19,8 @@
 
 **它是 one-api / new-api / LiteLLM / Portkey / Kong AI Gateway 等网关的轻量替代品**：同样解决"多家上游统一入口、API Key 管理、成本控制、故障切换"，但体积、依赖、部署成本低一个量级；同时它也是 **CC Switch 这类桌面配置切换器的服务端替代方案**——不需要切换，网关自动调度。
 
+> **🎯 定位：个人 / 小团队自用**。没有计费、用户管理、配额兑换码等运营功能，短期内也不打算加入——它是给你自己的 AI 工作流做统一入口与成本调度的，不是给多用户做计费分发的。按 API Key 的用量统计（请求数 / Tokens / 成功率）可以帮你区分不同 AI 程序用得多。
+
 > **GitHub**：[https://github.com/icefairy/xuanji](https://github.com/icefairy/xuanji) — 欢迎 Issue、PR、Star ⭐
 
 > **Gitee 镜像**：[https://gitee.com/icefairy/xuanji-gateway](https://gitee.com/icefairy/xuanji-gateway) — 国内用户访问更快

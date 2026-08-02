@@ -21,6 +21,7 @@ type Record struct {
 	PromptTokens     int64  // 输入 token 数
 	CompletionTokens int64  // 输出 token 数
 	Tokens           int64  // 总 token 数 = PromptTokens + CompletionTokens
+	APIKey           string // 下游 API Key 名称（api_tokens.name，用于按 Key 统计）
 }
 
 // UpstreamRow 是 upstreams 表的行映射。
@@ -224,6 +225,9 @@ func (s *Store) init() error {
 	for _, col := range []string{"prompt_tokens", "completion_tokens"} {
 		s.db.Exec("ALTER TABLE request_log ADD COLUMN " + col + " INTEGER NOT NULL DEFAULT 0")
 	}
+	// 迁移：request_log 加 api_key 列（按下游 Key 统计）
+	s.db.Exec("ALTER TABLE request_log ADD COLUMN api_key TEXT NOT NULL DEFAULT ''")
+	s.db.Exec("CREATE INDEX IF NOT EXISTS idx_request_log_apikey ON request_log(api_key)")
 	// 迁移：upstreams 加 enabled 列（禁用/启用）
 	s.db.Exec("ALTER TABLE upstreams ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1")
 	return nil
@@ -240,10 +244,10 @@ func (s *Store) DB() *sql.DB { return s.db }
 // Insert 单条插入一条请求记录。
 func (s *Store) Insert(rec Record) error {
 	_, err := s.db.Exec(
-		`INSERT INTO request_log (ts, upstream, model, endpoint, status, duration_ms, tokens, prompt_tokens, completion_tokens)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO request_log (ts, upstream, model, endpoint, status, duration_ms, tokens, prompt_tokens, completion_tokens, api_key)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		rec.Timestamp.UTC().Format(time.RFC3339), rec.Upstream, rec.Model, rec.Endpoint,
-		rec.Status, rec.DurationMS, rec.Tokens, rec.PromptTokens, rec.CompletionTokens,
+		rec.Status, rec.DurationMS, rec.Tokens, rec.PromptTokens, rec.CompletionTokens, rec.APIKey,
 	)
 	return err
 }
@@ -282,6 +286,46 @@ func (s *Store) ProbeStats(upstream, since string) (success, fail int64) {
 	return success, fail
 }
 
+// APIKeyRow 是按下游 Key 聚合的统计行。
+type APIKeyRow struct {
+	Name         string
+	Requests     int64
+	Successes    int64
+	AvgLatencyMS float64
+	TotalTokens  int64
+}
+
+// MetricsByAPIKey 返回按下游 API Key 聚合的统计（用于"哪些程序用得多"）。
+// since 为空串时统计全部。按请求数降序。
+func (s *Store) MetricsByAPIKey(since string) []APIKeyRow {
+	q := `SELECT COALESCE(NULLIF(api_key, ''), '(未标识)') as name,
+	              COUNT(*) as requests,
+	              COALESCE(SUM(CASE WHEN status < 400 THEN 1 ELSE 0 END), 0) as successes,
+	              COALESCE(AVG(duration_ms), 0) as avg_ms,
+	              COALESCE(SUM(tokens), 0) as tokens
+	       FROM request_log`
+	var args []any
+	if since != "" {
+		q += ` WHERE ts >= ?`
+		args = append(args, since)
+	}
+	q += ` GROUP BY name ORDER BY requests DESC`
+	rows, err := s.db.Query(q, args...)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var out []APIKeyRow
+	for rows.Next() {
+		var r APIKeyRow
+		if err := rows.Scan(&r.Name, &r.Requests, &r.Successes, &r.AvgLatencyMS, &r.TotalTokens); err != nil {
+			continue
+		}
+		out = append(out, r)
+	}
+	return out
+}
+
 // InsertBatch 在单个事务内批量插入多条记录。
 func (s *Store) InsertBatch(recs []Record) error {
 	if len(recs) == 0 {
@@ -294,8 +338,8 @@ func (s *Store) InsertBatch(recs []Record) error {
 	defer tx.Rollback()
 
 	stmt, err := tx.Prepare(
-		`INSERT INTO request_log (ts, upstream, model, endpoint, status, duration_ms, tokens, prompt_tokens, completion_tokens)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO request_log (ts, upstream, model, endpoint, status, duration_ms, tokens, prompt_tokens, completion_tokens, api_key)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 	)
 	if err != nil {
 		return err
@@ -305,7 +349,7 @@ func (s *Store) InsertBatch(recs []Record) error {
 	for _, rec := range recs {
 		if _, err := stmt.Exec(
 			rec.Timestamp.UTC().Format(time.RFC3339), rec.Upstream, rec.Model, rec.Endpoint,
-			rec.Status, rec.DurationMS, rec.Tokens, rec.PromptTokens, rec.CompletionTokens,
+			rec.Status, rec.DurationMS, rec.Tokens, rec.PromptTokens, rec.CompletionTokens, rec.APIKey,
 		); err != nil {
 			return err
 		}
@@ -694,6 +738,26 @@ func (s *Store) AllEnabledTokenKeys() map[string]bool {
 		var k string
 		if err := rows.Scan(&k); err == nil && k != "" {
 			out[k] = true
+		}
+	}
+	return out
+}
+
+// AllEnabledTokenNames 返回启用的下游 key → 名称映射（统计展示用）。
+func (s *Store) AllEnabledTokenNames() map[string]string {
+	out := make(map[string]string)
+	rows, err := s.db.Query(`SELECT key, name FROM api_tokens WHERE enabled = 1`)
+	if err != nil {
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var k, n string
+		if err := rows.Scan(&k, &n); err == nil && k != "" {
+			if n == "" {
+				n = k
+			}
+			out[k] = n
 		}
 	}
 	return out
