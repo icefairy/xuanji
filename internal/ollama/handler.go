@@ -32,6 +32,7 @@ type Handler struct {
 	log      *slog.Logger
 	recorder *store.Recorder // 指标记录器；nil 时跳过记录
 	timeout  time.Duration   // 上游请求超时；默认 60s，可用 SetTimeout 覆盖
+	keyName  func(r *http.Request) string // 下游 API Key 展示名（统计用）；nil 时记录空
 }
 
 // SetTimeout 设置上游请求超时（来自 retry.upstream_timeout 配置）。
@@ -47,12 +48,25 @@ func New(rt *router.Router, hc *health.Checker) *Handler {
 		DialContext: (&net.Dialer{Timeout: upstreamTimeout}).DialContext,
 	}
 	return &Handler{
-		router: rt,
-		health: hc,
+		router:  rt,
+		health:  hc,
 		timeout: upstreamTimeout,
-		client: &http.Client{Transport: transport},
-		log:    slog.Default(),
+		client:  &http.Client{Transport: transport},
+		log:     slog.Default(),
 	}
+}
+
+// SetKeyName 注入下游 API Key 展示名解析器（统计按 Key 维度用；nil 时记录空）。
+func (h *Handler) SetKeyName(fn func(r *http.Request) string) {
+	h.keyName = fn
+}
+
+// recordAPIKey 解析当前请求的下游 API Key 展示名（未注入解析器时返回空）。
+func (h *Handler) recordAPIKey(r *http.Request) string {
+	if h.keyName == nil {
+		return ""
+	}
+	return h.keyName(r)
 }
 
 // SetRecorder 注入指标记录器（nil 安全；测试不需要调用）。
@@ -172,6 +186,7 @@ func (h *Handler) forward(w http.ResponseWriter, r *http.Request, path string) {
 			Status:     status,
 			DurationMS: time.Since(start).Milliseconds(),
 			Tokens:     0,
+			APIKey:     h.recordAPIKey(r),
 		})
 	}
 	h.log.Info("ollama "+path,

@@ -205,6 +205,15 @@ tr:hover td { background:#f5f7fa; }
         <td><span :title="'精确值: ' + (s.total_tokens || 0)">{{ fmtTokens(s.total_tokens) }}</span></td>
       </tr></tbody>
     </table>
+    <div style="margin-top:24px;margin-bottom:12px;color:#909399;font-size:13px">每 API Key {{ metricsRangeLabel }}统计（区分各 AI 程序/客户端用量）</div>
+    <table><thead><tr><th>API Key 名称</th><th>请求数</th><th>成功</th><th>失败</th><th>请求成功率</th><th>延迟(ms)</th><th>Tokens</th></tr></thead>
+      <tbody><tr v-for="s in apiKeyStats">
+        <td>{{ s.name }}</td>
+        <td>{{ s.requests }}</td><td>{{ s.successes }}</td><td>{{ s.requests - s.successes }}</td>
+        <td>{{ s.requests > 0 ? fmtNum(s.successes/s.requests*100, 1)+'%' : '-' }}</td><td>{{ s.avg_latency_ms ? fmtNum(s.avg_latency_ms, 0) : '-' }}</td>
+        <td><span :title="'精确值: ' + (s.total_tokens || 0)">{{ fmtTokens(s.total_tokens) }}</span></td>
+      </tr></tbody>
+    </table>
   </div>
 
   <!-- API Key（下游令牌） -->
@@ -438,6 +447,7 @@ new Vue({
     logs: [],
     summary: {},
     upstreamStats: [],
+    apiKeyStats: [],
     apiKeys: [],
     configArr: [],
     editableConfigs: ['retry.upstream_timeout', 'retry.fast_fail_minutes', 'retry.fast_fail_probe_minutes', 'retry.max_retries'],
@@ -656,6 +666,7 @@ new Vue({
       var self = this;
       self.api('/admin/metrics/summary?range=' + self.metricsRange).then(function(r) { self.summary = r.data || {}; }).catch(function(){});
       self.api('/admin/metrics/upstreams?range=' + self.metricsRange).then(function(r) { self.upstreamStats = r.data || []; }).catch(function(){});
+      self.api('/admin/metrics/keys?range=' + self.metricsRange).then(function(r) { self.apiKeyStats = r.data || []; }).catch(function(){});
     },
     ruleStrategyLabel: function(s) {
       if (!s) return '继承默认';
