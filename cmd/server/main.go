@@ -272,6 +272,7 @@ func buildServeMux(cfg *config.Config, rt *router.Router, hc *health.Checker, re
 	mux.HandleFunc("GET /admin/metrics/summary", adminAuth(admHandler.MetricsSummary))
 	mux.HandleFunc("GET /admin/metrics/upstreams", adminAuth(admHandler.MetricsUpstreams))
 	mux.HandleFunc("GET /admin/metrics/hourly", adminAuth(admHandler.MetricsHourly))
+	mux.HandleFunc("GET /admin/metrics/keys", adminAuth(admHandler.MetricsByAPIKey))
 	mux.HandleFunc("GET /admin/config/retry", adminAuth(admHandler.GetRetryConfig))
 	mux.HandleFunc("GET /admin/logs", adminAuth(admHandler.RequestLogs))
 	mux.HandleFunc("GET /admin/api-keys", adminAuth(admHandler.APIKeys))
@@ -330,9 +331,24 @@ func buildServeMux(cfg *config.Config, rt *router.Router, hc *health.Checker, re
 	if dl, derr := storeInst.ListDiscounts(); derr == nil {
 		pxHandler.SetDiscounts(dl)
 	}
+	// 下游 API Key 展示名解析器：从请求头取 Bearer token → auth.Name（按 Key 统计用）
+	keyNameFn := func(r *http.Request) string {
+		if apiKeys == nil {
+			return ""
+		}
+		token := ""
+		if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
+			token = strings.TrimSpace(strings.TrimPrefix(h, "Bearer "))
+		} else if xk := r.Header.Get("x-api-key"); xk != "" {
+			token = strings.TrimSpace(xk)
+		}
+		return apiKeys.Name(token)
+	}
 	if rec != nil {
 		olHandler.SetRecorder(rec)
 		pxHandler.SetRecorder(rec)
+		olHandler.SetKeyName(keyNameFn)
+		pxHandler.SetKeyName(keyNameFn)
 	}
 	// ⚠ 2026-08-02 用户拍板：对外只暴露 OpenAI 协议 + Anthropic 协议，
 	// 不提供 Ollama 原生入口（/api/chat /api/generate /api/embed）。

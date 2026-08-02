@@ -50,6 +50,7 @@ type Handler struct {
 	fastFail  *FastFailCache  // 快速失败缓存；nil 时不启用
 	tokenizer *Tokenizer      // token 计数器；nil 时跳过估算回退
 	discounts []store.Discount // 渠道优惠时段，用于同 tier 同 weight 内折扣优先排序
+	keyName   func(r *http.Request) string // 下游 API Key 展示名（统计用）；nil 时记录空
 }
 
 // New 创建转发 Handler，共享一个 60s 连接超时的 HTTP 客户端。
@@ -71,6 +72,19 @@ func New(cfg *config.Config, rt *router.Router, hc *health.Checker) *Handler {
 // SetRecorder 注入指标记录器（nil 安全；测试不需要调用）。
 func (h *Handler) SetRecorder(r *store.Recorder) {
 	h.recorder = r
+}
+
+// SetKeyName 注入下游 API Key 展示名解析器（统计按 Key 维度用；nil 时记录空）。
+func (h *Handler) SetKeyName(fn func(r *http.Request) string) {
+	h.keyName = fn
+}
+
+// recordAPIKey 解析当前请求的下游 API Key 展示名（未注入解析器时返回空）。
+func (h *Handler) recordAPIKey(r *http.Request) string {
+	if h.keyName == nil {
+		return ""
+	}
+	return h.keyName(r)
 }
 
 // SetTokenizer 注入 token 计数器（nil 安全；默认 NewTokenizer()）。
@@ -417,6 +431,7 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 			PromptTokens:     promptTokens,
 			CompletionTokens: completionTokens,
 			Tokens:           promptTokens + completionTokens,
+			APIKey:           h.recordAPIKey(r),
 		})
 	}()
 	reqBody := body
@@ -823,6 +838,7 @@ func (h *Handler) forwardRerank(w http.ResponseWriter, r *http.Request, body []b
 			PromptTokens:     promptTokens,
 			CompletionTokens: completionTokens,
 			Tokens:           promptTokens + completionTokens,
+			APIKey:           h.recordAPIKey(r),
 		})
 	}()
 
@@ -989,6 +1005,7 @@ func (h *Handler) forwardEmbedding(w http.ResponseWriter, r *http.Request, body 
 			PromptTokens:     promptTokens,
 			CompletionTokens: completionTokens,
 			Tokens:           promptTokens + completionTokens,
+			APIKey:           h.recordAPIKey(r),
 		})
 	}()
 

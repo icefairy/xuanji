@@ -596,6 +596,42 @@ type hourlyBucket struct {
 	Tokens    int64  `json:"tokens"`
 }
 
+// apiKeyMetrics 是 GET /admin/metrics/keys 的单个元素（按下游 API Key 聚合）。
+type apiKeyMetrics struct {
+	Name         string  `json:"name"`
+	Requests     int64   `json:"requests"`
+	Successes    int64   `json:"successes"`
+	SuccessRate  float64 `json:"success_rate"`
+	AvgLatencyMS float64 `json:"avg_latency_ms"`
+	TotalTokens  int64   `json:"total_tokens"`
+}
+
+// MetricsByAPIKey 返回按下游 API Key 聚合的统计（支持 ?range=...）。
+// 用于区分不同 AI 程序/客户端的使用量，看哪个 Key 用得多。
+func (h *Handler) MetricsByAPIKey(w http.ResponseWriter, r *http.Request) {
+	if h.store == nil {
+		writeJSON(w, []apiKeyMetrics{})
+		return
+	}
+	since := metricsSince(r)
+	rows := h.store.MetricsByAPIKey(since)
+	out := make([]apiKeyMetrics, 0, len(rows))
+	for _, row := range rows {
+		m := apiKeyMetrics{
+			Name:         row.Name,
+			Requests:     row.Requests,
+			Successes:    row.Successes,
+			AvgLatencyMS: row.AvgLatencyMS,
+			TotalTokens:  row.TotalTokens,
+		}
+		if m.Requests > 0 {
+			m.SuccessRate = float64(m.Successes) / float64(m.Requests)
+		}
+		out = append(out, m)
+	}
+	writeJSON(w, out)
+}
+
 // MetricsHourly 返回 24h 逐小时趋势。
 func (h *Handler) MetricsHourly(w http.ResponseWriter, _ *http.Request) {
 	if h.store == nil {
