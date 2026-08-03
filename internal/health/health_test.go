@@ -53,7 +53,7 @@ func TestPingPathVariants(t *testing.T) {
 		upType string
 		want   string
 	}{
-		{name: "不带v1", want: "/v1/models"},
+		{name: "带v1标准", suffix: "/v1", want: "/v1/models"},
 		{name: "带v1", suffix: "/v1", want: "/v1/models"},
 		{name: "ollama", upType: "ollama", want: "/api/tags"},
 	}

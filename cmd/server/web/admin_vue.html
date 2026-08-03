@@ -13,6 +13,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
 #app { max-width: 1400px; margin: 0 auto; padding: 16px; }
 .header { display:flex; align-items:center; justify-content:space-between; margin-bottom:16px; }
 .header h1 { font-size:20px; color:#303133; }
+.build-date { font-size:12px; font-weight:normal; color:#909399; margin-left:6px; vertical-align:middle; }
 .tab-bar { display:flex; gap:4px; margin-bottom:12px; background:#fff; border-radius:8px; padding:4px; box-shadow:0 1px 3px rgba(0,0,0,0.06); flex-wrap:wrap; }
 .tab-btn { padding:8px 16px; border:none; background:transparent; cursor:pointer; border-radius:6px; font-size:14px; color:#606266; }
 .tab-btn.active { background:#409eff; color:#fff; }
@@ -82,7 +83,7 @@ tr:hover td { background:#f5f7fa; }
 </div>
 
   <div class="header">
-    <h1>⚙️ 璇玑网关</h1>
+    <h1>⚙️ 璇玑网关 <span class="build-date">{{ buildDate }}</span></h1>
     <span style="display:flex;align-items:center;gap:8px">
       <span class="badge" :class="token ? 'badge-green' : 'badge-red'">{{ token ? '已登录' : '未登录' }}</span>
       <button v-if="token" class="btn" @click="doLogout">退出</button>
@@ -92,6 +93,7 @@ tr:hover td { background:#f5f7fa; }
   <div class="tab-bar">
     <button class="tab-btn" :class="{ active: tab === 'upstreams' }" @click="switchTab('upstreams')">上游管理</button>
     <button class="tab-btn" :class="{ active: tab === 'rules' }" @click="switchTab('rules')">路由规则</button>
+    <button class="tab-btn" :class="{ active: tab === 'efforts' }" @click="switchTab('efforts')">思考等级</button>
     <button class="tab-btn" :class="{ active: tab === 'logs' }" @click="switchTab('logs')">请求日志</button>
     <button class="tab-btn" :class="{ active: tab === 'metrics' }" @click="switchTab('metrics')">请求统计</button>
     <button class="tab-btn" :class="{ active: tab === 'apikeys' }" @click="switchTab('apikeys')">API Key</button>
@@ -149,6 +151,54 @@ tr:hover td { background:#f5f7fa; }
     </table>
   </div>
 
+  <!-- 思考等级（最佳思考等级配置） -->
+  <div class="tab-content" v-if="tab === 'efforts'">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+      <span style="color:#909399;font-size:13px">共 {{ efforts.length }} 条配置。模型名支持通配符 *；"推荐值"用于客户端未传思考等级时自动补上，"强制值"用于强制覆盖客户端传的等级。</span>
+      <button class="btn btn-primary" @click="openAddEffort">+ 添加配置</button>
+    </div>
+    <table><thead><tr><th>模型</th><th>推荐值</th><th>强制值</th><th>操作</th></tr></thead>
+      <tbody><tr v-for="e in efforts">
+        <td>{{ e.model }}</td>
+        <td>{{ e.recommended || '-' }}</td>
+        <td>{{ e.forced || '-' }}</td>
+        <td class="ops">
+          <button class="btn" @click="openEditEffort(e)">编辑</button>
+          <button class="btn btn-danger" @click="delEffort(e)">删除</button>
+        </td>
+      </tr></tbody>
+    </table>
+  </div>
+
+  <!-- 添加/编辑思考等级配置 -->
+  <div class="modal" v-if="showEffortDialog" @click.self="showEffortDialog=false">
+    <div class="modal-content"><h3>{{ effortIsEdit ? '编辑配置' : '添加配置' }}</h3>
+      <div class="form-group"><label>模型匹配（支持通配符 *）</label><input v-model="effortForm.model" :disabled="effortIsEdit" placeholder="如 deepseek-* 或 mimo-v2.5" /></div>
+      <div class="form-group"><label>推荐值（客户端未传时自动补）</label>
+        <select v-model="effortForm.recommended" style="width:100%;padding:8px 10px;border:1px solid #dcdfe6;border-radius:4px;font-size:14px;background:#fff">
+          <option value="">不设置</option>
+          <option value="none">none（关闭思考）</option>
+          <option value="low">low</option>
+          <option value="medium">medium</option>
+          <option value="high">high</option>
+          <option value="max">max</option>
+        </select>
+      </div>
+      <div class="form-group"><label>强制值（覆盖客户端传的等级，需在系统设置开启"强制"开关）</label>
+        <select v-model="effortForm.forced" style="width:100%;padding:8px 10px;border:1px solid #dcdfe6;border-radius:4px;font-size:14px;background:#fff">
+          <option value="">不设置</option>
+          <option value="none">none（关闭思考）</option>
+          <option value="low">low</option>
+          <option value="medium">medium</option>
+          <option value="high">high</option>
+          <option value="max">max</option>
+        </select>
+      </div>
+      <div style="font-size:12px;color:#909399;margin-bottom:10px">已实测推荐：deepseek-v4-flash=high、商汤 sensenova-6.7-flash-lite=low、mimo-v2.5=medium（57 题评测）。</div>
+      <div class="modal-footer"><button class="btn" @click="showEffortDialog=false">取消</button><button class="btn btn-primary" @click="doSaveEffort">确定</button></div>
+    </div>
+  </div>
+
   <!-- 请求日志 -->
   <div class="tab-content" v-if="tab === 'logs'">
     <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap">
@@ -163,9 +213,9 @@ tr:hover td { background:#f5f7fa; }
       <span style="color:#909399;font-size:13px">共 {{ logTotal }} 条（每 10 秒刷新）</span>
       <button class="btn" @click="loadLogs()">刷新</button>
     </div>
-    <table><thead><tr><th>时间</th><th>上游</th><th>模型</th><th>状态</th><th>耗时(ms)</th><th>输入t</th><th>输出t</th><th>总计t</th><th>缓存命中</th></tr></thead>
+    <table><thead><tr><th>时间</th><th>API Key</th><th>上游</th><th>模型</th><th>状态</th><th>耗时(ms)</th><th>输入t</th><th>输出t</th><th>总计t</th><th>缓存命中</th></tr></thead>
       <tbody><tr v-for="l in logs">
-        <td>{{ (l.ts||'').substring(0,19) }}</td><td>{{ l.upstream }}</td><td>{{ l.model }}</td>
+        <td>{{ (l.ts||'').substring(0,19) }}</td><td :title="l.api_key || ''">{{ (l.api_key||'').substring(0,6) || '-' }}</td><td>{{ l.upstream }}</td><td>{{ l.model }}</td>
         <td><span class="badge" :class="l.status<400?'badge-green':'badge-red'">{{ l.status }}</span></td>
         <td>{{ l.duration_ms }}</td><td>{{ l.prompt_tokens }}</td><td>{{ l.completion_tokens }}</td><td>{{ l.tokens }}</td>
         <td><span :title="'命中 '+fmtNum(l.prompt_cache_hit_tokens||0,0)+' / 未命中 '+fmtNum(l.prompt_cache_miss_tokens||0,0)">{{ cacheRate(l) }}</span></td>
@@ -258,6 +308,28 @@ tr:hover td { background:#f5f7fa; }
     </div>
     <div style="color:#909399;font-size:12px;margin-bottom:16px">当前登录账号：{{ username || '-' }}。定期修改密码可防止管理后台被未授权访问。</div>
 
+    <div style="margin-bottom:12px;color:#303133;font-weight:600;font-size:14px">思考等级（最佳思考等级配置在"思考等级"页维护）</div>
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap">
+      <label style="display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer">
+        <input type="checkbox" v-model="autoBestEffort" @change="saveEffortSwitches" style="cursor:pointer" />
+        自动设置（推荐）：客户端未传思考等级时，按配置的推荐值自动补上
+      </label>
+      <label style="display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer">
+        <input type="checkbox" v-model="forceBestEffort" @change="saveEffortSwitches" style="cursor:pointer" />
+        强制覆盖：强制用配置的强制值覆盖客户端传的思考等级
+      </label>
+      <span style="color:#909399;font-size:12px">保存后自动热重载生效。已实测推荐：deepseek-v4-flash=high、商汤=low、mimo-v2.5=medium。</span>
+    </div>
+
+    <div style="margin-bottom:12px;color:#303133;font-weight:600;font-size:14px">视频透传</div>
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap">
+      <label style="display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer">
+        <input type="checkbox" v-model="videoPassThrough" @change="saveVideoSwitch" style="cursor:pointer" />
+        开启视频透传（允许 content 中的 video_url 转发给上游，如 qwen3.6:35b 多模态视频）
+      </label>
+      <span style="color:#909399;font-size:12px">默认关闭：视频流量大且多数模型不支持，需显式开启。关闭时含 video_url 的请求直接返回 400。</span>
+    </div>
+
     <div style="margin-bottom:12px;color:#303133;font-weight:600;font-size:14px">系统配置</div>
     <table><thead><tr><th>配置项</th><th>当前值</th><th>操作</th></tr></thead>
       <tbody><tr v-for="c in configArr">
@@ -266,7 +338,7 @@ tr:hover td { background:#f5f7fa; }
         <td class="ops"><button v-if="editableConfigs.indexOf(c.key) !== -1" class="btn" @click="openConfigEdit(c)">编辑</button><span v-else>-</span></td>
       </tr></tbody>
     </table>
-    <div style="color:#909399;font-size:12px;margin-top:4px">可编辑项：上游请求超时(秒)、故障冷却(分)、后台探测间隔(分)、最大重试次数。保存后自动热重载生效。</div>
+    <div style="color:#909399;font-size:12px;margin-top:4px">可编辑项：上游请求超时(秒)、故障冷却(分)、后台探测间隔(分)、最大重试次数、触发重试的 HTTP 状态码(逗号分隔)、重试关键词(逗号分隔)。保存后自动热重载生效。</div>
 
     <div style="margin:20px 0 12px;color:#303133;font-weight:600;font-size:14px">渠道优惠时段</div>
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
@@ -292,7 +364,7 @@ tr:hover td { background:#f5f7fa; }
   <div class="modal" v-if="showAddDialog" @click.self="showAddDialog=false">
     <div class="modal-content"><h3>添加上游</h3>
       <div class="form-group"><label>名称</label><input v-model="addForm.name" /></div>
-      <div class="form-group"><label>Base URL</label><input v-model="addForm.base_url" placeholder="末尾不加 /v1，系统自动拼接" /></div>
+      <div class="form-group"><label>Base URL</label><input v-model="addForm.base_url" placeholder="需带完整版本前缀，如 https://api.xxx.com/v1 或 /api/v3 /v2 /api/paas/v4" /></div>
       <div class="form-group"><label>API Key</label><input v-model="addForm.api_key" /></div>
       <div class="form-group"><label>类型</label><input v-model="addForm.type" /></div>
       <div class="form-group"><label>成本层级</label><select v-model="addForm.tier"><option value="free">免费</option><option value="subscription">订阅</option><option value="payg">付费</option></select></div>
@@ -457,6 +529,10 @@ new Vue({
   el: '#app',
   data: {
     token: token,
+    buildDate: '',
+    autoBestEffort: false,
+    forceBestEffort: false,
+    videoPassThrough: false,
     loginUsername: '',
     loginPassword: '',
     loginError: '',
@@ -464,6 +540,10 @@ new Vue({
     tab: 'metrics',
     upstreams: [],
     rules: [],
+    efforts: [],
+    showEffortDialog: false,
+    effortIsEdit: false,
+    effortForm: { model: '', recommended: '', forced: '' },
     showRuleDialog: false,
     ruleIsEdit: false,
     ruleForm: { model: '', strategy: '', upstreams: '' },
@@ -476,7 +556,7 @@ new Vue({
     dailyStats: [],
     apiKeys: [],
     configArr: [],
-    editableConfigs: ['retry.upstream_timeout', 'retry.fast_fail_minutes', 'retry.fast_fail_probe_minutes', 'retry.max_retries'],
+    editableConfigs: ['retry.upstream_timeout', 'retry.fast_fail_minutes', 'retry.fast_fail_probe_minutes', 'retry.max_retries', 'retry.retry_statuses', 'retry.retry_keywords'],
     showConfigDialog: false,
     configForm: { key: '', value: '' },
     username: localStorage.getItem('xuanji_user') || '',
@@ -535,6 +615,38 @@ new Vue({
       var self = this;
       self.api('/admin/rules').then(function(r) { self.rules = r.data || []; }).catch(function(){});
     },
+    loadEfforts: function() {
+      var self = this;
+      self.api('/admin/efforts').then(function(r) { self.efforts = (r.data && r.data.items) || []; }).catch(function(){});
+    },
+    openAddEffort: function() {
+      this.effortIsEdit = false;
+      this.effortForm = { model: '', recommended: '', forced: '' };
+      this.showEffortDialog = true;
+    },
+    openEditEffort: function(e) {
+      this.effortIsEdit = true;
+      this.effortForm = { model: e.model, recommended: e.recommended || '', forced: e.forced || '' };
+      this.showEffortDialog = true;
+    },
+    doSaveEffort: function() {
+      var self = this;
+      var f = self.effortForm;
+      if (!f.model || !f.model.trim()) { alert('模型匹配不能为空'); return; }
+      var body = { model: f.model.trim(), recommended: f.recommended || '', forced: f.forced || '' };
+      var url = self.effortIsEdit ? '/admin/efforts/' + encodeURIComponent(f.model) : '/admin/efforts';
+      self.api(url, { method: self.effortIsEdit ? 'PUT' : 'POST', body: body })
+        .then(function() {
+          self.showEffortDialog = false;
+          self.loadEfforts();
+        });
+    },
+    delEffort: function(row) {
+      var self = this;
+      if (!confirm('确认删除 ' + row.model + ' 的思考等级配置？')) return;
+      self.api('/admin/efforts/' + encodeURIComponent(row.model), { method: 'DELETE' })
+        .then(function() { self.loadEfforts(); });
+    },
     api: function(url, opts) {
       opts = opts || {};
       var headers = { 'Authorization': 'Bearer ' + this.token };
@@ -583,12 +695,12 @@ new Vue({
       var d = (typeof digits === 'number') ? digits : 2;
       return Number(v).toFixed(d);
     },
-    // 前缀缓存命中率：命中/(命中+未命中)，无 cache 统计显示 '-'
+    // 前缀缓存命中率：命中 / 总输入 tokens，无 cache 统计显示 '-'
     cacheRate: function(l) {
       var hit = Number(l.prompt_cache_hit_tokens) || 0;
-      var miss = Number(l.prompt_cache_miss_tokens) || 0;
-      if (hit + miss <= 0) return '-';
-      return this.fmtNum(hit / (hit + miss) * 100, 1) + '%';
+      var prompt = Number(l.prompt_tokens) || 0;
+      if (hit <= 0 || prompt <= 0) return '-';
+      return this.fmtNum(hit / prompt * 100, 1) + '%';
     },
     // Token 模糊显示：万/亿，精确值放 title
     fmtTokens: function(n) {
@@ -633,10 +745,11 @@ new Vue({
       this.$nextTick(function() {
         if (name === 'upstreams') { self.loadUpstreams(); }
         else if (name === 'rules') { self.loadRules(); }
+        else if (name === 'efforts') { self.loadEfforts(); }
         else if (name === 'logs') { self.loadLogs(); }
         else if (name === 'metrics') { self.loadMetrics(); }
         else if (name === 'apikeys') { self.api('/admin/api-keys').then(function(r) { self.apiKeys = r.data || []; }).catch(function(){}); }
-        else if (name === 'settings') { self.api('/admin/config').then(function(r) { var arr = []; for (var k in r.data) { arr.push({ key: k, value: r.data[k] }); } self.configArr = arr; }).catch(function(){}); self.loadDiscounts(); }
+        else if (name === 'settings') { self.api('/admin/config').then(function(r) { var arr = []; var cm = {}; for (var k in r.data) { if (k === 'server.port') { continue; } arr.push({ key: k, value: r.data[k] }); cm[k] = r.data[k]; } self.configArr = arr; self.autoBestEffort = cm['proxy.auto_best_effort'] === 'true'; self.forceBestEffort = cm['proxy.force_best_effort'] === 'true'; self.videoPassThrough = cm['proxy.video_pass_through'] === 'true'; }).catch(function(){}); self.loadDiscounts(); }
       });
     },
     loadDiscounts: function() {
@@ -657,8 +770,21 @@ new Vue({
         .then(function() {
           self.showConfigDialog = false;
           alert('保存成功，已热重载生效');
-          self.api('/admin/config').then(function(r) { var arr = []; for (var k in r.data) { arr.push({ key: k, value: r.data[k] }); } self.configArr = arr; }).catch(function(){});
+          self.api('/admin/config').then(function(r) { var arr = []; for (var k in r.data) { if (k === 'server.port') { continue; } arr.push({ key: k, value: r.data[k] }); } self.configArr = arr; }).catch(function(){});
         });
+    },
+    saveEffortSwitches: function() {
+      var self = this;
+      self.api('/admin/config', { method: 'PUT', body: {
+        'proxy.auto_best_effort': self.autoBestEffort ? 'true' : 'false',
+        'proxy.force_best_effort': self.forceBestEffort ? 'true' : 'false'
+      } }).then(function() { alert('思考等级开关已保存并热重载生效'); });
+    },
+    saveVideoSwitch: function() {
+      var self = this;
+      self.api('/admin/config', { method: 'PUT', body: {
+        'proxy.video_pass_through': self.videoPassThrough ? 'true' : 'false'
+      } }).then(function() { alert('视频透传开关已保存并热重载生效'); });
     },
     openPwdDialog: function() {
       this.pwdForm = { old_password: '', new_password: '', confirm: '' };
@@ -1139,6 +1265,10 @@ new Vue({
   },
   mounted: function() {
     var self = this;
+    // 拉取构建日期（/healthz 不鉴权，首页即可显示）
+    axios.get('/healthz').then(function(resp) {
+      self.buildDate = resp.data.build_date || '';
+    }).catch(function() { self.buildDate = ''; });
     if (this.token) {
       this.switchTab('metrics');
       this.logTimer = setInterval(function() {

@@ -207,8 +207,6 @@ func (c *Checker) ping(ctx context.Context, st *upstreamState) (ok, timedOut boo
 	target := strings.TrimRight(st.up.BaseURL, "/")
 	if st.up.IsOllama() {
 		target += "/api/tags"
-	} else if !strings.HasSuffix(target, "/v1") {
-		target += "/v1/models"
 	} else {
 		target += "/models"
 	}

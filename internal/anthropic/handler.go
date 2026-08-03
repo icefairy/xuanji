@@ -186,13 +186,7 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, claudeReq 
 		return true, false, nil, 0, 0
 	}
 
-	target := strings.TrimRight(up.BaseURL, "/")
-	// 如果 base_url 末尾已有 /v1，不重复添加（与 proxy.forwardOnce 同样处理）
-	if !strings.HasSuffix(target, "/v1") {
-		target += chatPath
-	} else {
-		target += "/chat/completions"
-	}
+	target := strings.TrimRight(up.BaseURL, "/") + "/chat/completions"
 	reqCtx := r.Context()
 	if !stream {
 		var cancel context.CancelFunc
