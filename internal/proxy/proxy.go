@@ -292,10 +292,9 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if connIssues && h.fastFail != nil {
 		cleared := 0
 		for _, up := range candidates {
-			if h.fastFail.IsBlacklisted(up.Name, model) {
-				h.fastFail.MarkSuccess(up.Name, model)
-				cleared++
-			}
+			// 网络问题清空该上游 model 相关的全部黑名单（客户端名 + 所有真实模型名）
+			h.clearUpstreamBlacklist(up, model)
+			cleared++
 		}
 		if cleared > 0 {
 			h.log.Warn("all upstreams failed with connection errors (likely network issue), cleared fastfail blacklist",
@@ -303,6 +302,56 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeError(rec, http.StatusBadGateway, "all upstreams failed", "server_error", "upstream_unreachable")
+}
+
+// realModels 返回 model 在该上游映射后的所有真实模型名；无映射时返回 [model]。
+func realModels(up *config.Upstream, model string) []string {
+	if up == nil {
+		return []string{model}
+	}
+	if mapped, ok := up.ModelMapping[model]; ok && mapped != "" {
+		return strings.Split(mapped, "|")
+	}
+	return []string{model}
+}
+
+// pickAvailableModel 为该上游选择本次请求可用的真实模型名：
+// 竖线展开所有候选真实模型，过滤掉处于 fastfail 黑名单的，随机选一个；
+// 全部被拉黑或无候选时返回空串（调用方应跳过该上游）。
+// 无 fastfail 时等价于 MapModel 的随机逻辑（保持既有行为）。
+func (h *Handler) pickAvailableModel(up *config.Upstream, model string) string {
+	cands := realModels(up, model)
+	if h.fastFail == nil || up == nil {
+		if len(cands) == 0 {
+			return model
+		}
+		return cands[rand.Intn(len(cands))]
+	}
+	var avail []string
+	for _, c := range cands {
+		if c == "" {
+			continue
+		}
+		if !h.fastFail.IsBlacklisted(up.Name, c) {
+			avail = append(avail, c)
+		}
+	}
+	if len(avail) == 0 {
+		return ""
+	}
+	return avail[rand.Intn(len(avail))]
+}
+
+// clearUpstreamBlacklist 清除该上游 model 相关的全部 fastfail 黑名单
+// （客户端模型名 + 所有映射后的真实模型名），用于全局网络故障恢复。
+func (h *Handler) clearUpstreamBlacklist(up *config.Upstream, model string) {
+	if h.fastFail == nil || up == nil {
+		return
+	}
+	names := append([]string{model}, realModels(up, model)...)
+	for _, n := range names {
+		h.fastFail.MarkSuccess(up.Name, n)
+	}
 }
 
 // selectCandidates 依据健康状态与统一优先级选出转发候选：
@@ -324,11 +373,12 @@ func (h *Handler) selectCandidates(ups []*config.Upstream, strategy, model strin
 	if len(enabledUps) > 0 {
 		ups = enabledUps
 	}
-	// 快速失败过滤：跳过冷却期内的上游（按渠道+模型两级粒度判断）
+	// 快速失败过滤：跳过冷却期内的上游（按渠道+模型两级粒度判断）。
+	// 一对多映射：该上游所有真实模型名都在黑名单才跳过；只要有一个可用就保留。
 	if h.fastFail != nil {
 		var filtered []*config.Upstream
 		for _, u := range ups {
-			if !h.fastFail.IsBlacklisted(u.Name, model) {
+			if h.pickAvailableModel(u, model) != "" {
 				filtered = append(filtered, u)
 			}
 		}
@@ -458,10 +508,15 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 		})
 	}()
 	reqBody := body
-	upstreamModel := model
-	if mapped := h.router.MapModel(up, model); mapped != model {
-		upstreamModel = mapped
-		if reqBody, err = sjson.SetBytes(body, "model", mapped); err != nil {
+	upstreamModel := h.pickAvailableModel(up, model)
+	if upstreamModel == "" {
+		// 所有真实模型都在 fastfail 冷却期（selectCandidates 全被过滤时的 fallback 场景）。
+		// 退化为 MapModel 随机选一个真实模型名继续尝试：连接失败 → connIssues 清黑名单，
+		// 成功 → MarkSuccess 恢复。保持原 fallback 语义（黑名单只是软跳过，可被真实请求纠正）。
+		upstreamModel = h.router.MapModel(up, model)
+	}
+	if upstreamModel != model {
+		if reqBody, err = sjson.SetBytes(body, "model", upstreamModel); err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to rewrite model field", "server_error", "")
 			return true, false, nil, 0, 0, 0, 0
 		}
@@ -498,7 +553,7 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 			return true, false, nil, 0, 0, 0, 0
 		}
 		if h.fastFail != nil {
-			h.fastFail.MarkFailed(up.Name, model)
+			h.fastFail.MarkFailed(up.Name, upstreamModel)
 		}
 		return false, true, fmt.Errorf("build upstream request: %w", err), 0, 0, 0, 0
 	}
@@ -514,7 +569,7 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 		// 客户端断连（context.Canceled）不算上游故障，不标记 fastfail——
 		// 否则一次断连会把所有候选全拉黑 60 分钟（2026-08-02 实测：6 个上游全被误拉黑）
 		if !errors.Is(err, context.Canceled) && h.fastFail != nil {
-			h.fastFail.MarkFailed(up.Name, model)
+			h.fastFail.MarkFailed(up.Name, upstreamModel)
 		}
 		return false, true, fmt.Errorf("upstream request failed: %w", err), 0, 0, 0, 0
 	}
@@ -526,7 +581,7 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 		// 上游 2xx 即成功开始响应，必须清除 fastfail 黑名单
 		// 否则后续流式请求一直跳不过冷却期，导致 free 层被永久跳过
 		if h.fastFail != nil {
-			h.fastFail.MarkSuccess(up.Name, model)
+			h.fastFail.MarkSuccess(up.Name, upstreamModel)
 		}
 		h.streamCopy(w, resp, &promptTokens, &completionTokens, &promptCacheHitTokens, &promptCacheMissTokens)
 		return true, false, nil, promptTokens, completionTokens, promptCacheHitTokens, promptCacheMissTokens
@@ -554,7 +609,7 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 		if shouldRetry {
 			// 返回可重试
 			if h.fastFail != nil {
-				h.fastFail.MarkFailed(up.Name, model)
+				h.fastFail.MarkFailed(up.Name, upstreamModel)
 			}
 			return false, true, fmt.Errorf("upstream error: %s", resp.Status), 0, 0, 0, 0
 		}
@@ -564,7 +619,7 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 		return true, false, fmt.Errorf("upstream error: %s", resp.Status), 0, 0, 0, 0
 	default:
 		if h.fastFail != nil {
-			h.fastFail.MarkSuccess(up.Name, model)
+			h.fastFail.MarkSuccess(up.Name, upstreamModel)
 		}
 		// 读取响应体用于 usage 解析，再整体透传
 		respBody, rerr := io.ReadAll(resp.Body)
@@ -575,7 +630,7 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 		// HTTP 200 但响应无效，非最后候选时切换下一个
 		if IsEmptyCompletion(respBody) {
 			if h.fastFail != nil {
-				h.fastFail.MarkFailed(up.Name, model)
+				h.fastFail.MarkFailed(up.Name, upstreamModel)
 			}
 			return false, true, fmt.Errorf("empty completion (thinking truncated?)"), 0, 0, 0, 0
 		}
@@ -847,10 +902,8 @@ func (h *Handler) Rerank(w http.ResponseWriter, r *http.Request) {
 	if connIssues && h.fastFail != nil {
 		cleared := 0
 		for _, up := range candidates {
-			if h.fastFail.IsBlacklisted(up.Name, model) {
-				h.fastFail.MarkSuccess(up.Name, model)
-				cleared++
-			}
+			h.clearUpstreamBlacklist(up, model)
+			cleared++
 		}
 		if cleared > 0 {
 			h.log.Warn("all rerank upstreams failed with connection errors (likely network issue), cleared fastfail blacklist",
@@ -887,8 +940,13 @@ func (h *Handler) forwardRerank(w http.ResponseWriter, r *http.Request, body []b
 	}()
 
 	reqBody := body
-	if mapped := h.router.MapModel(up, model); mapped != model {
-		if reqBody, err = sjson.SetBytes(body, "model", mapped); err != nil {
+	upstreamModel := h.pickAvailableModel(up, model)
+	if upstreamModel == "" {
+		// fallback：全黑名单时按原 MapModel 随机选一个真实模型继续尝试（连接错误可清黑名单）
+		upstreamModel = h.router.MapModel(up, model)
+	}
+	if upstreamModel != model {
+		if reqBody, err = sjson.SetBytes(body, "model", upstreamModel); err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to rewrite model field", "server_error", "")
 			return true, false, nil
 		}
@@ -913,7 +971,7 @@ func (h *Handler) forwardRerank(w http.ResponseWriter, r *http.Request, body []b
 	if err != nil {
 		// 客户端断连（context.Canceled）不算上游故障，不标记 fastfail
 		if !errors.Is(err, context.Canceled) && h.fastFail != nil {
-			h.fastFail.MarkFailed(up.Name, model)
+			h.fastFail.MarkFailed(up.Name, upstreamModel)
 		}
 		return false, true, fmt.Errorf("rerank upstream request failed: %w", err)
 	}
@@ -929,7 +987,7 @@ func (h *Handler) forwardRerank(w http.ResponseWriter, r *http.Request, body []b
 		}
 		if shouldRetry {
 			if h.fastFail != nil {
-				h.fastFail.MarkFailed(up.Name, model)
+				h.fastFail.MarkFailed(up.Name, upstreamModel)
 			}
 			return false, true, fmt.Errorf("rerank upstream error: %s", resp.Status)
 		}
@@ -937,7 +995,7 @@ func (h *Handler) forwardRerank(w http.ResponseWriter, r *http.Request, body []b
 		return true, false, fmt.Errorf("rerank upstream error: %s", resp.Status)
 	}
 	if h.fastFail != nil {
-		h.fastFail.MarkSuccess(up.Name, model)
+		h.fastFail.MarkSuccess(up.Name, upstreamModel)
 	}
 	respBody, _ := io.ReadAll(resp.Body)
 	parseUsage(respBody, &promptTokens, &completionTokens, nil, nil)
@@ -1014,10 +1072,8 @@ func (h *Handler) Embeddings(w http.ResponseWriter, r *http.Request) {
 	if connIssues && h.fastFail != nil {
 		cleared := 0
 		for _, up := range candidates {
-			if h.fastFail.IsBlacklisted(up.Name, model) {
-				h.fastFail.MarkSuccess(up.Name, model)
-				cleared++
-			}
+			h.clearUpstreamBlacklist(up, model)
+			cleared++
 		}
 		if cleared > 0 {
 			h.log.Warn("all embedding upstreams failed with connection errors (likely network issue), cleared fastfail blacklist",
@@ -1054,8 +1110,13 @@ func (h *Handler) forwardEmbedding(w http.ResponseWriter, r *http.Request, body 
 	}()
 
 	reqBody := body
-	if mapped := h.router.MapModel(up, model); mapped != model {
-		if reqBody, err = sjson.SetBytes(body, "model", mapped); err != nil {
+	upstreamModel := h.pickAvailableModel(up, model)
+	if upstreamModel == "" {
+		// fallback：全黑名单时按原 MapModel 随机选一个真实模型继续尝试（连接错误可清黑名单）
+		upstreamModel = h.router.MapModel(up, model)
+	}
+	if upstreamModel != model {
+		if reqBody, err = sjson.SetBytes(body, "model", upstreamModel); err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to rewrite model field", "server_error", "")
 			return true, false, nil
 		}
@@ -1080,7 +1141,7 @@ func (h *Handler) forwardEmbedding(w http.ResponseWriter, r *http.Request, body 
 	if err != nil {
 		// 客户端断连（context.Canceled）不算上游故障，不标记 fastfail
 		if !errors.Is(err, context.Canceled) && h.fastFail != nil {
-			h.fastFail.MarkFailed(up.Name, model)
+			h.fastFail.MarkFailed(up.Name, upstreamModel)
 		}
 		return false, true, fmt.Errorf("embedding upstream request failed: %w", err)
 	}
@@ -1096,7 +1157,7 @@ func (h *Handler) forwardEmbedding(w http.ResponseWriter, r *http.Request, body 
 		}
 		if shouldRetry {
 			if h.fastFail != nil {
-				h.fastFail.MarkFailed(up.Name, model)
+				h.fastFail.MarkFailed(up.Name, upstreamModel)
 			}
 			return false, true, fmt.Errorf("embedding upstream error: %s", resp.Status)
 		}
@@ -1104,7 +1165,7 @@ func (h *Handler) forwardEmbedding(w http.ResponseWriter, r *http.Request, body 
 		return true, false, fmt.Errorf("embedding upstream error: %s", resp.Status)
 	}
 	if h.fastFail != nil {
-		h.fastFail.MarkSuccess(up.Name, model)
+		h.fastFail.MarkSuccess(up.Name, upstreamModel)
 	}
 	respBody, _ := io.ReadAll(resp.Body)
 	parseUsage(respBody, &promptTokens, &completionTokens, nil, nil)
