@@ -5,11 +5,13 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"embed"
 	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
@@ -31,6 +33,35 @@ import (
 	"github.com/icefairy/xuanji/internal/router"
 	"github.com/icefairy/xuanji/internal/store"
 )
+
+//go:embed all:web
+var embeddedWeb embed.FS
+
+// webFileSystem 返回管理界面静态文件系统根（含 admin_vue.html 与 vue/ 子目录）：
+// 优先磁盘 web/ 目录（开发时可改模板即时生效），不存在时回退到嵌入的 web
+// （单二进制发布/Docker 场景，保证管理页可用）。
+func webFileSystem() http.FileSystem {
+	if _, err := os.Stat("web"); err == nil {
+		return http.Dir("web")
+	}
+	sub, err := fs.Sub(embeddedWeb, "web")
+	if err != nil {
+		return http.FS(embeddedWeb)
+	}
+	return http.FS(sub)
+}
+
+// webVueFileSystem 返回 vue 静态资源子目录（/vue/ 路由专用）。
+func webVueFileSystem() http.FileSystem {
+	if _, err := os.Stat("web/vue"); err == nil {
+		return http.Dir("web/vue")
+	}
+	sub, err := fs.Sub(embeddedWeb, "web/vue")
+	if err != nil {
+		return http.FS(embeddedWeb)
+	}
+	return http.FS(sub)
+}
 
 // writeJSONError 以 JSON 格式写错误响应。
 func writeJSONError(w http.ResponseWriter, status int, msg string) {
@@ -207,11 +238,19 @@ func buildServeMux(cfg *config.Config, rt *router.Router, hc *health.Checker, re
 	mux.HandleFunc("GET /healthz", healthzHandler)
 
 	// 管理界面（Vue 页面，/admin/* 留给 JSON API）
-	mux.Handle("GET /vue/", http.StripPrefix("/vue/", http.FileServer(http.Dir("web/vue"))))
-	mux.Handle("GET /web/", http.StripPrefix("/web/", http.FileServer(http.Dir("web"))))
+	// 静态资源从 webFileSystem 读取：磁盘 web/ 目录优先（开发），否则用 go:embed 嵌入资源（单二进制/Docker）。
+	webFS := webFileSystem()
+	mux.Handle("GET /vue/", http.StripPrefix("/vue/", http.FileServer(webVueFileSystem())))
+	mux.Handle("GET /web/", http.StripPrefix("/web/", http.FileServer(webFS)))
 	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
-		http.ServeFile(w, r, "web/admin_vue.html")
+		f, err := webFS.Open("admin_vue.html")
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		defer f.Close()
+		http.ServeContent(w, r, "admin_vue.html", time.Time{}, f)
 	})
 
 	// 管理接口（admin API，加认证：检查 Authorization header 是否匹配 server.api_keys）
@@ -291,6 +330,10 @@ func buildServeMux(cfg *config.Config, rt *router.Router, hc *health.Checker, re
 	mux.HandleFunc("POST /admin/rules", adminAuth(admHandler.CreateRoutingRule))
 	mux.HandleFunc("PUT /admin/rules/{model}", adminAuth(admHandler.UpdateRoutingRule))
 	mux.HandleFunc("DELETE /admin/rules/{model}", adminAuth(admHandler.DeleteRoutingRule))
+	mux.HandleFunc("GET /admin/efforts", adminAuth(admHandler.EffortConfigs))
+	mux.HandleFunc("POST /admin/efforts", adminAuth(admHandler.CreateEffortConfig))
+	mux.HandleFunc("PUT /admin/efforts/{model}", adminAuth(admHandler.UpdateEffortConfig))
+	mux.HandleFunc("DELETE /admin/efforts/{model}", adminAuth(admHandler.DeleteEffortConfig))
 	mux.HandleFunc("POST /admin/reload", adminAuth(admHandler.Reload))
 	mux.HandleFunc("PUT /admin/upstreams/{name}/toggle", adminAuth(admHandler.ToggleUpstream))
 
@@ -485,10 +528,14 @@ func dispatchEmbeddings(rt *router.Router, ol *ollama.Handler, px *proxy.Handler
 	}
 }
 
+// buildDate 构建日期，发布时通过 -ldflags "-X main.buildDate=2026-08-03" 注入；
+// 开发/本地运行时保持 "dev"。
+var buildDate = "dev"
+
 // healthzHandler 返回服务健康状态。
 func healthzHandler(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok", "build_date": buildDate})
 }
 
 // ensureAdminAPIKey 确保管理 API key（config 表 admin.api_key）存在。

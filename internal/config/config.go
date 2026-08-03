@@ -55,7 +55,29 @@ type Config struct {
 	Upstreams []Upstream `yaml:"upstreams"`
 	Routing   Routing    `yaml:"routing"`
 	Retry     Retry      `yaml:"retry"`
+	Proxy     Proxy      `yaml:"proxy"`
 	Storage   Storage    `yaml:"storage"`
+}
+
+// Proxy 描述转发层的可选行为开关。
+type Proxy struct {
+	// AutoBestEffort 开启后，客户端未传 reasoning_effort 时，
+	// 自动按 EffortConfigs 的推荐值补上（默认 false）。
+	AutoBestEffort bool `yaml:"auto_best_effort"`
+	// ForceBestEffort 开启后，强制用 EffortConfigs 的强制值覆盖客户端传的 reasoning_effort（默认 false）。
+	ForceBestEffort bool `yaml:"force_best_effort"`
+	// VideoPassThrough 开启后，允许 content 中的 video_url 透传给上游（多模态视频，默认 false）。
+	// 关闭时请求含 video_url 直接返回 400——视频流量大，需显式开启。
+	VideoPassThrough bool `yaml:"video_pass_through"`
+	// EffortConfigs 是最佳思考等级配置（模型 pattern → 推荐/强制等级）。
+	EffortConfigs []EffortConfig `yaml:"effort_configs"`
+}
+
+// EffortConfig 描述单个模型的最佳思考等级配置。
+type EffortConfig struct {
+	Model       string `yaml:"model"`       // 模型匹配 pattern（支持 * 通配）
+	Recommended string `yaml:"recommended"` // 推荐等级（客户端未传时自动补）
+	Forced      string `yaml:"forced"`      // 强制等级（覆盖客户端传的）
 }
 
 // Storage 是持久化配置。
@@ -229,7 +251,7 @@ func (c *Config) validate() error {
 		c.Retry.MaxRetries = 3
 	}
 	if len(c.Retry.RetryStatuses) == 0 {
-		c.Retry.RetryStatuses = []int{429, 500, 502, 503, 504}
+		c.Retry.RetryStatuses = []int{404, 429, 500, 502, 503, 504}
 	}
 	if c.Retry.FastFailMinutes <= 0 {
 		c.Retry.FastFailMinutes = 60
@@ -348,6 +370,17 @@ func LoadFromDB(s *store.Store) (*Config, error) {
 		}
 	}
 
+	// 解析转发层开关
+	if v, ok := all["proxy.auto_best_effort"]; ok {
+		cfg.Proxy.AutoBestEffort = strings.TrimSpace(v) == "true" || strings.TrimSpace(v) == "1"
+	}
+	if v, ok := all["proxy.force_best_effort"]; ok {
+		cfg.Proxy.ForceBestEffort = strings.TrimSpace(v) == "true" || strings.TrimSpace(v) == "1"
+	}
+	if v, ok := all["proxy.video_pass_through"]; ok {
+		cfg.Proxy.VideoPassThrough = strings.TrimSpace(v) == "true" || strings.TrimSpace(v) == "1"
+	}
+
 	// 默认值
 	if cfg.Server.Port == 0 {
 		cfg.Server.Port = DefaultPort
@@ -356,7 +389,7 @@ func LoadFromDB(s *store.Store) (*Config, error) {
 		cfg.Retry.MaxRetries = 3
 	}
 	if len(cfg.Retry.RetryStatuses) == 0 {
-		cfg.Retry.RetryStatuses = []int{429, 500, 502, 503, 504}
+		cfg.Retry.RetryStatuses = []int{404, 429, 500, 502, 503, 504}
 	}
 	if len(cfg.Retry.RetryKeywords) == 0 {
 		cfg.Retry.RetryKeywords = []string{"套餐用完了", "余额不足", "quota", "rate limit"}
@@ -410,6 +443,19 @@ func LoadFromDB(s *store.Store) (*Config, error) {
 			json.Unmarshal([]byte(r.Upstreams), &rule.Upstreams)
 		}
 		cfg.Routing.Rules = append(cfg.Routing.Rules, rule)
+	}
+
+	// 加载最佳思考等级配置
+	efforts, err := s.ListEffortConfig()
+	if err != nil {
+		return nil, fmt.Errorf("list effort config: %w", err)
+	}
+	for _, e := range efforts {
+		cfg.Proxy.EffortConfigs = append(cfg.Proxy.EffortConfigs, EffortConfig{
+			Model:       e.Model,
+			Recommended: e.Recommended,
+			Forced:      e.Forced,
+		})
 	}
 
 	return cfg, nil

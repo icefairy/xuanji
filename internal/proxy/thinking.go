@@ -22,6 +22,8 @@ import (
 
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
+
+	"github.com/icefairy/xuanji/internal/config"
 )
 
 // normalizeThinkingEffort 将客户端标准 OpenAI 的 reasoning_effort 按目标上游模型转换为该模型实际参数。
@@ -238,4 +240,68 @@ func applyQwen(body []byte, effort string) ([]byte, bool) {
 		return body, false
 	}
 	return nb, true
+}
+
+// applyBestEffort 根据最佳思考等级配置与开关，决定请求最终的 reasoning_effort：
+//   - auto 模式：客户端未传 reasoning_effort 且命中配置的推荐值 → 注入推荐值
+//   - force 模式：客户端已传 reasoning_effort 且命中配置的强制值 → 覆盖为强制值
+//
+// 返回修改后的 body 与是否发生修改。修改后再交给 normalizeThinkingEffort 归一化。
+// model 是客户端传入的模型名（effort_config 的 pattern 与客户端模型匹配）。
+func applyBestEffort(body []byte, model string, cfg *config.Config) ([]byte, bool) {
+	if !cfg.Proxy.AutoBestEffort && !cfg.Proxy.ForceBestEffort {
+		return body, false
+	}
+	// 找第一条匹配的配置（越靠前优先级越高）
+	var rec, forced string
+	for i := range cfg.Proxy.EffortConfigs {
+		e := &cfg.Proxy.EffortConfigs[i]
+		if matchEffortPattern(e.Model, model) {
+			rec, forced = e.Recommended, e.Forced
+			break
+		}
+	}
+	hasEffort := gjson.GetBytes(body, "reasoning_effort").Exists()
+	if !hasEffort && cfg.Proxy.AutoBestEffort && rec != "" {
+		nb, err := sjson.SetBytes(body, "reasoning_effort", rec)
+		if err != nil {
+			return body, false
+		}
+		return nb, true
+	}
+	if hasEffort && cfg.Proxy.ForceBestEffort && forced != "" {
+		nb, err := sjson.SetBytes(body, "reasoning_effort", forced)
+		if err != nil {
+			return body, false
+		}
+		return nb, true
+	}
+	return body, false
+}
+
+// matchEffortPattern 判断 model 是否匹配 pattern（* 通配任意字符序列）。
+func matchEffortPattern(pattern, model string) bool {
+	pi, mi := 0, 0
+	star, mark := -1, 0
+	for mi < len(model) {
+		switch {
+		case pi < len(pattern) && pattern[pi] == model[mi]:
+			pi++
+			mi++
+		case pi < len(pattern) && pattern[pi] == '*':
+			star = pi
+			mark = mi
+			pi++
+		case star >= 0:
+			pi = star + 1
+			mi = mark + 1
+			mark++
+		default:
+			return false
+		}
+	}
+	for pi < len(pattern) && pattern[pi] == '*' {
+		pi++
+	}
+	return pi == len(pattern)
 }
