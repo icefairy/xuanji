@@ -256,7 +256,7 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 		up := candidates[i]
-		handled, retryable, ferr, _, _ := h.forwardOnce(rec, r, body, up, model, stream, false)
+		handled, retryable, ferr, _, _, _, _ := h.forwardOnce(rec, r, body, up, model, stream, false)
 		if ferr != nil && h.health != nil {
 			h.health.MarkFailure(up.Name)
 		}
@@ -409,9 +409,10 @@ func (h *Handler) latencyRank(name string) int64 {
 // forwardOnce 向单个上游转发一次 chat/completions 请求。
 // handled=true 表示响应已写入客户端（或已决定不再切换）；retryable=true 表示本次
 // 失败可尝试下一个候选；err 非 nil 表示该上游转发失败（供调用方反馈到健康状态）。
-// promptTokens/completionTokens 返回本次请求的 token 数（上游 usage 或 tokenizer 估算）。
+// promptTokens/completionTokens 返回本次请求的 token 数（上游 usage 或 tokenizer 估算）；
+// promptCacheHitTokens/promptCacheMissTokens 返回上游 usage 里的前缀缓存命中/未命中 token 数。
 // last 为 true 时，上游的连接错误 / 5xx / 429 会直接生成最终响应，不再返回可重试。
-func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byte, up *config.Upstream, model string, stream bool, last bool) (handled, retryable bool, err error, promptTokens, completionTokens int64) {
+func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byte, up *config.Upstream, model string, stream bool, last bool) (handled, retryable bool, err error, promptTokens, completionTokens, promptCacheHitTokens, promptCacheMissTokens int64) {
 	start := time.Now()
 	var status int
 	defer func() {
@@ -432,6 +433,8 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 			CompletionTokens: completionTokens,
 			Tokens:           promptTokens + completionTokens,
 			APIKey:           h.recordAPIKey(r),
+			PromptCacheHitTokens:  promptCacheHitTokens,
+			PromptCacheMissTokens: promptCacheMissTokens,
 		})
 	}()
 	reqBody := body
@@ -440,7 +443,7 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 		upstreamModel = mapped
 		if reqBody, err = sjson.SetBytes(body, "model", mapped); err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to rewrite model field", "server_error", "")
-			return true, false, nil, 0, 0
+			return true, false, nil, 0, 0, 0, 0
 		}
 	}
 	// 思考深度归一化：客户端标准 reasoning_effort → 目标模型实际思考参数
@@ -472,12 +475,12 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 	if err != nil {
 		if last {
 			writeError(w, http.StatusInternalServerError, "failed to build upstream request: "+err.Error(), "server_error", "")
-			return true, false, nil, 0, 0
+			return true, false, nil, 0, 0, 0, 0
 		}
 		if h.fastFail != nil {
 			h.fastFail.MarkFailed(up.Name, model)
 		}
-		return false, true, fmt.Errorf("build upstream request: %w", err), 0, 0
+		return false, true, fmt.Errorf("build upstream request: %w", err), 0, 0, 0, 0
 	}
 	req.Header.Set("Authorization", "Bearer "+up.APIKey)
 	req.Header.Set("Content-Type", "application/json")
@@ -486,14 +489,14 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 	if err != nil {
 		if last {
 			writeError(w, http.StatusBadGateway, "upstream request failed: "+err.Error(), "server_error", "upstream_unreachable")
-			return true, false, nil, 0, 0
+			return true, false, nil, 0, 0, 0, 0
 		}
 		// 客户端断连（context.Canceled）不算上游故障，不标记 fastfail——
 		// 否则一次断连会把所有候选全拉黑 60 分钟（2026-08-02 实测：6 个上游全被误拉黑）
 		if !errors.Is(err, context.Canceled) && h.fastFail != nil {
 			h.fastFail.MarkFailed(up.Name, model)
 		}
-		return false, true, fmt.Errorf("upstream request failed: %w", err), 0, 0
+		return false, true, fmt.Errorf("upstream request failed: %w", err), 0, 0, 0, 0
 	}
 	defer resp.Body.Close()
 
@@ -505,8 +508,8 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 		if h.fastFail != nil {
 			h.fastFail.MarkSuccess(up.Name, model)
 		}
-		h.streamCopy(w, resp, &promptTokens, &completionTokens)
-		return true, false, nil, promptTokens, completionTokens
+		h.streamCopy(w, resp, &promptTokens, &completionTokens, &promptCacheHitTokens, &promptCacheMissTokens)
+		return true, false, nil, promptTokens, completionTokens, promptCacheHitTokens, promptCacheMissTokens
 	case resp.StatusCode >= 400:
 		// 读响应体用于关键词匹配
 		respBody, _ := io.ReadAll(resp.Body)
@@ -533,12 +536,12 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 			if h.fastFail != nil {
 				h.fastFail.MarkFailed(up.Name, model)
 			}
-			return false, true, fmt.Errorf("upstream error: %s", resp.Status), 0, 0
+			return false, true, fmt.Errorf("upstream error: %s", resp.Status), 0, 0, 0, 0
 		}
 		// 不可重试，写错误到客户端（用已读取的 respBody 重建响应体）
 		resp.Body = io.NopCloser(bytes.NewReader(respBody))
 		h.writeUpstreamError(w, resp)
-		return true, false, fmt.Errorf("upstream error: %s", resp.Status), 0, 0
+		return true, false, fmt.Errorf("upstream error: %s", resp.Status), 0, 0, 0, 0
 	default:
 		if h.fastFail != nil {
 			h.fastFail.MarkSuccess(up.Name, model)
@@ -554,10 +557,10 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 			if h.fastFail != nil {
 				h.fastFail.MarkFailed(up.Name, model)
 			}
-			return false, true, fmt.Errorf("empty completion (thinking truncated?)"), 0, 0
+			return false, true, fmt.Errorf("empty completion (thinking truncated?)"), 0, 0, 0, 0
 		}
 		// 优先解析上游返回的 usage；缺失时用 tokenizer 估算
-		if !parseUsage(respBody, &promptTokens, &completionTokens) && h.tokenizer != nil {
+		if !parseUsage(respBody, &promptTokens, &completionTokens, &promptCacheHitTokens, &promptCacheMissTokens) && h.tokenizer != nil {
 			promptTokens = int64(h.tokenizer.CountMessages(model, extractMessages(body)))
 			completion := gjson.GetBytes(respBody, "choices.0.message.content").String()
 			completionTokens = int64(h.tokenizer.Count(model, completion))
@@ -567,14 +570,15 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 		if _, werr := w.Write(respBody); werr != nil {
 			h.log.Debug("write upstream body", "error", werr)
 		}
-		return true, false, nil, promptTokens, completionTokens
+		return true, false, nil, promptTokens, completionTokens, promptCacheHitTokens, promptCacheMissTokens
 	}
 }
 
-// parseUsage 解析 OpenAI 响应体的 usage 字段，写入 promptTokens/completionTokens。
+// parseUsage 解析 OpenAI 响应体的 usage 字段，写入 promptTokens/completionTokens，
+// 以及前缀缓存命中/未命中 token 数（promptCacheHit/promptCacheMiss 可为 nil，如 rerank/embed 不需要）。
 // 返回 false 表示上游未返回 usage（调用方可回退到 tokenizer 估算）。
 // 部分上游只回 total_tokens 时，计入 completion，保证 Tokens = prompt + completion 总量正确。
-func parseUsage(data []byte, promptTokens, completionTokens *int64) bool {
+func parseUsage(data []byte, promptTokens, completionTokens, promptCacheHit, promptCacheMiss *int64) bool {
 	usage := gjson.GetBytes(data, "usage")
 	if !usage.Exists() {
 		return false
@@ -585,6 +589,12 @@ func parseUsage(data []byte, promptTokens, completionTokens *int64) bool {
 		if total := usage.Get("total_tokens").Int(); total > 0 {
 			*completionTokens = total
 		}
+	}
+	if promptCacheHit != nil {
+		*promptCacheHit = usage.Get("prompt_cache_hit_tokens").Int()
+	}
+	if promptCacheMiss != nil {
+		*promptCacheMiss = usage.Get("prompt_cache_miss_tokens").Int()
 	}
 	return true
 }
@@ -622,9 +632,10 @@ func extractMessages(body []byte) []map[string]string {
 	return out
 }
 
-// streamCopy 将上游 SSE 响应边收边发地透传给客户端，同时解析 usage chunk 收集 token 统计。
+// streamCopy 将上游 SSE 响应边收边发地透传给客户端，同时解析 usage chunk 收集 token 统计
+// 与前缀缓存命中/未命中 token 数（DeepSeek 等上游在 usage 里带 prompt_cache_hit/miss_tokens）。
 // 处理 "usage":null 的中间 chunk（Exists() 对 null 也返回 true，需 IsObject() 过滤）。
-func (h *Handler) streamCopy(w http.ResponseWriter, resp *http.Response, promptTokens, completionTokens *int64) {
+func (h *Handler) streamCopy(w http.ResponseWriter, resp *http.Response, promptTokens, completionTokens, promptCacheHit, promptCacheMiss *int64) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -652,6 +663,12 @@ func (h *Handler) streamCopy(w http.ResponseWriter, resp *http.Response, promptT
 				}
 				if ct := usage.Get("completion_tokens").Int(); ct > 0 {
 					*completionTokens = ct
+				}
+				if pch := usage.Get("prompt_cache_hit_tokens").Int(); pch > 0 {
+					*promptCacheHit = pch
+				}
+				if pcm := usage.Get("prompt_cache_miss_tokens").Int(); pcm > 0 {
+					*promptCacheMiss = pcm
 				}
 			}
 		}
@@ -903,7 +920,7 @@ func (h *Handler) forwardRerank(w http.ResponseWriter, r *http.Request, body []b
 		h.fastFail.MarkSuccess(up.Name, model)
 	}
 	respBody, _ := io.ReadAll(resp.Body)
-	parseUsage(respBody, &promptTokens, &completionTokens)
+	parseUsage(respBody, &promptTokens, &completionTokens, nil, nil)
 	copyHeader(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
 	_, _ = w.Write(respBody)
@@ -1070,7 +1087,7 @@ func (h *Handler) forwardEmbedding(w http.ResponseWriter, r *http.Request, body 
 		h.fastFail.MarkSuccess(up.Name, model)
 	}
 	respBody, _ := io.ReadAll(resp.Body)
-	parseUsage(respBody, &promptTokens, &completionTokens)
+	parseUsage(respBody, &promptTokens, &completionTokens, nil, nil)
 	copyHeader(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
 	_, _ = w.Write(respBody)

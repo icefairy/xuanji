@@ -11,6 +11,9 @@
 //   - Kimi K3：顶层 reasoning_effort 原生支持（low/high/max），始终思考不能关闭。
 //   - Kimi K2.x：只用 thinking.type 开关（enabled/disabled + keep），无强度档。
 //   - GLM-4.5：只用 thinking.type 开关（enabled/disabled），无强度档。
+//   - Qwen3 / Qwen3.5 / Qwen3.6 / Qwen3.7：顶层 enable_thinking 开关 + thinking_budget 限思考长度，
+//     无 reasoning_effort 档位（Qwen3.5 开源小模型默认禁用思考需显式开启；Qwen3.6 默认思考可关闭；
+//     Qwen3 支持 /think /no_think 软切换，Qwen3.6 不支持）。Qwen2.5 无思考模式，不匹配本族。
 //   - OpenAI o3/o4/gpt-5 系列：reasoning_effort 原生支持 → 透传。
 package proxy
 
@@ -42,6 +45,8 @@ func normalizeThinkingEffort(body []byte, upstreamModel string) ([]byte, bool) {
 		return applyKimiK3(body, effort)
 	case "kimi-k2", "glm":
 		return applySwitchOnly(body, effort)
+	case "qwen":
+		return applyQwen(body, effort)
 	default:
 		// openai-native（o3/o4/gpt-5 等）与未知模型：原生支持 reasoning_effort，透传
 		return body, false
@@ -63,6 +68,9 @@ func matchThinkingProfile(model string) string {
 		return "kimi-k2"
 	case strings.Contains(m, "glm-4.5"), strings.Contains(m, "glm-4.6"):
 		return "glm"
+	case strings.Contains(m, "qwen3"):
+		// qwen3 / qwen3.5 / qwen3.6 / qwen3.7 / Qwen3-xxx（子串天然排除 qwen2.5，Qwen2.5 无思考模式）
+		return "qwen"
 	case strings.HasPrefix(m, "o3"), strings.HasPrefix(m, "o4"),
 		strings.Contains(m, "gpt-5"):
 		return "openai-native"
@@ -185,6 +193,47 @@ func applySwitchOnly(body []byte, effort string) ([]byte, bool) {
 		typ = "disabled"
 	}
 	nb, err = sjson.SetBytes(nb, "thinking", map[string]string{"type": typ})
+	if err != nil {
+		return body, false
+	}
+	return nb, true
+}
+
+// applyQwen Qwen3 系列（Qwen3/3.5/3.6/3.7）：顶层 enable_thinking 开关 + thinking_budget 限思考长度。
+// 无 reasoning_effort 档位 → 档位映射为 enable_thinking + thinking_budget 分档：
+//   none/off → enable_thinking=false（关闭思考）
+//   minimal/low → enable_thinking=true + thinking_budget=1024（短思考，快响应）
+//   medium → enable_thinking=true + thinking_budget=4096（中等）
+//   high/xhigh/max → enable_thinking=true + thinking_budget=8192（深度思考）
+//
+// 说明：
+//   - Qwen3.5 开源小模型默认禁用思考，high 档显式开启
+//   - Qwen3.6 默认思考，none 档显式关闭
+//   - Qwen3 支持 /think /no_think 提示词软切换，与 enable_thinking 正交，不做额外处理
+func applyQwen(body []byte, effort string) ([]byte, bool) {
+	nb, err := sjson.DeleteBytes(body, "reasoning_effort")
+	if err != nil {
+		return body, false
+	}
+	switch effort {
+	case "none", "off":
+		nb, err = sjson.SetBytes(nb, "enable_thinking", false)
+	case "minimal", "low":
+		nb, err = sjson.SetBytes(nb, "enable_thinking", true)
+		if err == nil {
+			nb, err = sjson.SetBytes(nb, "thinking_budget", 1024)
+		}
+	case "medium":
+		nb, err = sjson.SetBytes(nb, "enable_thinking", true)
+		if err == nil {
+			nb, err = sjson.SetBytes(nb, "thinking_budget", 4096)
+		}
+	default: // high / xhigh / max / 未知 → 深度思考
+		nb, err = sjson.SetBytes(nb, "enable_thinking", true)
+		if err == nil {
+			nb, err = sjson.SetBytes(nb, "thinking_budget", 8192)
+		}
+	}
 	if err != nil {
 		return body, false
 	}

@@ -150,6 +150,67 @@ func TestNormalizeThinkingEffort_KimiK2AndGLM(t *testing.T) {
 	}
 }
 
+func TestNormalizeThinkingEffort_Qwen3(t *testing.T) {
+	cases := []struct {
+		name, effort string
+		wantEnabled  bool
+		wantBudget   int64
+	}{
+		{"none → 关思考", "none", false, 0},
+		{"low → 开思考 budget=1024", "low", true, 1024},
+		{"medium → 开思考 budget=4096", "medium", true, 4096},
+		{"high → 开思考 budget=8192", "high", true, 8192},
+		{"max → 开思考 budget=8192", "max", true, 8192},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			body := `{"model":"Qwen/Qwen3.5-4B","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"` + tc.effort + `"}`
+			nb, changed := normalizeEffort(t, body, "Qwen/Qwen3.5-4B")
+			if !changed {
+				t.Fatalf("expected changed")
+			}
+			if gjson.Get(nb, "reasoning_effort").Exists() {
+				t.Fatalf("reasoning_effort should be removed (body=%s)", nb)
+			}
+			if got := gjson.Get(nb, "enable_thinking").Bool(); got != tc.wantEnabled {
+				t.Fatalf("enable_thinking=%v, want %v (body=%s)", got, tc.wantEnabled, nb)
+			}
+			if tc.wantBudget > 0 {
+				if got := gjson.Get(nb, "thinking_budget").Int(); got != tc.wantBudget {
+					t.Fatalf("thinking_budget=%d, want %d (body=%s)", got, tc.wantBudget, nb)
+				}
+			}
+		})
+	}
+}
+
+func TestNormalizeThinkingEffort_Qwen2_5_Passthrough(t *testing.T) {
+	// Qwen2.5 无思考模式：即使传了 reasoning_effort 也应透传（qwen3 子串不匹配 qwen2.5）
+	body := `{"model":"qwen2.5:7b","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"high"}`
+	nb, changed := normalizeThinkingEffort([]byte(body), "qwen2.5:7b")
+	if changed || string(nb) != body {
+		t.Fatalf("qwen2.5 should passthrough unchanged, changed=%v body=%s", changed, nb)
+	}
+}
+
+func TestNormalizeThinkingEffort_Qwen3_MappedNames(t *testing.T) {
+	// 客户端名 qwen3.6:35b 被映射到 mimo/sensenova 等时：按映射后真实名判断，只有真实 qwen 名才转换
+	// 真实名 mimo-v2.5-free（映射目标）→ 透传
+	body := `{"model":"qwen3.6:35b","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"low"}`
+	nb, changed := normalizeThinkingEffort([]byte(body), "mimo-v2.5-free")
+	if changed {
+		t.Fatalf("mimo-v2.5-free should passthrough, got changed (body=%s)", nb)
+	}
+	// 真实名 qwen3.7-max（基元律动映射目标）→ 转换
+	nb2, changed2 := normalizeEffort(t, body, "qwen3.7-max")
+	if !changed2 {
+		t.Fatalf("qwen3.7-max should transform")
+	}
+	if got := gjson.Get(nb2, "enable_thinking").Bool(); !got {
+		t.Fatalf("qwen3.7-max enable_thinking should be true (body=%s)", nb2)
+	}
+}
+
 func TestNormalizeThinkingEffort_OpenAINative_Passthrough(t *testing.T) {
 	// o3/o4/gpt-5 原生支持 reasoning_effort → 透传不改
 	for _, model := range []string{"o3-mini", "o4-mini", "gpt-5.6"} {
