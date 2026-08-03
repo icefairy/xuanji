@@ -19,10 +19,12 @@ type Record struct {
 	Endpoint         string // chat / images / audio / embed / claude / generate
 	Status           int    // HTTP 状态码
 	DurationMS       int64  // 转发耗时毫秒
-	PromptTokens     int64  // 输入 token 数
-	CompletionTokens int64  // 输出 token 数
-	Tokens           int64  // 总 token 数 = PromptTokens + CompletionTokens
-	APIKey           string // 下游 API Key 名称（api_tokens.name，用于按 Key 统计）
+	PromptTokens         int64  // 输入 token 数
+	CompletionTokens     int64  // 输出 token 数
+	Tokens               int64  // 总 token 数 = PromptTokens + CompletionTokens
+	APIKey               string // 下游 API Key 名称（api_tokens.name，用于按 Key 统计）
+	PromptCacheHitTokens  int64  // 上游前缀缓存命中 token 数（DeepSeek prompt_cache_hit_tokens）
+	PromptCacheMissTokens int64  // 上游前缀缓存未命中 token 数（DeepSeek prompt_cache_miss_tokens）
 }
 
 // UpstreamRow 是 upstreams 表的行映射。
@@ -226,6 +228,10 @@ func (s *Store) init() error {
 	for _, col := range []string{"prompt_tokens", "completion_tokens"} {
 		s.db.Exec("ALTER TABLE request_log ADD COLUMN " + col + " INTEGER NOT NULL DEFAULT 0")
 	}
+	// 迁移：新增前缀缓存命中统计列（DeepSeek prompt_cache_hit/miss_tokens）
+	for _, col := range []string{"prompt_cache_hit_tokens", "prompt_cache_miss_tokens"} {
+		s.db.Exec("ALTER TABLE request_log ADD COLUMN " + col + " INTEGER NOT NULL DEFAULT 0")
+	}
 	// 迁移：request_log 加 api_key 列（按下游 Key 统计）
 	s.db.Exec("ALTER TABLE request_log ADD COLUMN api_key TEXT NOT NULL DEFAULT ''")
 	s.db.Exec("CREATE INDEX IF NOT EXISTS idx_request_log_apikey ON request_log(api_key)")
@@ -245,10 +251,11 @@ func (s *Store) DB() *sql.DB { return s.db }
 // Insert 单条插入一条请求记录。
 func (s *Store) Insert(rec Record) error {
 	_, err := s.db.Exec(
-		`INSERT INTO request_log (ts, upstream, model, endpoint, status, duration_ms, tokens, prompt_tokens, completion_tokens, api_key)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO request_log (ts, upstream, model, endpoint, status, duration_ms, tokens, prompt_tokens, completion_tokens, api_key, prompt_cache_hit_tokens, prompt_cache_miss_tokens)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		rec.Timestamp.UTC().Format(time.RFC3339), rec.Upstream, rec.Model, rec.Endpoint,
 		rec.Status, rec.DurationMS, rec.Tokens, rec.PromptTokens, rec.CompletionTokens, rec.APIKey,
+		rec.PromptCacheHitTokens, rec.PromptCacheMissTokens,
 	)
 	return err
 }
@@ -339,8 +346,8 @@ func (s *Store) InsertBatch(recs []Record) error {
 	defer tx.Rollback()
 
 	stmt, err := tx.Prepare(
-		`INSERT INTO request_log (ts, upstream, model, endpoint, status, duration_ms, tokens, prompt_tokens, completion_tokens, api_key)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO request_log (ts, upstream, model, endpoint, status, duration_ms, tokens, prompt_tokens, completion_tokens, api_key, prompt_cache_hit_tokens, prompt_cache_miss_tokens)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 	)
 	if err != nil {
 		return err
@@ -351,6 +358,7 @@ func (s *Store) InsertBatch(recs []Record) error {
 		if _, err := stmt.Exec(
 			rec.Timestamp.UTC().Format(time.RFC3339), rec.Upstream, rec.Model, rec.Endpoint,
 			rec.Status, rec.DurationMS, rec.Tokens, rec.PromptTokens, rec.CompletionTokens, rec.APIKey,
+			rec.PromptCacheHitTokens, rec.PromptCacheMissTokens,
 		); err != nil {
 			return err
 		}
