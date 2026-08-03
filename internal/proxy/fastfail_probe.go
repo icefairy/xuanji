@@ -24,15 +24,23 @@ func (h *Handler) upstreamByName(name string) *config.Upstream {
 	return nil
 }
 
-// probeModel 返回用于探测该上游的首选模型名（映射 key 或配置的第一个模型，兜底 deepseek-v4-flash）。
+// probeModel 返回用于探测该上游的首选真实模型名（映射表的第一个映射值，兜底配置的第一个模型 / deepseek-v4-flash）。
+// 注意返回的是真实模型名：一对多映射（竖线分隔）时取第一个；不再返回映射 key（客户端模型名），
+// 否则探测请求会带上 "modelA|modelB" 这样的非法模型名。
 func probeModel(u *config.Upstream) string {
 	if u == nil {
 		return "deepseek-v4-flash"
 	}
-	// 优先用映射表的第一个 key（通常是该渠道最常用的模型）
+	// 优先用映射表的第一个映射值（通常是该渠道最常用的真实模型）
 	if len(u.ModelMapping) > 0 {
-		for k := range u.ModelMapping {
-			return k
+		for _, v := range u.ModelMapping {
+			if v == "" {
+				continue
+			}
+			if i := strings.Index(v, "|"); i >= 0 {
+				return v[:i]
+			}
+			return v
 		}
 	}
 	// 其次用配置的第一个模型
@@ -82,14 +90,12 @@ func (h *Handler) probeUpstream(name, model string) {
 	if up == nil {
 		return
 	}
-	// 构造最小 chat 探测请求
+	// 构造最小 chat 探测请求。
+	// model 参数来自 fastfail key，现在是映射后的真实模型名，直接使用；
+	// 渠道级（model 为空）时用 probeModel 选一个真实模型名（返回的已是真实名，不再二次映射）。
 	realModel := model
 	if realModel == "" {
 		realModel = probeModel(up)
-	}
-	// 应用 model_mapping（probeModel 返回映射 key，这里还原为上游真实模型名）
-	if mapped, ok := up.ModelMapping[realModel]; ok && mapped != "" {
-		realModel = mapped
 	}
 	body := map[string]any{
 		"model":      realModel,
@@ -98,12 +104,7 @@ func (h *Handler) probeUpstream(name, model string) {
 	}
 	payload, _ := json.Marshal(body)
 
-	// 拼接 URL（与 forwardOnce 同样处理 /v1 前缀）
-	base := strings.TrimRight(up.BaseURL, "/")
-	if !strings.HasSuffix(base, "/v1") {
-		base += "/v1"
-	}
-	target := base + "/chat/completions"
+	target := strings.TrimRight(up.BaseURL, "/") + "/chat/completions"
 
 	ctx, cancel := context.WithTimeout(context.Background(), upstreamTimeoutFor(h.cfg))
 	defer cancel()

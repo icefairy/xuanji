@@ -194,6 +194,15 @@ func (s *Store) init() error {
 		value TEXT NOT NULL
 	);
 
+	CREATE TABLE IF NOT EXISTS effort_config (
+		id          INTEGER PRIMARY KEY AUTOINCREMENT,
+		model       TEXT    NOT NULL UNIQUE,
+		recommended TEXT    NOT NULL DEFAULT '',
+		forced      TEXT    NOT NULL DEFAULT '',
+		created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+		updated_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+	);
+
 	CREATE TABLE IF NOT EXISTS api_tokens (
 		id         INTEGER PRIMARY KEY AUTOINCREMENT,
 		name       TEXT    NOT NULL DEFAULT '',
@@ -317,7 +326,7 @@ func (s *Store) MetricsByAPIKey(since string) []APIKeyRow {
 		q += ` WHERE ts >= ?`
 		args = append(args, since)
 	}
-	q += ` GROUP BY name ORDER BY requests DESC`
+	q += ` GROUP BY name ORDER BY tokens DESC`
 	rows, err := s.db.Query(q, args...)
 	if err != nil {
 		return nil
@@ -652,6 +661,61 @@ func (s *Store) UpdateRoutingRule(model string, r *RoutingRuleRow) error {
 // DeleteRoutingRule 删除路由规则。
 func (s *Store) DeleteRoutingRule(model string) error {
 	_, err := s.db.Exec(`DELETE FROM routing_rules WHERE model = ?`, model)
+	return err
+}
+
+// ===== EffortConfig（最佳思考等级）=====
+
+// EffortConfigRow 是 effort_config 表的行映射。
+type EffortConfigRow struct {
+	ID           uint   `json:"id"`
+	Model        string `json:"model"`        // 模型匹配 pattern（支持 * 通配）
+	Recommended  string `json:"recommended"`  // 推荐思考等级（客户端未传时自动补）
+	Forced       string `json:"forced"`       // 强制思考等级（覆盖客户端传的）
+	CreatedAt    string `json:"created_at"`
+	UpdatedAt    string `json:"updated_at"`
+}
+
+// ListEffortConfig 返回所有最佳思考等级配置。
+func (s *Store) ListEffortConfig() ([]EffortConfigRow, error) {
+	rows, err := s.db.Query(`SELECT id, model, recommended, forced, created_at, updated_at FROM effort_config ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []EffortConfigRow
+	for rows.Next() {
+		var r EffortConfigRow
+		if err := rows.Scan(&r.ID, &r.Model, &r.Recommended, &r.Forced, &r.CreatedAt, &r.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// CreateEffortConfig 创建最佳思考等级配置。
+func (s *Store) CreateEffortConfig(r *EffortConfigRow) error {
+	_, err := s.db.Exec(
+		`INSERT INTO effort_config (model, recommended, forced) VALUES (?, ?, ?)`,
+		r.Model, r.Recommended, r.Forced,
+	)
+	return err
+}
+
+// UpdateEffortConfig 更新最佳思考等级配置（按 model 匹配）。
+func (s *Store) UpdateEffortConfig(model string, r *EffortConfigRow) error {
+	_, err := s.db.Exec(
+		`UPDATE effort_config SET model=?, recommended=?, forced=?, updated_at=datetime('now') WHERE model=?`,
+		r.Model, r.Recommended, r.Forced, model,
+	)
+	return err
+}
+
+// DeleteEffortConfig 删除最佳思考等级配置。
+func (s *Store) DeleteEffortConfig(model string) error {
+	_, err := s.db.Exec(`DELETE FROM effort_config WHERE model = ?`, model)
 	return err
 }
 

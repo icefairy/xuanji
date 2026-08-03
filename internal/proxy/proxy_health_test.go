@@ -85,8 +85,8 @@ func TestChatCompletions_FailoverOn5xx(t *testing.T) {
 	defer srv2.Close()
 
 	cfg := healthCfg([]config.Upstream{
-		{Name: "up1", BaseURL: srv1.URL, APIKey: "k", Priority: 10},
-		{Name: "up2", BaseURL: srv2.URL, APIKey: "k", Priority: 20},
+		{Name: "up1", BaseURL: srv1.URL, APIKey: "x", Priority: 10, Weight: 100},
+		{Name: "up2", BaseURL: srv2.URL, APIKey: "x", Priority: 20, Weight: 50},
 	}, "m", []string{"up1", "up2"})
 
 	hc := health.New(cfg)
@@ -121,8 +121,8 @@ func TestChatCompletions_FailoverOn429(t *testing.T) {
 	defer srv2.Close()
 
 	cfg := healthCfg([]config.Upstream{
-		{Name: "up1", BaseURL: srv1.URL, APIKey: "k", Priority: 10},
-		{Name: "up2", BaseURL: srv2.URL, APIKey: "k", Priority: 20},
+		{Name: "up1", BaseURL: srv1.URL, APIKey: "x", Priority: 10, Weight: 100},
+		{Name: "up2", BaseURL: srv2.URL, APIKey: "x", Priority: 20, Weight: 50},
 	}, "m", []string{"up1", "up2"})
 
 	hc := health.New(cfg)
@@ -150,7 +150,7 @@ func TestChatCompletions_FailoverOnConnectionError(t *testing.T) {
 
 	cfg := healthCfg([]config.Upstream{
 		{Name: "up1", BaseURL: deadSrv.URL, APIKey: "k", Priority: 10},
-		{Name: "up2", BaseURL: srv2.URL, APIKey: "k", Priority: 20},
+		{Name: "up2", BaseURL: srv2.URL, APIKey: "x", Priority: 20, Weight: 50},
 	}, "m", []string{"up1", "up2"})
 
 	hc := health.New(cfg)
@@ -179,8 +179,8 @@ func TestChatCompletions_AllDeadFallsBackToFirst(t *testing.T) {
 	defer srv2.Close()
 
 	cfg := healthCfg([]config.Upstream{
-		{Name: "up1", BaseURL: srv1.URL, APIKey: "k", Priority: 10},
-		{Name: "up2", BaseURL: srv2.URL, APIKey: "k", Priority: 20},
+		{Name: "up1", BaseURL: srv1.URL, APIKey: "x", Priority: 10, Weight: 100},
+		{Name: "up2", BaseURL: srv2.URL, APIKey: "x", Priority: 20, Weight: 50},
 	}, "m", []string{"up1", "up2"})
 
 	hc := health.New(cfg)
@@ -217,8 +217,8 @@ func TestChatCompletions_StreamFailoverOn5xx(t *testing.T) {
 	defer srv2.Close()
 
 	cfg := healthCfg([]config.Upstream{
-		{Name: "up1", BaseURL: srv1.URL, APIKey: "k", Priority: 10},
-		{Name: "up2", BaseURL: srv2.URL, APIKey: "k", Priority: 20},
+		{Name: "up1", BaseURL: srv1.URL, APIKey: "x", Priority: 10, Weight: 100},
+		{Name: "up2", BaseURL: srv2.URL, APIKey: "x", Priority: 20, Weight: 50},
 	}, "m", []string{"up1", "up2"})
 
 	hc := health.New(cfg)

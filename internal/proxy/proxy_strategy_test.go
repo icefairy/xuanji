@@ -61,16 +61,28 @@ func TestSelectCandidates_WeightOrder(t *testing.T) {
 	}
 }
 
-// 同 weight 时保持稳定原序（不按 priority，也不随机）
-func TestSelectCandidates_SameWeightStable(t *testing.T) {
+// 同 weight 同折扣同延迟：随机打乱（不再保持原序）
+func TestSelectCandidates_SameWeightShuffle(t *testing.T) {
 	h := newStrategyTestHandler()
 	ups := []*config.Upstream{
 		{Name: "free-b", Tier: "free", Priority: 2, Weight: 100},
 		{Name: "free-a", Tier: "free", Priority: 1, Weight: 100},
 	}
-	got := h.selectCandidates(ups, "", "m1")
-	if got[0].Name != "free-b" || got[1].Name != "free-a" {
-		t.Errorf("order = %v, want [free-b free-a] (稳定保持原序)", []string{got[0].Name, got[1].Name})
+	// 跑 50 次，两个上游都应出现过——证明不是固定原序
+	var seenA, seenB bool
+	for i := 0; i < 50; i++ {
+		got := h.selectCandidates(ups, "", "m1")
+		if got[0].Name == "free-a" {
+			seenA = true
+		} else {
+			seenB = true
+		}
+		if seenA && seenB {
+			break
+		}
+	}
+	if !seenA || !seenB {
+		t.Errorf("同 weight 上游应随机打乱，但 50 次只见到固定顺序 (seenA=%v seenB=%v)", seenA, seenB)
 	}
 }
 

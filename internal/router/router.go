@@ -3,6 +3,8 @@ package router
 
 import (
 	"errors"
+	"math/rand"
+	"strings"
 
 	"github.com/icefairy/xuanji/internal/config"
 )
@@ -56,11 +58,17 @@ func (r *Router) Route(model string) ([]*config.Upstream, string, error) {
 
 // MapModel 对 model 应用 upstream 的 model_mapping，返回上游真实模型名；
 // 无映射或上游为 nil 时原样返回。
+//
+// 一对多映射：模型映射值用竖线 | 分隔多个真实模型名，随机选一个（零侵入改动）。
+// 例：{"deepseek-v4-flash": "sensenova-6.7-flash-lite|deepseek-v4-flash"}
 func (r *Router) MapModel(upstream *config.Upstream, model string) string {
 	if upstream == nil {
 		return model
 	}
 	if mapped, ok := upstream.ModelMapping[model]; ok {
+		if parts := strings.Split(mapped, "|"); len(parts) > 1 {
+			return parts[rand.Intn(len(parts))]
+		}
 		return mapped
 	}
 	return model
