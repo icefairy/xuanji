@@ -19,6 +19,8 @@
 
 **它是 one-api / new-api / LiteLLM / Portkey / Kong AI Gateway 等网关的轻量替代品**：同样解决"多家上游统一入口、API Key 管理、成本控制、故障切换"，但体积、依赖、部署成本低一个量级；同时它也是 **CC Switch 这类桌面配置切换器的服务端替代方案**——不需要切换，网关自动调度。
 
+> **🎯 定位：个人 / 小团队自用**。没有计费、用户管理、配额兑换码等运营功能，短期内也不打算加入——它是给你自己的 AI 工作流做统一入口与成本调度的，不是给多用户做计费分发的。按 API Key 的用量统计（请求数 / Tokens / 成功率）可以帮你区分不同 AI 程序用得多。
+
 > **GitHub**：[https://github.com/icefairy/xuanji](https://github.com/icefairy/xuanji) — 欢迎 Issue、PR、Star ⭐
 
 > **Gitee 镜像**：[https://gitee.com/icefairy/xuanji-gateway](https://gitee.com/icefairy/xuanji-gateway) — 国内用户访问更快
@@ -116,6 +118,39 @@
 - 请求日志：东八区时间、筛选、分页
 - 请求统计：今日 / 3天 / 7天 / 30天 / 全部 五个维度，每上游请求数、延迟、成功率、Token 总量
 - **Token 计数**：流式响应注入 `stream_options.include_usage` 并逐 chunk 解析，非流式回退 tiktoken 估算
+
+### 🧠 思考深度归一化（Thinking Effort 协议翻译）
+
+不同模型控制"思考强度"的参数五花八门：OpenAI 用 `reasoning_effort`，DeepSeek 用 `reasoning_effort` + `thinking.type`，商汤用 `output_config.effort`，Kimi K2/GLM 只有 `thinking.type` 开关……客户端挨个适配太痛苦。
+
+**璇玑在网关层做了归一化：下游永远用 OpenAI 标准协议，网关按目标模型自动翻译。**
+
+客户端只需传标准参数（与 OpenAI o 系列一致）：
+
+```json
+{
+  "model": "任意模型",
+  "reasoning_effort": "none | low | medium | high"
+}
+```
+
+网关按上游真实模型自动转换：
+
+| 目标模型族 | none（关闭思考） | 强度控制 |
+|---|---|---|
+| **DeepSeek V4** (flash/pro) | `thinking.type=disabled` | `reasoning_effort: low/high/max`（原生透传，pro 的 low 档自动抬到 high） |
+| **商汤** sensenova-* | `thinking.type=disabled` | 自动转 `output_config.effort: low/medium/high` |
+| **Kimi K3** | 始终思考 → 映射为 `low` | `reasoning_effort: low/high/max`（原生透传） |
+| **Kimi K2.x** | `thinking.type=disabled` | 只开关，无强度档 → `thinking.type=enabled` |
+| **GLM-4.5** | `thinking.type=disabled` | 只开关，无强度档 → `thinking.type=enabled` |
+| **Qwen3 / 3.5 / 3.6 / 3.7** | `enable_thinking=false` | 无 effort 档 → `enable_thinking=true` + `thinking_budget` 分档（low=1024 / medium=4096 / high=8192） |
+| **OpenAI o3/o4/GPT-5** | `reasoning_effort=none` | 原生支持，完全透传 |
+
+- 请求体没有 `reasoning_effort` 时**零开销**（原样透传，不改 body）
+- 未知模型也原样透传，绝不破坏请求
+- 单条请求即可控制，无需每模型单独适配——**一套代码接入所有思考模型**
+
+> **Qwen 系列差异说明**：Qwen3/3.5/3.6/3.7 都是混合思考模型（`enable_thinking` + `thinking_budget`），但默认状态不同——Qwen3.5 开源小模型**默认禁用思考**（显式开启才有推理），Qwen3/3.6 默认思考（可关闭）；Qwen3 支持 `/think` `/no_think` 提示词软切换，Qwen3.6 不支持。**Qwen2.5 无思考模式**，不匹配本特性，原样透传。
 
 ### 🔌 开箱即用的渠道适配
 
