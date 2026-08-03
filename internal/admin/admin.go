@@ -1058,7 +1058,7 @@ func (h *Handler) RequestLogs(w http.ResponseWriter, r *http.Request) {
 	queryArgs := append([]interface{}{}, args...)
 	queryArgs = append(queryArgs, limit, offset)
 	rows, err := h.store.DB().Query(`
-		SELECT ts, upstream, model, endpoint, status, duration_ms, prompt_tokens, completion_tokens, tokens
+		SELECT ts, upstream, model, endpoint, status, duration_ms, prompt_tokens, completion_tokens, tokens, prompt_cache_hit_tokens, prompt_cache_miss_tokens
 		FROM request_log`+where+` ORDER BY id DESC LIMIT ? OFFSET ?`, queryArgs...)
 	if err != nil {
 		writeJSON(w, map[string]interface{}{"total": total, "limit": limit, "offset": offset, "logs": []map[string]interface{}{}})
@@ -1069,20 +1069,22 @@ func (h *Handler) RequestLogs(w http.ResponseWriter, r *http.Request) {
 	var out []map[string]interface{}
 	for rows.Next() {
 		var ts, upstream, model, endpoint string
-		var status, durationMs, promptTokens, completionTokens, tokens int64
-		if err := rows.Scan(&ts, &upstream, &model, &endpoint, &status, &durationMs, &promptTokens, &completionTokens, &tokens); err != nil {
+		var status, durationMs, promptTokens, completionTokens, tokens, cacheHitTokens, cacheMissTokens int64
+		if err := rows.Scan(&ts, &upstream, &model, &endpoint, &status, &durationMs, &promptTokens, &completionTokens, &tokens, &cacheHitTokens, &cacheMissTokens); err != nil {
 			continue
 		}
 		out = append(out, map[string]interface{}{
-			"ts":                fmtCST(ts),
-			"upstream":          upstream,
-			"model":             model,
-			"endpoint":          endpoint,
-			"status":            status,
-			"duration_ms":       durationMs,
-			"prompt_tokens":     promptTokens,
-			"completion_tokens": completionTokens,
-			"tokens":            tokens,
+			"ts":                       fmtCST(ts),
+			"upstream":                 upstream,
+			"model":                    model,
+			"endpoint":                 endpoint,
+			"status":                   status,
+			"duration_ms":              durationMs,
+			"prompt_tokens":            promptTokens,
+			"completion_tokens":        completionTokens,
+			"tokens":                   tokens,
+			"prompt_cache_hit_tokens":  cacheHitTokens,
+			"prompt_cache_miss_tokens": cacheMissTokens,
 		})
 	}
 
