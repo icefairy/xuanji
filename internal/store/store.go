@@ -315,7 +315,7 @@ type APIKeyRow struct {
 // MetricsByAPIKey 返回按下游 API Key 聚合的统计（用于"哪些程序用得多"）。
 // since 为空串时统计全部。按请求数降序。
 func (s *Store) MetricsByAPIKey(since string) []APIKeyRow {
-	q := `SELECT COALESCE(NULLIF(api_key, ''), '(未标识)') as name,
+	q := `SELECT COALESCE(NULLIF(api_key, ''), (SELECT name FROM api_tokens WHERE enabled=1 ORDER BY id LIMIT 1), '(未标识)') as name,
 	              COUNT(*) as requests,
 	              COALESCE(SUM(CASE WHEN status < 400 THEN 1 ELSE 0 END), 0) as successes,
 	              COALESCE(AVG(duration_ms), 0) as avg_ms,
