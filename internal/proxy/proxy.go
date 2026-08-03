@@ -435,11 +435,18 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 		})
 	}()
 	reqBody := body
+	upstreamModel := model
 	if mapped := h.router.MapModel(up, model); mapped != model {
+		upstreamModel = mapped
 		if reqBody, err = sjson.SetBytes(body, "model", mapped); err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to rewrite model field", "server_error", "")
 			return true, false, nil, 0, 0
 		}
+	}
+	// 思考深度归一化：客户端标准 reasoning_effort → 目标模型实际思考参数
+	// （DeepSeek 透传/适配档位、商汤转 output_config.effort、Kimi/GLM 转 thinking.type 等）
+	if nb, changed := normalizeThinkingEffort(reqBody, upstreamModel); changed {
+		reqBody = nb
 	}
 	// 流式请求注入 include_usage，让上游返回 usage chunk（用于 token 统计）
 	if stream && !gjson.GetBytes(reqBody, "stream_options").Exists() {
