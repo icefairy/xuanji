@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math/rand"
 	"net"
 	"net/http"
 	"sort"
@@ -393,6 +394,25 @@ func (h *Handler) selectCandidates(ups []*config.Upstream, strategy, model strin
 			return false
 		})
 		out = append(out, group...)
+	}
+	// 同 tier 同 weight 同折扣同延迟：随机打乱（所有条件相同，避免固定原序导致流量倾斜）
+	for i := 0; i < len(out); {
+		j := i
+		for j < len(out) && out[j].TierWeight() == out[i].TierWeight() && out[j].Weight == out[i].Weight {
+			// 细分：折扣状态 + 延迟完全相同才在一组
+			sameDiscount := h.isDiscountActive(out[i].Name, model) == h.isDiscountActive(out[j].Name, model)
+			sameLatency := h.latencyRank(out[i].Name) == h.latencyRank(out[j].Name)
+			if !(sameDiscount && sameLatency) {
+				break
+			}
+			j++
+		}
+		if j-i > 1 {
+			rand.Shuffle(j-i, func(a, b int) {
+				out[i+a], out[i+b] = out[i+b], out[i+a]
+			})
+		}
+		i = j
 	}
 	return out
 }
