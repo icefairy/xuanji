@@ -1440,9 +1440,6 @@ func (h *Handler) UpstreamModels(w http.ResponseWriter, r *http.Request) {
 	}
 
 	base := strings.TrimSuffix(up.BaseURL, "/")
-	if !strings.HasSuffix(base, "/v1") {
-		base += "/v1"
-	}
 	target := base + "/models"
 
 	httpReq, err := http.NewRequest(http.MethodGet, target, nil)
@@ -1618,11 +1615,7 @@ func (h *Handler) TestUpstream(w http.ResponseWriter, r *http.Request) {
 	}
 	payload, _ := json.Marshal(body)
 
-	// base_url 可能带 /v1 也可能不带，统一拼接
 	base := strings.TrimSuffix(up.BaseURL, "/")
-	if !strings.HasSuffix(base, "/v1") {
-		base += "/v1"
-	}
 	target := base + "/chat/completions"
 
 	httpReq, err := http.NewRequest(http.MethodPost, target, bytes.NewReader(payload))

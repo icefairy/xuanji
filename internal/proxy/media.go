@@ -230,13 +230,7 @@ func (h *Handler) forwardMediaJSON(w http.ResponseWriter, r *http.Request, ctx c
 		}
 	}
 
-	target := strings.TrimRight(up.BaseURL, "/")
-	// base_url 不带 /v1 前缀时补上（部分上游如商汤 token.sensenova.cn 只认 /v1/ 前缀，
-	// 与 proxy/anthropic 包的 chatPath 同源坑，2026-08-02 修复）
-	if !strings.HasSuffix(target, "/v1") {
-		target += "/v1"
-	}
-	target += pathSuffix
+	target := strings.TrimRight(up.BaseURL, "/") + pathSuffix
 	reqCtx, cancel := context.WithTimeout(ctx, upstreamTimeoutFor(h.cfg))
 	defer cancel()
 

@@ -57,8 +57,8 @@ func TestEmbeddings_Failover(t *testing.T) {
 	cfg := &config.Config{
 		Retry: config.Retry{MaxRetries: 3, RetryStatuses: []int{429, 500}},
 		Upstreams: []config.Upstream{
-			{Name: "bad-up", BaseURL: bad.URL, APIKey: "sk-test", Priority: 1, Models: []string{"deepseek-v4-flash"}, ModelMapping: map[string]string{"deepseek-v4-flash": "deepseek-v4-flash"}},
-			{Name: "good-up", BaseURL: good.URL, APIKey: "sk-test", Priority: 2, Models: []string{"deepseek-v4-flash"}, ModelMapping: map[string]string{"deepseek-v4-flash": "deepseek-v4-flash"}},
+			{Name: "bad-up", BaseURL: bad.URL + "/v1", APIKey: "sk-test", Priority: 1, Models: []string{"deepseek-v4-flash"}, ModelMapping: map[string]string{"deepseek-v4-flash": "deepseek-v4-flash"}},
+			{Name: "good-up", BaseURL: good.URL + "/v1", APIKey: "sk-test", Priority: 2, Models: []string{"deepseek-v4-flash"}, ModelMapping: map[string]string{"deepseek-v4-flash": "deepseek-v4-flash"}},
 		},
 		Routing: config.Routing{
 			DefaultStrategy: "primary_backup",

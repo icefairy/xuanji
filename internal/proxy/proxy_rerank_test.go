@@ -77,8 +77,8 @@ func TestRerank_Failover(t *testing.T) {
 	cfg := &config.Config{
 		Retry: config.Retry{MaxRetries: 3, RetryStatuses: []int{429, 500}},
 		Upstreams: []config.Upstream{
-			{Name: "bad-up", BaseURL: bad.URL, APIKey: "key", Priority: 1, Models: []string{"bge-reranker"}, ModelMapping: map[string]string{"bge-reranker": "bge-reranker"}},
-			{Name: "good-up", BaseURL: good.URL, APIKey: "key", Priority: 2, Models: []string{"bge-reranker"}, ModelMapping: map[string]string{"bge-reranker": "bge-reranker"}},
+			{Name: "bad-up", BaseURL: bad.URL + "/v1", APIKey: "key", Priority: 1, Models: []string{"bge-reranker"}, ModelMapping: map[string]string{"bge-reranker": "bge-reranker"}},
+			{Name: "good-up", BaseURL: good.URL + "/v1", APIKey: "key", Priority: 2, Models: []string{"bge-reranker"}, ModelMapping: map[string]string{"bge-reranker": "bge-reranker"}},
 		},
 		Routing: config.Routing{
 			DefaultStrategy: "primary_backup",

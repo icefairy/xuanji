@@ -104,12 +104,7 @@ func (h *Handler) probeUpstream(name, model string) {
 	}
 	payload, _ := json.Marshal(body)
 
-	// 拼接 URL（与 forwardOnce 同样处理 /v1 前缀）
-	base := strings.TrimRight(up.BaseURL, "/")
-	if !strings.HasSuffix(base, "/v1") {
-		base += "/v1"
-	}
-	target := base + "/chat/completions"
+	target := strings.TrimRight(up.BaseURL, "/") + "/chat/completions"
 
 	ctx, cancel := context.WithTimeout(context.Background(), upstreamTimeoutFor(h.cfg))
 	defer cancel()

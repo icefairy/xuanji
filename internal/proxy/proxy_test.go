@@ -23,7 +23,7 @@ func newTestHandler(t *testing.T, upstreamFn http.HandlerFunc) (*httptest.Server
 		Upstreams: []config.Upstream{
 			{
 				Name:         "up",
-				BaseURL:      upstream.URL,
+				BaseURL:      upstream.URL + "/v1",
 				APIKey:       "sk-test",
 				Priority:     10,
 				Models:       []string{"deepseek-v4-flash"},
