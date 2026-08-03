@@ -163,11 +163,12 @@ tr:hover td { background:#f5f7fa; }
       <span style="color:#909399;font-size:13px">共 {{ logTotal }} 条（每 10 秒刷新）</span>
       <button class="btn" @click="loadLogs()">刷新</button>
     </div>
-    <table><thead><tr><th>时间</th><th>上游</th><th>模型</th><th>状态</th><th>耗时(ms)</th><th>输入t</th><th>输出t</th><th>总计t</th></tr></thead>
+    <table><thead><tr><th>时间</th><th>上游</th><th>模型</th><th>状态</th><th>耗时(ms)</th><th>输入t</th><th>输出t</th><th>总计t</th><th>缓存命中</th></tr></thead>
       <tbody><tr v-for="l in logs">
         <td>{{ (l.ts||'').substring(0,19) }}</td><td>{{ l.upstream }}</td><td>{{ l.model }}</td>
         <td><span class="badge" :class="l.status<400?'badge-green':'badge-red'">{{ l.status }}</span></td>
         <td>{{ l.duration_ms }}</td><td>{{ l.prompt_tokens }}</td><td>{{ l.completion_tokens }}</td><td>{{ l.tokens }}</td>
+        <td><span :title="'命中 '+fmtNum(l.prompt_cache_hit_tokens||0,0)+' / 未命中 '+fmtNum(l.prompt_cache_miss_tokens||0,0)">{{ cacheRate(l) }}</span></td>
       </tr></tbody>
     </table>
     <div style="display:flex;justify-content:flex-end;align-items:center;gap:8px;margin-top:12px">
@@ -581,6 +582,13 @@ new Vue({
       if (isNaN(v)) return '-';
       var d = (typeof digits === 'number') ? digits : 2;
       return Number(v).toFixed(d);
+    },
+    // 前缀缓存命中率：命中/(命中+未命中)，无 cache 统计显示 '-'
+    cacheRate: function(l) {
+      var hit = Number(l.prompt_cache_hit_tokens) || 0;
+      var miss = Number(l.prompt_cache_miss_tokens) || 0;
+      if (hit + miss <= 0) return '-';
+      return this.fmtNum(hit / (hit + miss) * 100, 1) + '%';
     },
     // Token 模糊显示：万/亿，精确值放 title
     fmtTokens: function(n) {
