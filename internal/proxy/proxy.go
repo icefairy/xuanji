@@ -533,13 +533,7 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 		}
 	}
 
-	target := strings.TrimRight(up.BaseURL, "/")
-	// 如果 base_url 末尾已有 /v1，不重复添加
-	if !strings.HasSuffix(target, "/v1") {
-		target += chatPath
-	} else {
-		target += "/chat/completions"
-	}
+	target := strings.TrimRight(up.BaseURL, "/") + "/chat/completions"
 	reqCtx := r.Context()
 	if !stream {
 		var cancel context.CancelFunc
@@ -952,12 +946,7 @@ func (h *Handler) forwardRerank(w http.ResponseWriter, r *http.Request, body []b
 		}
 	}
 
-	target := strings.TrimRight(up.BaseURL, "/")
-	if !strings.HasSuffix(target, "/v1") {
-		target += "/v1/rerank"
-	} else {
-		target += "/rerank"
-	}
+	target := strings.TrimRight(up.BaseURL, "/") + "/rerank"
 	reqCtx, cancel := context.WithTimeout(r.Context(), upstreamTimeoutFor(h.cfg))
 	defer cancel()
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, target, bytes.NewReader(reqBody))
@@ -1122,12 +1111,7 @@ func (h *Handler) forwardEmbedding(w http.ResponseWriter, r *http.Request, body 
 		}
 	}
 
-	target := strings.TrimRight(up.BaseURL, "/")
-	if !strings.HasSuffix(target, "/v1") {
-		target += "/v1/embeddings"
-	} else {
-		target += "/embeddings"
-	}
+	target := strings.TrimRight(up.BaseURL, "/") + "/embeddings"
 	reqCtx, cancel := context.WithTimeout(r.Context(), upstreamTimeoutFor(h.cfg))
 	defer cancel()
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, target, bytes.NewReader(reqBody))
