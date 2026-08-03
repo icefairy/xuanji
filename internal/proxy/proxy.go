@@ -315,6 +315,46 @@ func realModels(up *config.Upstream, model string) []string {
 	return []string{model}
 }
 
+// upstreamSupportsModel 判断上游是否声明提供该模型：
+//   - models 为空 = 未声明模型列表，视为全支持（兼容旧配置）
+//   - 客户端模型名在 models 列表中 → 支持
+//   - 客户端模型名在 model_mapping 中有映射 → 支持（映射可能指向其他真实模型）
+//   - 客户端模型名是 models 中某项的真实模型名（如 model_mapping 的 value）→ 支持
+//   - 其余情况返回 false（路由该上游必然 404/400）
+func upstreamSupportsModel(up *config.Upstream, model string) bool {
+	if up == nil {
+		return true
+	}
+	// 未声明模型列表：不做限制
+	if len(up.Models) == 0 {
+		return true
+	}
+	for _, m := range up.Models {
+		if m == model {
+			return true
+		}
+	}
+	// 有 model_mapping 映射该模型 → 支持
+	if _, ok := up.ModelMapping[model]; ok {
+		return true
+	}
+	// model 可能是某个映射的真实模型名（如 deepseek-v4-flash 映射到 deepseek-v4-flash-0731，
+	// 客户端直接发真实模型名也应放行）
+	for _, m := range up.Models {
+		if m == model {
+			return true
+		}
+	}
+	for _, mapped := range up.ModelMapping {
+		for _, real := range strings.Split(mapped, "|") {
+			if real == model {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // pickAvailableModel 为该上游选择本次请求可用的真实模型名：
 // 竖线展开所有候选真实模型，过滤掉处于 fastfail 黑名单的，随机选一个；
 // 全部被拉黑或无候选时返回空串（调用方应跳过该上游）。
@@ -386,6 +426,21 @@ func (h *Handler) selectCandidates(ups []*config.Upstream, strategy, model strin
 			ups = filtered
 		} // 全部被黑名单时不缩减，fallback 到原有逻辑
 	}
+	// 模型支持过滤：上游声明了 models 列表但既不含该模型、也没有对应的 model_mapping，
+	// 说明该上游根本不提供此模型，路由过去必然 404/400。直接跳过，避免浪费一次调用。
+	// （models 为空 = 未声明，视为全支持，保持兼容）
+	var supported []*config.Upstream
+	for _, u := range ups {
+		if !upstreamSupportsModel(u, model) {
+			h.log.Debug("skip upstream: model not supported",
+				"upstream", u.Name, "model", model, "models", u.Models)
+			continue
+		}
+		supported = append(supported, u)
+	}
+	if len(supported) > 0 {
+		ups = supported
+	} // 全部不支持时不缩减，fallback 到原有逻辑（宁发 404 也不丢请求）
 	if h.health != nil {
 		healthy := h.health.HealthyUpstreams(ups)
 		if len(healthy) == 0 {
@@ -523,8 +578,20 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 	}
 	// 思考深度归一化：客户端标准 reasoning_effort → 目标模型实际思考参数
 	// （DeepSeek 透传/适配档位、商汤转 output_config.effort、Kimi/GLM 转 thinking.type 等）
+	// 先按最佳思考等级配置注入/覆盖（auto=补推荐值，force=强制覆盖），再归一化。
+	if nb, changed := applyBestEffort(reqBody, model, h.cfg); changed {
+		reqBody = nb
+	}
 	if nb, changed := normalizeThinkingEffort(reqBody, upstreamModel); changed {
 		reqBody = nb
+	}
+	// 视频透传开关：默认关闭。关闭时请求含 video_url 直接 400——视频流量大，
+	// 且多数模型不支持视频，需在系统设置显式开启才放行。
+	if !h.cfg.Proxy.VideoPassThrough && containsVideoURL(body) {
+		writeError(w, http.StatusBadRequest,
+			"video_url 请求被拒绝：视频透传未开启。请在系统设置开启「视频透传」后再试",
+			"invalid_request_error", "")
+		return true, false, nil, 0, 0, 0, 0
 	}
 	// 流式请求注入 include_usage，让上游返回 usage chunk（用于 token 统计）
 	if stream && !gjson.GetBytes(reqBody, "stream_options").Exists() {
@@ -643,6 +710,30 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 	}
 }
 
+// containsVideoURL 检测请求体 messages[].content 数组中是否含 video_url 类型的内容块。
+// 支持 content 为数组（多模态）与纯字符串两种形态；含 video_url 返回 true。
+func containsVideoURL(body []byte) bool {
+	if !gjson.ValidBytes(body) {
+		return false
+	}
+	messages := gjson.GetBytes(body, "messages")
+	if !messages.IsArray() {
+		return false
+	}
+	for _, msg := range messages.Array() {
+		content := msg.Get("content")
+		if !content.IsArray() {
+			continue
+		}
+		for _, part := range content.Array() {
+			if part.Get("type").String() == "video_url" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // parseUsage 解析 OpenAI 响应体的 usage 字段，写入 promptTokens/completionTokens，
 // 以及前缀缓存命中/未命中 token 数（promptCacheHit/promptCacheMiss 可为 nil，如 rerank/embed 不需要）。
 // 返回 false 表示上游未返回 usage（调用方可回退到 tokenizer 估算）。
@@ -660,10 +751,19 @@ func parseUsage(data []byte, promptTokens, completionTokens, promptCacheHit, pro
 		}
 	}
 	if promptCacheHit != nil {
+		// 优先 DeepSeek 系字段 prompt_cache_hit_tokens，兜底 OpenAI 标准 prompt_tokens_details.cached_tokens
 		*promptCacheHit = usage.Get("prompt_cache_hit_tokens").Int()
+		if *promptCacheHit == 0 {
+			*promptCacheHit = usage.Get("prompt_tokens_details.cached_tokens").Int()
+		}
 	}
 	if promptCacheMiss != nil {
 		*promptCacheMiss = usage.Get("prompt_cache_miss_tokens").Int()
+		// 部分上游（商汤等 OpenAI 标准）只返回 cached_tokens，不返回 prompt_cache_miss_tokens。
+		// 兜底：miss = prompt - hit，保证 hit+miss == prompt_tokens（命中率分母正确）。
+		if *promptCacheMiss == 0 && *promptCacheHit > 0 && *promptTokens > *promptCacheHit {
+			*promptCacheMiss = *promptTokens - *promptCacheHit
+		}
 	}
 	return true
 }
@@ -735,9 +835,15 @@ func (h *Handler) streamCopy(w http.ResponseWriter, resp *http.Response, promptT
 				}
 				if pch := usage.Get("prompt_cache_hit_tokens").Int(); pch > 0 {
 					*promptCacheHit = pch
+				} else if cached := usage.Get("prompt_tokens_details.cached_tokens").Int(); cached > 0 {
+					// OpenAI 标准字段兜底（商汤等上游用 cached_tokens 而非 prompt_cache_hit_tokens）
+					*promptCacheHit = cached
 				}
 				if pcm := usage.Get("prompt_cache_miss_tokens").Int(); pcm > 0 {
 					*promptCacheMiss = pcm
+				} else if promptCacheHit != nil && *promptCacheHit > 0 && *promptTokens > *promptCacheHit {
+					// OpenAI 标准上游不返回 miss 字段时，兜底 miss = prompt - hit
+					*promptCacheMiss = *promptTokens - *promptCacheHit
 				}
 			}
 		}

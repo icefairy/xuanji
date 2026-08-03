@@ -527,7 +527,7 @@ func (h *Handler) MetricsUpstreams(w http.ResponseWriter, r *http.Request) {
 			       COALESCE(AVG(duration_ms), 0) as avg_ms,
 			       COALESCE(SUM(tokens), 0) as tokens
 			FROM request_log WHERE ts >= ?
-			GROUP BY upstream ORDER BY requests DESC
+			GROUP BY upstream ORDER BY tokens DESC
 		`, since)
 	} else {
 		rows, err = h.store.DB().Query(`
@@ -536,7 +536,7 @@ func (h *Handler) MetricsUpstreams(w http.ResponseWriter, r *http.Request) {
 			       COALESCE(AVG(duration_ms), 0) as avg_ms,
 			       COALESCE(SUM(tokens), 0) as tokens
 			FROM request_log
-			GROUP BY upstream ORDER BY requests DESC
+			GROUP BY upstream ORDER BY tokens DESC
 		`)
 	}
 	if err != nil {
@@ -990,6 +990,74 @@ func (h *Handler) DeleteRoutingRule(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]string{"status": "deleted"})
 }
 
+// ===== EffortConfig（最佳思考等级）CRUD =====
+
+// EffortConfigs 列出最佳思考等级配置（GET /admin/efforts）。
+func (h *Handler) EffortConfigs(w http.ResponseWriter, _ *http.Request) {
+	if h.store == nil {
+		writeJSON(w, map[string]string{"error": "store not available"})
+		return
+	}
+	all, err := h.store.ListEffortConfig()
+	if err != nil {
+		writeJSON(w, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, map[string]any{"items": all})
+}
+
+// CreateEffortConfig 添加最佳思考等级配置（POST /admin/efforts）。
+func (h *Handler) CreateEffortConfig(w http.ResponseWriter, r *http.Request) {
+	var req store.EffortConfigRow
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, map[string]string{"error": "invalid request: " + err.Error()})
+		return
+	}
+	if req.Model == "" {
+		writeJSON(w, map[string]string{"error": "model is required"})
+		return
+	}
+	if err := h.store.CreateEffortConfig(&req); err != nil {
+		writeJSON(w, map[string]string{"error": err.Error()})
+		return
+	}
+	if h.reload != nil {
+		h.reload()
+	}
+	writeJSON(w, req)
+}
+
+// UpdateEffortConfig 更新最佳思考等级配置（PUT /admin/efforts/{model}）。
+func (h *Handler) UpdateEffortConfig(w http.ResponseWriter, r *http.Request) {
+	model := r.PathValue("model")
+	var req store.EffortConfigRow
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, map[string]string{"error": "invalid request: " + err.Error()})
+		return
+	}
+	if err := h.store.UpdateEffortConfig(model, &req); err != nil {
+		writeJSON(w, map[string]string{"error": err.Error()})
+		return
+	}
+	if h.reload != nil {
+		h.reload()
+	}
+	writeJSON(w, req)
+}
+
+// DeleteEffortConfig 删除最佳思考等级配置（DELETE /admin/efforts/{model}）。
+func (h *Handler) DeleteEffortConfig(w http.ResponseWriter, r *http.Request) {
+	model := r.PathValue("model")
+	if err := h.store.DeleteEffortConfig(model); err != nil {
+		writeJSON(w, map[string]string{"error": err.Error()})
+		return
+	}
+	if h.reload != nil {
+		h.reload()
+	}
+	writeJSON(w, map[string]string{"status": "deleted"})
+}
+
 // Reload 从 DB 重新加载配置并重建路由/健康检查（POST /admin/reload）。
 func (h *Handler) Reload(w http.ResponseWriter, _ *http.Request) {
 	if h.reload == nil {
@@ -1058,7 +1126,7 @@ func (h *Handler) RequestLogs(w http.ResponseWriter, r *http.Request) {
 	queryArgs := append([]interface{}{}, args...)
 	queryArgs = append(queryArgs, limit, offset)
 	rows, err := h.store.DB().Query(`
-		SELECT ts, upstream, model, endpoint, status, duration_ms, prompt_tokens, completion_tokens, tokens, prompt_cache_hit_tokens, prompt_cache_miss_tokens
+		SELECT ts, upstream, model, endpoint, status, duration_ms, prompt_tokens, completion_tokens, tokens, prompt_cache_hit_tokens, prompt_cache_miss_tokens, api_key
 		FROM request_log`+where+` ORDER BY id DESC LIMIT ? OFFSET ?`, queryArgs...)
 	if err != nil {
 		writeJSON(w, map[string]interface{}{"total": total, "limit": limit, "offset": offset, "logs": []map[string]interface{}{}})
@@ -1068,9 +1136,9 @@ func (h *Handler) RequestLogs(w http.ResponseWriter, r *http.Request) {
 
 	var out []map[string]interface{}
 	for rows.Next() {
-		var ts, upstream, model, endpoint string
+		var ts, upstream, model, endpoint, apiKey string
 		var status, durationMs, promptTokens, completionTokens, tokens, cacheHitTokens, cacheMissTokens int64
-		if err := rows.Scan(&ts, &upstream, &model, &endpoint, &status, &durationMs, &promptTokens, &completionTokens, &tokens, &cacheHitTokens, &cacheMissTokens); err != nil {
+		if err := rows.Scan(&ts, &upstream, &model, &endpoint, &status, &durationMs, &promptTokens, &completionTokens, &tokens, &cacheHitTokens, &cacheMissTokens, &apiKey); err != nil {
 			continue
 		}
 		out = append(out, map[string]interface{}{
@@ -1085,6 +1153,7 @@ func (h *Handler) RequestLogs(w http.ResponseWriter, r *http.Request) {
 			"tokens":                   tokens,
 			"prompt_cache_hit_tokens":  cacheHitTokens,
 			"prompt_cache_miss_tokens": cacheMissTokens,
+			"api_key":                  apiKey,
 		})
 	}
 

@@ -33,4 +33,10 @@ data/
 cmd/dbgconv/
 
 # 本地文章/草稿（不对外发布）
-docs/articles/
+docs/articles//server
+
+# 编译产物（任何位置的 xuanji-server* 二进制，防误提交）
+/xuanji-server
+xuanji-server-new
+xuanji-server-deploy
+/xuanji-fallback
