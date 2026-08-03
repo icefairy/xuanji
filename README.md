@@ -143,11 +143,14 @@
 | **Kimi K3** | 始终思考 → 映射为 `low` | `reasoning_effort: low/high/max`（原生透传） |
 | **Kimi K2.x** | `thinking.type=disabled` | 只开关，无强度档 → `thinking.type=enabled` |
 | **GLM-4.5** | `thinking.type=disabled` | 只开关，无强度档 → `thinking.type=enabled` |
+| **Qwen3 / 3.5 / 3.6 / 3.7** | `enable_thinking=false` | 无 effort 档 → `enable_thinking=true` + `thinking_budget` 分档（low=1024 / medium=4096 / high=8192） |
 | **OpenAI o3/o4/GPT-5** | `reasoning_effort=none` | 原生支持，完全透传 |
 
 - 请求体没有 `reasoning_effort` 时**零开销**（原样透传，不改 body）
 - 未知模型也原样透传，绝不破坏请求
 - 单条请求即可控制，无需每模型单独适配——**一套代码接入所有思考模型**
+
+> **Qwen 系列差异说明**：Qwen3/3.5/3.6/3.7 都是混合思考模型（`enable_thinking` + `thinking_budget`），但默认状态不同——Qwen3.5 开源小模型**默认禁用思考**（显式开启才有推理），Qwen3/3.6 默认思考（可关闭）；Qwen3 支持 `/think` `/no_think` 提示词软切换，Qwen3.6 不支持。**Qwen2.5 无思考模式**，不匹配本特性，原样透传。
 
 ### 🔌 开箱即用的渠道适配
 
