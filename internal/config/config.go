@@ -44,7 +44,7 @@ type Retry struct {
 	MaxRetries           int      `yaml:"max_retries"`             // 最多重试次数（跨上游切换），默认 3
 	RetryStatuses        []int    `yaml:"retry_statuses"`          // 触发重试的 HTTP 状态码，默认 [429, 500, 502, 503, 504]
 	RetryKeywords        []string `yaml:"retry_keywords"`          // 响应体中含这些关键词则触发重试
-	FastFailMinutes      int      `yaml:"fast_fail_minutes"`       // 上游失败后跳过尝试的分钟数，默认 60
+	FastFailMinutes      int      `yaml:"fast_fail_minutes"`       // 上游失败后跳过尝试的分钟数，默认 5
 	FastFailProbeMinutes int      `yaml:"fast_fail_probe_minutes"` // 后台探测被禁用上游的间隔分钟数，默认 35
 	UpstreamTimeout      int      `yaml:"upstream_timeout"`        // 上游请求超时秒数（连接+非流式整体），默认 60
 }
@@ -69,6 +69,13 @@ type Proxy struct {
 	// VideoPassThrough 开启后，允许 content 中的 video_url 透传给上游（多模态视频，默认 false）。
 	// 关闭时请求含 video_url 直接返回 400——视频流量大，需显式开启。
 	VideoPassThrough bool `yaml:"video_pass_through"`
+	// CooldownUpstreams 是需要 per-key 冷却的上游名称前缀列表。
+	// 同一上游每次成功响应后，暂停 CooldownSeconds 秒不再被分配新请求，
+	// 防止同一 API key 被并发打爆触发 429。
+	// 例：["商汤"] 会匹配 "商汤陈永鹏""商汤-陈俊" 等所有商汤上游。
+	CooldownUpstreams []string `yaml:"cooldown_upstreams"`
+	// CooldownSeconds 是每个上游成功请求后的冷却秒数，默认 1。
+	CooldownSeconds int `yaml:"cooldown_seconds"`
 	// EffortConfigs 是最佳思考等级配置（模型 pattern → 推荐/强制等级）。
 	EffortConfigs []EffortConfig `yaml:"effort_configs"`
 }
@@ -254,10 +261,10 @@ func (c *Config) validate() error {
 		c.Retry.RetryStatuses = []int{404, 429, 500, 502, 503, 504}
 	}
 	if c.Retry.FastFailMinutes <= 0 {
-		c.Retry.FastFailMinutes = 60
+		c.Retry.FastFailMinutes = 5
 	}
 	if c.Retry.FastFailProbeMinutes <= 0 {
-		c.Retry.FastFailProbeMinutes = 35
+		c.Retry.FastFailProbeMinutes = 5
 	}
 
 	if c.Routing.DefaultStrategy == "" {
@@ -379,6 +386,28 @@ func LoadFromDB(s *store.Store) (*Config, error) {
 	}
 	if v, ok := all["proxy.video_pass_through"]; ok {
 		cfg.Proxy.VideoPassThrough = strings.TrimSpace(v) == "true" || strings.TrimSpace(v) == "1"
+	}
+	if v, ok := all["proxy.cooldown_seconds"]; ok {
+		if s, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && s > 0 {
+			cfg.Proxy.CooldownSeconds = s
+		}
+	}
+	// CooldownUpstreams：JSON 数组，支持逗号分隔 fallback（兼容旧格式）
+	if v, ok := all["proxy.cooldown_upstreams"]; ok {
+		v = strings.TrimSpace(v)
+		if v != "" {
+			var names []string
+			if jsonErr := json.Unmarshal([]byte(v), &names); jsonErr != nil {
+				// 降级为逗号分隔：逗号前后都可能有空格
+				for _, n := range strings.Split(v, ",") {
+					n = strings.TrimSpace(n)
+					if n != "" {
+						names = append(names, n)
+					}
+				}
+			}
+			cfg.Proxy.CooldownUpstreams = names
+		}
 	}
 
 	// 默认值
