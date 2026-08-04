@@ -766,14 +766,27 @@ func (s *Store) SeedDefaults() error {
 	if err := s.db.QueryRow(`SELECT COUNT(*) FROM config`).Scan(&count); err != nil {
 		return err
 	}
+	// defaults 是 SeedDefaults 的基准表。首次启动全量插入；已有数据时用 INSERT OR IGNORE
+	// 补缺失配置项（旧版本没有的新 key），不覆盖用户已改的值。
+	// 新增 key → INSERT OR IGNORE 生效；已存在 key → 保持用户值。
+	// 注意：要"升级"已有 key 的默认值（如 fast_fail_minutes 60→5），需手动 DB 更新，
+	// 或通过 admin API 重置。此处只做补缺，不覆盖。
 	defaults := map[string]string{
-		"server.port":               "8787",
-		"retry.max_retries":         "3",
-		"retry.retry_statuses":      "429,500,502,503,504",
-		"retry.retry_keywords":      "套餐用完了,余额不足,quota,rate limit",
-		"retry.fast_fail_minutes":   "60",
-		"retry.fast_fail_probe_minutes": "35",
-		"retry.upstream_timeout":    "60",
+		"server.port":                   "8787",
+		"retry.max_retries":             "3",
+		"retry.retry_statuses":          "429,500,502,503,504",
+		"retry.retry_keywords":          "套餐用完了,余额不足,quota,rate limit",
+		"retry.fast_fail_minutes":        "5",
+		"retry.fast_fail_probe_minutes":   "5",
+		"retry.upstream_timeout":        "60",
+		// 视频透传（默认关）
+		"proxy.video_pass_through": "false",
+		// per-key 冷却（商汤默认 1 秒）
+		"proxy.cooldown_seconds":      "1",
+		"proxy.cooldown_upstreams":    "[\"商汤\"]",
+		// 最佳思考等级（默认关）
+		"proxy.auto_best_effort":  "false",
+		"proxy.force_best_effort": "false",
 	}
 	if count == 0 {
 		// 首次启动：全量插入
@@ -784,7 +797,7 @@ func (s *Store) SeedDefaults() error {
 		}
 		return nil
 	}
-	// 已有数据：只补缺失的 key（新版本新增的配置项），不覆盖用户已改的值
+	// 已有数据：只补缺失的 key（INSERT OR IGNORE 自动跳过已存在）
 	for k, v := range defaults {
 		if _, err := s.db.Exec(`INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)`, k, v); err != nil {
 			return err
