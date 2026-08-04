@@ -222,11 +222,11 @@ func TestLoadFromDB_Defaults(t *testing.T) {
 	if len(cfg.Retry.RetryKeywords) != 4 {
 		t.Errorf("RetryKeywords = %v, want 4 defaults", cfg.Retry.RetryKeywords)
 	}
-	if cfg.Retry.FastFailMinutes != 60 {
-		t.Errorf("FastFailMinutes = %d, want 60", cfg.Retry.FastFailMinutes)
+	if cfg.Retry.FastFailMinutes != 5 {
+		t.Errorf("FastFailMinutes = %d, want 5", cfg.Retry.FastFailMinutes)
 	}
-	if cfg.Retry.FastFailProbeMinutes != 35 {
-		t.Errorf("FastFailProbeMinutes = %d, want 35", cfg.Retry.FastFailProbeMinutes)
+	if cfg.Retry.FastFailProbeMinutes != 5 {
+		t.Errorf("FastFailProbeMinutes = %d, want 5", cfg.Retry.FastFailProbeMinutes)
 	}
 	if cfg.Routing.DefaultStrategy != DefaultStrategy {
 		t.Errorf("DefaultStrategy = %q, want %q", cfg.Routing.DefaultStrategy, DefaultStrategy)

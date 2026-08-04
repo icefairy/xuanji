@@ -502,6 +502,7 @@ type upstreamMetrics struct {
 	Name         string  `json:"name"`
 	Requests     int64   `json:"requests"`
 	Successes    int64   `json:"successes"`
+	Failures     int64   `json:"failures"`
 	SuccessRate  float64 `json:"success_rate"`
 	AvgLatencyMS float64 `json:"avg_latency_ms"`
 	TotalTokens  int64   `json:"total_tokens"`
@@ -524,6 +525,7 @@ func (h *Handler) MetricsUpstreams(w http.ResponseWriter, r *http.Request) {
 		rows, err = h.store.DB().Query(`
 			SELECT upstream, COUNT(*) as requests,
 			       COALESCE(SUM(CASE WHEN status < 400 THEN 1 ELSE 0 END), 0) as successes,
+			       COUNT(*) - COALESCE(SUM(CASE WHEN status < 400 THEN 1 ELSE 0 END), 0) as failures,
 			       COALESCE(AVG(duration_ms), 0) as avg_ms,
 			       COALESCE(SUM(tokens), 0) as tokens
 			FROM request_log WHERE ts >= ?
@@ -533,6 +535,7 @@ func (h *Handler) MetricsUpstreams(w http.ResponseWriter, r *http.Request) {
 		rows, err = h.store.DB().Query(`
 			SELECT upstream, COUNT(*) as requests,
 			       COALESCE(SUM(CASE WHEN status < 400 THEN 1 ELSE 0 END), 0) as successes,
+			       COUNT(*) - COALESCE(SUM(CASE WHEN status < 400 THEN 1 ELSE 0 END), 0) as failures,
 			       COALESCE(AVG(duration_ms), 0) as avg_ms,
 			       COALESCE(SUM(tokens), 0) as tokens
 			FROM request_log
@@ -548,7 +551,7 @@ func (h *Handler) MetricsUpstreams(w http.ResponseWriter, r *http.Request) {
 	var out []upstreamMetrics
 	for rows.Next() {
 		var m upstreamMetrics
-		if err := rows.Scan(&m.Name, &m.Requests, &m.Successes, &m.AvgLatencyMS, &m.TotalTokens); err != nil {
+		if err := rows.Scan(&m.Name, &m.Requests, &m.Successes, &m.Failures, &m.AvgLatencyMS, &m.TotalTokens); err != nil {
 			continue
 		}
 		if m.Requests > 0 {
@@ -634,6 +637,48 @@ func (h *Handler) MetricsByAPIKey(w http.ResponseWriter, r *http.Request) {
 		}
 		if m.Requests > 0 {
 			m.SuccessRate = float64(m.Successes) / float64(m.Requests)
+		}
+		out = append(out, m)
+	}
+	writeJSON(w, out)
+}
+
+// APIKeyModelUsage 是单个 API Key 的模型使用分布。
+type APIKeyModelUsage struct {
+	Model  string `json:"model"`
+	Count  int64  `json:"count"`
+}
+
+// MetricsByAPIKeyModels 返回指定 API Key 的模型使用分布（支持 ?range=...）。
+func (h *Handler) MetricsByAPIKeyModels(w http.ResponseWriter, r *http.Request) {
+	if h.store == nil {
+		writeJSON(w, []APIKeyModelUsage{})
+		return
+	}
+	name := r.PathValue("name")
+	if name == "" {
+		writeJSON(w, []APIKeyModelUsage{})
+		return
+	}
+	since := metricsSince(r)
+	q := `SELECT model, COUNT(*) as count FROM request_log WHERE api_key = ?`
+	var args []any = []any{name}
+	if since != "" {
+		q += ` AND ts >= ?`
+		args = append(args, since)
+	}
+	q += ` GROUP BY model ORDER BY count DESC`
+	rows, err := h.store.DB().Query(q, args...)
+	if err != nil {
+		writeJSON(w, []APIKeyModelUsage{})
+		return
+	}
+	defer rows.Close()
+	var out []APIKeyModelUsage
+	for rows.Next() {
+		var m APIKeyModelUsage
+		if err := rows.Scan(&m.Model, &m.Count); err != nil {
+			continue
 		}
 		out = append(out, m)
 	}

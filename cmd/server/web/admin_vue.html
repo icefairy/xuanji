@@ -215,7 +215,7 @@ tr:hover td { background:#f5f7fa; }
     </div>
     <table><thead><tr><th>时间</th><th>API Key</th><th>上游</th><th>模型</th><th>状态</th><th>耗时(ms)</th><th>输入t</th><th>输出t</th><th>总计t</th><th>缓存命中</th></tr></thead>
       <tbody><tr v-for="l in logs">
-        <td>{{ (l.ts||'').substring(0,19) }}</td><td :title="l.api_key || ''">{{ (l.api_key||'').substring(0,6) || '-' }}</td><td>{{ l.upstream }}</td><td>{{ l.model }}</td>
+        <td>{{ (l.ts||'').substring(0,19) }}</td><td :title="l.api_key || ''">{{ truncKeyName(l.api_key||'') }}</td><td>{{ l.upstream }}</td><td>{{ l.model }}</td>
         <td><span class="badge" :class="l.status<400?'badge-green':'badge-red'">{{ l.status }}</span></td>
         <td>{{ l.duration_ms }}</td><td>{{ l.prompt_tokens }}</td><td>{{ l.completion_tokens }}</td><td>{{ l.tokens }}</td>
         <td><span :title="'命中 '+fmtNum(l.prompt_cache_hit_tokens||0,0)+' / 未命中 '+fmtNum(l.prompt_cache_miss_tokens||0,0)">{{ cacheRate(l) }}</span></td>
@@ -552,7 +552,11 @@ new Vue({
     logs: [],
     summary: {},
     upstreamStats: [],
-    apiKeyStats: [],
+    apiKeyStats:     [],
+    // 模型饼图展开：当前展开的 API Key 名称；null = 无
+    expandedAPIKey:  null,
+    // 各 API Key 的模型分布缓存：{ "OneAPI 迁移": [{model,count}, ...] }
+    apiKeyModels:    {},
     dailyStats: [],
     apiKeys: [],
     configArr: [],
@@ -708,6 +712,24 @@ new Vue({
       if (n >= 100000000) return (n/100000000).toFixed(1).replace(/\.0$/, '') + ' 亿';
       if (n >= 10000) return (n/10000).toFixed(1).replace(/\.0$/, '') + ' 万';
       return String(n);
+    },
+    // API Key 名称截断：汉字最长6个字，英文/数字最长12个字符
+    truncKeyName: function(name) {
+      if (!name) return '-';
+      var result = '';
+      for (var i = 0; i < name.length; i++) {
+        var ch = name[i];
+        var code = ch.charCodeAt(0);
+        // 判断是否为汉字（含CJK扩展）
+        var isCN = (code >= 0x4e00 && code <= 0x9fff) || (code >= 0x3400 && code <= 0x4dbf) || (code >= 0x20000 && code <= 0x2a6df) || (code >= 0xf900 && code <= 0xfaff);
+        if (isCN) {
+          if (result.length >= 6) break;
+        } else {
+          if (result.length >= 12) break;
+        }
+        result += ch;
+      }
+      return result;
     },
     toggleUpstream: function(u) {
       var self = this;

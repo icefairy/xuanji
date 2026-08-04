@@ -202,8 +202,8 @@ func TestSeedDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetAllConfig: %v", err)
 	}
-	if len(all) != 7 {
-		t.Errorf("defaults count = %d, want 7 (%v)", len(all), all)
+	if len(all) != 12 {
+		t.Errorf("defaults count = %d, want 12 (%v)", len(all), all)
 	}
 	if all["server.port"] != "8787" {
 		t.Errorf("server.port = %q, want 8787", all["server.port"])
@@ -211,14 +211,27 @@ func TestSeedDefaults(t *testing.T) {
 	if all["retry.max_retries"] != "3" {
 		t.Errorf("retry.max_retries = %q, want 3", all["retry.max_retries"])
 	}
-	if all["retry.fast_fail_minutes"] != "60" {
-		t.Errorf("retry.fast_fail_minutes = %q, want 60", all["retry.fast_fail_minutes"])
+	if all["retry.fast_fail_minutes"] != "5" {
+		t.Errorf("retry.fast_fail_minutes = %q, want 5", all["retry.fast_fail_minutes"])
 	}
-	if all["retry.fast_fail_probe_minutes"] != "35" {
-		t.Errorf("retry.fast_fail_probe_minutes = %q, want 35", all["retry.fast_fail_probe_minutes"])
+	if all["retry.fast_fail_probe_minutes"] != "5" {
+		t.Errorf("retry.fast_fail_probe_minutes = %q, want 5", all["retry.fast_fail_probe_minutes"])
 	}
 	if all["retry.upstream_timeout"] != "60" {
 		t.Errorf("retry.upstream_timeout = %q, want 60", all["retry.upstream_timeout"])
+	}
+	// 新增 proxy 配置项（视频透传、per-key 冷却、最佳思考等级）
+	if all["proxy.video_pass_through"] != "false" {
+		t.Errorf("proxy.video_pass_through = %q, want false", all["proxy.video_pass_through"])
+	}
+	if all["proxy.cooldown_seconds"] != "1" {
+		t.Errorf("proxy.cooldown_seconds = %q, want 1", all["proxy.cooldown_seconds"])
+	}
+	if all["proxy.cooldown_upstreams"] != "[\"商汤\"]" {
+		t.Errorf("proxy.cooldown_upstreams = %q, want [\"商汤\"]", all["proxy.cooldown_upstreams"])
+	}
+	if all["proxy.auto_best_effort"] != "false" {
+		t.Errorf("proxy.auto_best_effort = %q, want false", all["proxy.auto_best_effort"])
 	}
 
 	// 已有数据时不覆盖
