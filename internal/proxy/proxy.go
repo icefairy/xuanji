@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/icefairy/xuanji/internal/config"
@@ -52,6 +53,7 @@ type Handler struct {
 	tokenizer *Tokenizer      // token 计数器；nil 时跳过估算回退
 	discounts []store.Discount // 渠道优惠时段，用于同 tier 同 weight 内折扣优先排序
 	keyName   func(r *http.Request) string // 下游 API Key 展示名（统计用）；nil 时记录空
+	cooldowns sync.Map       // 上游冷却表：map[string]time.Time, key="upstream:model"，value=冷却到期时间
 }
 
 // New 创建转发 Handler，共享一个 60s 连接超时的 HTTP 客户端。
@@ -270,6 +272,8 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 		if handled {
 			upstream = up.Name
+			// 成功请求后对该上游标记冷却（防 429 限流），仅对 CooldownUpstreams 匹配的上游生效
+			h.markCooldown(up.Name, model)
 			return
 		}
 		h.log.Warn("upstream failed, trying next",
@@ -278,8 +282,12 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 		retryCount++
-		// 循环完所有候选后，如果 retryCount < maxRetries，从头开始（再试一轮候选）
-		if i == len(candidates)-1 && retryCount < maxRetries {
+		errString := ferr.Error()
+		isRateLimit := strings.Contains(errString, "429")
+		// 429 限流是 per-key 的：重试同一个上游（相同 API key）必然再次 429，
+		// 不应重置索引反复打同一 key。跳过该上游，由下一轮 i++ 走到下一个候选
+		//（不同 API key）。连接类错误等其他 retryable 错误可重置从头再试（网络可能恢复）。
+		if !isRateLimit && i == len(candidates)-1 && retryCount < maxRetries {
 			i = -1 // 下一轮循环 i++ 变为 0
 		}
 	}
@@ -394,11 +402,52 @@ func (h *Handler) clearUpstreamBlacklist(up *config.Upstream, model string) {
 	}
 }
 
+// needCooldownForUpstream 检查上游是否需要 per-key 冷却（名称匹配 CooldownUpstreams 前缀）。
+func (h *Handler) needCooldownForUpstream(name string) bool {
+	if len(h.cfg.Proxy.CooldownUpstreams) == 0 {
+		return false
+	}
+	for _, prefix := range h.cfg.Proxy.CooldownUpstreams {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// markCooldown 标记上游进入冷却（成功请求后调用）。
+func (h *Handler) markCooldown(name, model string) {
+	if name == "" || model == "" {
+		return
+	}
+	if !h.needCooldownForUpstream(name) {
+		return
+	}
+	seconds := h.cfg.Proxy.CooldownSeconds
+	if seconds <= 0 {
+		seconds = 1
+	}
+	key := name + ":" + model
+	h.cooldowns.Store(key, time.Now().Add(time.Duration(seconds)*time.Second))
+	h.log.Debug("upstream cooldown", "upstream", name, "model", model, "seconds", seconds)
+}
+
+// isCooldown 检查上游是否在冷却期内。过期条目懒清理。
+func (h *Handler) isCooldown(name, model string) bool {
+	key := name + ":" + model
+	v, ok := h.cooldowns.Load(key)
+	if !ok {
+		return false
+	}
+	until := v.(time.Time)
+	if time.Now().After(until) {
+		h.cooldowns.Delete(key)
+		return false
+	}
+	return true
+}
+
 // selectCandidates 依据健康状态与统一优先级选出转发候选：
-// 1. 禁用/快速失败/不健康 过滤（disabled 不参与；全挂时回退第一个）
-// 2. tier 永远优先（免费 > 包月 > 按量）——成本铁律
-// 3. 同 tier 内按 weight 降序（权重高优先）
-// 4. 同 tier 同 weight 内：当前处于优惠时段的上游优先
 // 5. 同 tier 同 weight 同折扣状态内：网络延迟低的优先（未测过延迟的排最后）
 // 失败切换由调用方按候选列表顺序逐个尝试：同 tier 内失败自动试下一个，
 // 同 tier 全部失败自动升到上一级计费类型（免费→包月→按量）。
@@ -425,6 +474,18 @@ func (h *Handler) selectCandidates(ups []*config.Upstream, strategy, model strin
 		if len(filtered) > 0 {
 			ups = filtered
 		} // 全部被黑名单时不缩减，fallback 到原有逻辑
+	}
+	// 请求级冷却过滤：上游刚完成一次成功请求，cooldown 期内不再分配新请求。
+	// 防止同一 API key 被并发打爆触发 429。冷却期很短（1～2 秒），过期后自动恢复。
+	// 全部在冷却中时保留原列表（不拒绝请求，只是降级到无冷却状态）。
+	var cooled []*config.Upstream
+	for _, u := range ups {
+		if !h.isCooldown(u.Name, model) {
+			cooled = append(cooled, u)
+		}
+	}
+	if len(cooled) > 0 {
+		ups = cooled
 	}
 	// 模型支持过滤：上游声明了 models 列表但既不含该模型、也没有对应的 model_mapping，
 	// 说明该上游根本不提供此模型，路由过去必然 404/400。直接跳过，避免浪费一次调用。
