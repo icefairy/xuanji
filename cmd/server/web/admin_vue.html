@@ -59,6 +59,8 @@ tr:hover td { background:#f5f7fa; }
   .tab-btn { padding:6px 10px; font-size:12px; }
 }
 /* 登录遮罩 */
+/* v-cloak: Vue 未加载时隐藏整个应用，防止模板语法闪烁 */
+[v-cloak] { display:none !important; }
 #login-overlay { position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(15,23,42,0.92); z-index:9999; display:flex; align-items:center; justify-content:center; }
 .login-box { background:#fff; border-radius:12px; padding:32px 28px; width:90%; max-width:340px; box-shadow:0 20px 60px rgba(0,0,0,0.3); }
 .login-box h2 { text-align:center; margin-bottom:4px; font-size:20px; color:#303133; }
@@ -69,7 +71,7 @@ tr:hover td { background:#f5f7fa; }
 </style>
 </head>
 <body>
-<div id="app">
+<div id="app" v-cloak>
 <!-- 登录遮罩（必须在 #app 内，Vue 才能渲染） -->
 <div id="login-overlay" v-if="!token">
   <div class="login-box">
@@ -263,12 +265,21 @@ tr:hover td { background:#f5f7fa; }
     </table>
     <div style="margin-top:24px;margin-bottom:12px;color:#909399;font-size:13px">每 API Key {{ metricsRangeLabel }}统计（区分各 AI 程序/客户端用量）</div>
     <table><thead><tr><th>API Key 名称</th><th>请求数</th><th>成功</th><th>失败</th><th>请求成功率</th><th>延迟(ms)</th><th>Tokens</th></tr></thead>
-      <tbody><tr v-for="s in apiKeyStats">
-        <td>{{ s.name }}</td>
-        <td>{{ s.requests }}</td><td>{{ s.successes }}</td><td>{{ s.requests - s.successes }}</td>
-        <td>{{ s.requests > 0 ? fmtNum(s.successes/s.requests*100, 1)+'%' : '-' }}</td><td>{{ s.avg_latency_ms ? fmtNum(s.avg_latency_ms, 0) : '-' }}</td>
-        <td><span :title="'精确值: ' + (s.total_tokens || 0)">{{ fmtTokens(s.total_tokens) }}</span></td>
-      </tr></tbody>
+      <tbody>
+        <template v-for="s in apiKeyStats">
+          <tr @click="expandAPIKey(s.name)" style="cursor:pointer" :title="expandedAPIKey === s.name ? '点击收起' : '点击展开模型分布'">
+            <td>{{ s.name }}{{ expandedAPIKey === s.name ? ' ▼' : ' ▶' }}</td>
+            <td>{{ s.requests }}</td><td>{{ s.successes }}</td><td>{{ s.requests - s.successes }}</td>
+            <td>{{ s.requests > 0 ? fmtNum(s.successes/s.requests*100, 1)+'%' : '-' }}</td><td>{{ s.avg_latency_ms ? fmtNum(s.avg_latency_ms, 0) : '-' }}</td>
+            <td><span :title="'精确值: ' + (s.total_tokens || 0)">{{ fmtTokens(s.total_tokens) }}</span></td>
+          </tr>
+          <tr v-show="expandedAPIKey === s.name"><td colspan="7" style="padding:12px;text-align:center">
+            <div v-if="!apiKeyModels[s.name]">加载中…</div>
+            <div v-else-if="apiKeyModels[s.name].length === 0">该 API Key 暂无模型使用记录</div>
+            <canvas v-else :id="'pie-' + s.name.replace(/[^a-zA-Z0-9\u4e00-\u9fff]/g, '_')" :width="pieWidth" :height="pieHeight" style="display:inline-block;max-width:100%"></canvas>
+          </td></tr>
+        </template>
+      </tbody>
     </table>
   </div>
 
@@ -496,6 +507,7 @@ tr:hover td { background:#f5f7fa; }
 // 全局错误捕获，显示任何 JS 错误
 window.onerror = function(msg, src, line, col, err) {
   document.getElementById('app').innerHTML = '<div style="padding:20px;color:red"><h3>JS 错误:</h3><pre>' + msg + '\n@ ' + src + ':' + line + ':' + col + '\n' + (err && err.stack ? err.stack : '') + '</pre></div>';
+  var app = document.getElementById('app'); if (app) app.removeAttribute('v-cloak');
   return false;
 };
 // Load Vue 2 dynamically (static script tags were not executing in some browsers)
@@ -553,10 +565,10 @@ new Vue({
     summary: {},
     upstreamStats: [],
     apiKeyStats:     [],
-    // 模型饼图展开：当前展开的 API Key 名称；null = 无
     expandedAPIKey:  null,
-    // 各 API Key 的模型分布缓存：{ "OneAPI 迁移": [{model,count}, ...] }
-    apiKeyModels:    {},
+        apiKeyModels:    {},
+    pieWidth:  420,
+    pieHeight: 240,
     dailyStats: [],
     apiKeys: [],
     configArr: [],
@@ -730,6 +742,78 @@ new Vue({
         result += ch;
       }
       return result;
+    },
+    // 展开/收起指定 API Key 的模型分布饼图
+    expandAPIKey: function(key) {
+      if (this.expandedAPIKey === key) {
+        this.expandedAPIKey = null
+        return
+      }
+      var self = this
+      this.expandedAPIKey = key
+      if (self.apiKeyModels[key]) {
+        self.$nextTick(function() { self.drawModelPie() })
+        return
+      }
+      // 用 fetch 直接请求（不依赖异步加载的 axios，避免"加载中"卡死）
+      var modelsUrl = '/admin/metrics/keys/' + encodeURIComponent(key) + '/models?range=' + self.metricsRange;
+      var xhr = new XMLHttpRequest();
+      xhr.open('GET', modelsUrl, true);
+      xhr.setRequestHeader('Authorization', 'Bearer ' + self.token);
+      xhr.responseType = 'json';
+      xhr.onload = function() {
+        self.$set(self.apiKeyModels, key, xhr.response || []);
+        self.$nextTick(function() { self.drawModelPie() });
+      };
+      xhr.onerror = function() { self.$set(self.apiKeyModels, key, []) };
+      xhr.send();
+    },
+    // 绘制模型分布饼图（canvas）
+    drawModelPie: function() {
+      var self = this
+      var apiKey = self.expandedAPIKey
+      if (!apiKey) return
+      var data = self.apiKeyModels[apiKey]
+      if (!data || !data.length) return
+      var canvas = document.getElementById('pie-' + apiKey.replace(/[^a-zA-Z0-9\u4e00-\u9fff]/g, '_'))
+      if (!canvas) return
+      var ctx = canvas.getContext('2d')
+      var dpr = window.devicePixelRatio || 1
+      var W = self.pieWidth, H = self.pieHeight
+      canvas.width = W * dpr; canvas.height = H * dpr
+      ctx.scale(dpr, dpr)
+      ctx.clearRect(0, 0, W, H)
+      var total = 0
+      for (var i = 0; i < data.length; i++) total += data[i].count
+      if (total <= 0) return
+      var cx = W / 2 - 60, cy = H / 2, R = 70
+      var colors = ['#3366cc', '#dc3912', '#ff9900', '#109618', '#990099', '#0099c6', '#dd4477', '#66aa00', '#ff6688', '#33c4bd', '#44b983', '#e6194b', '#f58231', '#911eb4', '#a6d854']
+      var start = -Math.PI / 2
+      for (var i = 0; i < data.length; i++) {
+        var p = data[i].count / total
+        var ang = start + p * 2 * Math.PI
+        ctx.beginPath(); ctx.moveTo(cx, cy)
+        ctx.arc(cx, cy, R, start, ang)
+        ctx.closePath(); ctx.fillStyle = colors[i % colors.length]; ctx.fill()
+        if (p >= 0.04) {
+          var mid = start + p * Math.PI
+          var tx = cx + Math.cos(mid) * (R + 22), ty = cy + Math.sin(mid) * (R + 22)
+          ctx.fillStyle = '#333'; ctx.font = '11px sans-serif'; ctx.textBaseline = 'middle'
+          var label = data[i].model.length > 20 ? data[i].model.substring(0, 18) + '..' : data[i].model
+          ctx.fillText(label + ' ' + Math.round(p * 100) + '%', tx, ty)
+        }
+        start = ang
+      }
+      var lx = W - 90, ly = 24
+      ctx.font = '11px sans-serif'
+      for (var i = 0; i < data.length; i++) {
+        ctx.fillStyle = colors[i % colors.length]
+        ctx.fillRect(lx, ly - 4, 8, 8)
+        ctx.fillStyle = '#555'
+        var legendLabel = data[i].model.length > 28 ? data[i].model.substring(0, 26) + '..' : data[i].model
+        ctx.fillText(legendLabel, lx + 12, ly + 1)
+        ly += 16
+      }
     },
     toggleUpstream: function(u) {
       var self = this;
