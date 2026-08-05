@@ -92,31 +92,43 @@
 <p align="center">
   <img src="docs/screenshots/dashboard.png" alt="统计总览" width="80%">
   <br>
-  <sub>📊 统计总览 — 实时监控每上游的健康状态、请求数、成功率、延迟、Token 消耗</sub>
+  <sub>📊 统计总览 — 总览卡片（请求数/成功率/Tokens/延迟）+ 每日 Token 趋势折线图 + 每上游请求数/成功率/延迟/Tokens 明细 + 每 API Key 用量统计，点击展开行可看该 Key 使用的模型分布饼图</sub>
 </p>
 
 <p align="center">
   <img src="docs/screenshots/upstreams.png" alt="上游管理" width="80%">
   <br>
-  <sub>⚙️ 上游管理 — 添加/编辑上游渠道，配置权重、层级、模型映射，自动保存</sub>
+  <sub>⚙️ 上游管理 — 添加/编辑/克隆/删除上游渠道，配置计费层级（免费/包月/按量）、权重、模型映射，健康检查三态（正常/降级/不可用）</sub>
 </p>
 
 <p align="center">
   <img src="docs/screenshots/routing.png" alt="路由规则" width="80%">
   <br>
-  <sub>🔄 路由规则 — 每个模型绑定多个上游，网关自动分流、负载、重试</sub>
+  <sub>🔄 路由规则 — 模型名支持通配符（如 `deepseek-*`），每规则绑定一组上游，网关自动分流、负载、重试</sub>
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/effort.png" alt="思考等级" width="80%">
+  <br>
+  <sub>🧠 思考等级 — 管理每个模型的最佳 `reasoning_effort` 推荐值，支持模型通配符，配合系统设置"自动推荐"和"强制覆盖"开关</sub>
 </p>
 
 <p align="center">
   <img src="docs/screenshots/api-keys.png" alt="API Key 管理" width="80%">
   <br>
-  <sub>🔑 API Key 管理 — 创建下游 key，控制访问权限</sub>
+  <sub>🔑 API Key 管理 — 创建/禁用/删除下游 key，复制 key 供客户端使用</sub>
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/settings.png" alt="系统设置" width="80%">
+  <br>
+  <sub>⚙️ 系统设置 — 账号安全、思考等级自动推荐/强制覆盖开关、视频透传开关、重试策略（熔断时长/探测间隔/超时/重试状态码/关键词）、渠道优惠时段配置</sub>
 </p>
 
 ### 📊 可观测性
 
 - 请求日志：东八区时间、筛选、分页
-- 请求统计：今日 / 3天 / 7天 / 30天 / 全部 五个维度，每上游请求数、延迟、成功率、Token 总量
+- 请求统计：今日 / 3天 / 7天 / 30天 / 全部 五个维度，每上游请求数、延迟、成功率、Token 总量；每 API Key 用量统计（点击展开行查看该 Key 的模型分布饼图，区分不同 AI 程序用的模型）
 - **Token 计数**：流式响应注入 `stream_options.include_usage` 并逐 chunk 解析，非流式回退 tiktoken 估算
 
 ### 🧠 思考深度归一化（Thinking Effort 协议翻译）
