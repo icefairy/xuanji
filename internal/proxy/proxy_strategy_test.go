@@ -28,18 +28,21 @@ func newStrategyTestHandler() *Handler {
 	return New(cfg, rt, hc)
 }
 
-// 统一优先级下 tier 必须优先：payg 永远在 free 后面
+// 统一优先级下 tier 必须优先：subscription(包月) > free > payg（payg 永远最后）
 func TestSelectCandidates_TierAlwaysFirst(t *testing.T) {
 	h := newStrategyTestHandler()
 	ups := []*config.Upstream{
 		{Name: "payg-c", Tier: "payg", Priority: 1, Weight: 1000},
 		{Name: "free-a", Tier: "free", Priority: 1, Weight: 1},
-		{Name: "free-b", Tier: "free", Priority: 2, Weight: 1},
+		{Name: "sub-b", Tier: "subscription", Priority: 2, Weight: 1},
 	}
 	for _, strategy := range []string{"", "primary_backup", "weighted", "latency", "quota"} {
 		got := h.selectCandidates(ups, strategy, "m1")
-		if got[0].Name != "free-a" && got[0].Name != "free-b" {
-			t.Errorf("strategy=%s: first = %s, want a free tier upstream", strategy, got[0].Name)
+		if got[0].Name != "sub-b" {
+			t.Errorf("strategy=%s: first = %s, want subscription tier upstream (包月优先)", strategy, got[0].Name)
+		}
+		if got[1].Name != "free-a" {
+			t.Errorf("strategy=%s: second = %s, want free tier upstream", strategy, got[1].Name)
 		}
 		if got[2].Name != "payg-c" {
 			t.Errorf("strategy=%s: last = %s, want payg-c", strategy, got[2].Name)

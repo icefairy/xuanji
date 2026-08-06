@@ -202,8 +202,8 @@ func TestSeedDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetAllConfig: %v", err)
 	}
-	if len(all) != 12 {
-		t.Errorf("defaults count = %d, want 12 (%v)", len(all), all)
+	if len(all) != 15 {
+		t.Errorf("defaults count = %d, want 15 (%v)", len(all), all)
 	}
 	if all["server.port"] != "8787" {
 		t.Errorf("server.port = %q, want 8787", all["server.port"])
@@ -232,6 +232,17 @@ func TestSeedDefaults(t *testing.T) {
 	}
 	if all["proxy.auto_best_effort"] != "false" {
 		t.Errorf("proxy.auto_best_effort = %q, want false", all["proxy.auto_best_effort"])
+	}
+	// reasoning_content 回传缓存（DeepSeek thinking 模式 tool-calling 兼容，默认开）
+	if all["proxy.cache_reasoning_content"] != "true" {
+		t.Errorf("proxy.cache_reasoning_content = %q, want true", all["proxy.cache_reasoning_content"])
+	}
+	// 客户端程序分析（默认关，间隔默认 600 秒/10 分钟）
+	if all["proxy.client_analysis"] != "false" {
+		t.Errorf("proxy.client_analysis = %q, want false", all["proxy.client_analysis"])
+	}
+	if all["proxy.client_analysis_interval"] != "600" {
+		t.Errorf("proxy.client_analysis_interval = %q, want 600", all["proxy.client_analysis_interval"])
 	}
 
 	// 已有数据时不覆盖
@@ -307,5 +318,75 @@ func TestDeleteUpstream_CleansRuleReferences(t *testing.T) {
 	// 删除不存在的上游不应报错（幂等）
 	if err := s.DeleteUpstream("no-such-upstream"); err != nil {
 		t.Errorf("DeleteUpstream(nonexistent) = %v, want nil", err)
+	}
+}
+
+// TestClientProfiles 验证 client_profiles 表的 upsert/列表与去重 addr 聚合。
+func TestClientProfiles(t *testing.T) {
+	s := openTestStore(t)
+
+	// 1. upsert 新增
+	if err := s.UpsertClientProfile(ClientProfile{
+		ClientAddr: "192.168.1.20:53211",
+		Program:    "Hermes",
+		Confidence: 0.8,
+		Evidence:   "UA=python-requests, 端口53211",
+	}); err != nil {
+		t.Fatalf("UpsertClientProfile: %v", err)
+	}
+	// 2. 同 addr 再次 upsert 更新（不新增行）
+	if err := s.UpsertClientProfile(ClientProfile{
+		ClientAddr: "192.168.1.20:53211",
+		Program:    "OpenCode",
+		Confidence: 0.9,
+		Evidence:   "更新后的证据",
+	}); err != nil {
+		t.Fatalf("UpsertClientProfile update: %v", err)
+	}
+	list, err := s.ListClientProfiles()
+	if err != nil {
+		t.Fatalf("ListClientProfiles: %v", err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("profiles count = %d, want 1 (upsert 应去重)", len(list))
+	}
+	if list[0].Program != "OpenCode" || list[0].Confidence != 0.9 {
+		t.Errorf("profile = %+v, want updated program=OpenCode confidence=0.9", list[0])
+	}
+
+	// 3. 写入两条日志，验证 GetDistinctClientAddrs 与 GetClientAddrFeatures
+	now := time.Now()
+	for i, rec := range []Record{
+		{Timestamp: now, Upstream: "up", Model: "deepseek-v4-flash", Endpoint: "chat", Status: 200, ClientAddr: "192.168.1.20:53211"},
+		{Timestamp: now, Upstream: "up", Model: "deepseek-v4-flash", Endpoint: "chat", Status: 200, ClientAddr: "192.168.1.21:6000"},
+		{Timestamp: now, Upstream: "up", Model: "gpt-5", Endpoint: "chat", Status: 200, ClientAddr: "192.168.1.20:53211"},
+	} {
+		if err := s.Insert(rec); err != nil {
+			t.Fatalf("insert %d: %v", i, err)
+		}
+	}
+	addrs, err := s.GetDistinctClientAddrs(10)
+	if err != nil {
+		t.Fatalf("GetDistinctClientAddrs: %v", err)
+	}
+	if len(addrs) != 2 {
+		t.Errorf("distinct addrs = %v, want 2", addrs)
+	}
+	feats, err := s.GetClientAddrFeatures(10)
+	if err != nil {
+		t.Fatalf("GetClientAddrFeatures: %v", err)
+	}
+	if len(feats) != 2 {
+		t.Fatalf("features count = %d, want 2", len(feats))
+	}
+	for _, f := range feats {
+		if f.ClientAddr == "192.168.1.20:53211" {
+			if f.Requests != 2 {
+				t.Errorf("addr 192.168.1.20 requests = %d, want 2", f.Requests)
+			}
+			if f.Models != "deepseek-v4-flash,gpt-5" && f.Models != "gpt-5,deepseek-v4-flash" {
+				t.Errorf("addr models = %q, want deepseek-v4-flash,gpt-5", f.Models)
+			}
+		}
 	}
 }

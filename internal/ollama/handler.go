@@ -30,8 +30,8 @@ type Handler struct {
 	health   *health.Checker
 	client   *http.Client
 	log      *slog.Logger
-	recorder *store.Recorder // 指标记录器；nil 时跳过记录
-	timeout  time.Duration   // 上游请求超时；默认 60s，可用 SetTimeout 覆盖
+	recorder *store.Recorder              // 指标记录器；nil 时跳过记录
+	timeout  time.Duration                // 上游请求超时；默认 60s，可用 SetTimeout 覆盖
 	keyName  func(r *http.Request) string // 下游 API Key 展示名（统计用）；nil 时记录空
 }
 
@@ -187,6 +187,7 @@ func (h *Handler) forward(w http.ResponseWriter, r *http.Request, path string) {
 			DurationMS: time.Since(start).Milliseconds(),
 			Tokens:     0,
 			APIKey:     h.recordAPIKey(r),
+			ClientAddr: r.RemoteAddr, // 客户端地址 "IP:port"，用于区分调用程序
 		})
 	}
 	h.log.Info("ollama "+path,
@@ -275,6 +276,7 @@ func (h *Handler) openAIForward(w http.ResponseWriter, r *http.Request, kind str
 			Status:     rec.status,
 			DurationMS: time.Since(start).Milliseconds(),
 			Tokens:     0,
+			ClientAddr: r.RemoteAddr, // 客户端地址 "IP:port"，用于区分调用程序
 		})
 	}()
 

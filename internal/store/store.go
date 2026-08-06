@@ -2,9 +2,14 @@
 package store
 
 import (
+	"compress/gzip"
 	"database/sql"
 	"encoding/json"
+	"fmt"
+	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -13,18 +18,21 @@ import (
 
 // Record 是一次转发请求的指标记录。
 type Record struct {
-	Timestamp        time.Time
-	Upstream         string // 实际转发到的上游名
-	Model            string // 客户端请求的模型名
-	Endpoint         string // chat / images / audio / embed / claude / generate
-	Status           int    // HTTP 状态码
-	DurationMS       int64  // 转发耗时毫秒
-	PromptTokens         int64  // 输入 token 数
-	CompletionTokens     int64  // 输出 token 数
-	Tokens               int64  // 总 token 数 = PromptTokens + CompletionTokens
-	APIKey               string // 下游 API Key 名称（api_tokens.name，用于按 Key 统计）
-	PromptCacheHitTokens  int64  // 上游前缀缓存命中 token 数（DeepSeek prompt_cache_hit_tokens）
-	PromptCacheMissTokens int64  // 上游前缀缓存未命中 token 数（DeepSeek prompt_cache_miss_tokens）
+	Timestamp             time.Time
+	Upstream              string  // 实际转发到的上游名
+	Model                 string  // 客户端请求的模型名
+	UpstreamModel         string  // 上游真实模型名（计费用；为空则回退用 Model）
+	Cost                  float64 // 本次请求费用（元），0 表示未计价
+	Endpoint              string  // chat / images / audio / embed / claude / generate
+	Status                int     // HTTP 状态码
+	DurationMS            int64   // 转发耗时毫秒
+	PromptTokens          int64   // 输入 token 数
+	CompletionTokens      int64   // 输出 token 数
+	Tokens                int64   // 总 token 数 = PromptTokens + CompletionTokens
+	APIKey                string  // 下游 API Key 名称（api_tokens.name，用于按 Key 统计）
+	ClientAddr            string  // 客户端地址 "IP:port"（r.RemoteAddr 原样），用于区分调用程序
+	PromptCacheHitTokens  int64   // 上游前缀缓存命中 token 数（DeepSeek prompt_cache_hit_tokens）
+	PromptCacheMissTokens int64   // 上游前缀缓存未命中 token 数（DeepSeek prompt_cache_miss_tokens）
 }
 
 // UpstreamRow 是 upstreams 表的行映射。
@@ -42,9 +50,9 @@ type UpstreamRow struct {
 	Enabled      int    `json:"enabled"` // 1=启用 0=禁用（禁用的不参与转发路由）
 	// EnabledPtr 区分 JSON body 中 enabled 字段"未传"(nil) 与"显式传 0/1"。
 	// UpdateUpstream 用它避免未传时误禁用上游。
-	EnabledPtr *int `json:"-"`
-	CreatedAt    string `json:"created_at"`
-	UpdatedAt    string `json:"updated_at"`
+	EnabledPtr *int   `json:"-"`
+	CreatedAt  string `json:"created_at"`
+	UpdatedAt  string `json:"updated_at"`
 }
 
 // RoutingRuleRow 是 routing_rules 表的行映射。
@@ -66,10 +74,10 @@ type ConfigRow struct {
 // APIToken 是下游 API Key（api_tokens 表）的行映射。
 type APIToken struct {
 	ID        uint   `json:"id"`
-	Name      string `json:"name"`      // 用途备注，如 "Claude Code" / "Hermes"
-	Key       string `json:"key"`       // 下游调用时用的 Bearer token
-	Enabled   bool   `json:"enabled"`   // 是否启用
-	Remark    string `json:"remark"`    // 备注
+	Name      string `json:"name"`    // 用途备注，如 "Claude Code" / "Hermes"
+	Key       string `json:"key"`     // 下游调用时用的 Bearer token
+	Enabled   bool   `json:"enabled"` // 是否启用
+	Remark    string `json:"remark"`  // 备注
 	CreatedAt string `json:"created_at"`
 }
 
@@ -94,9 +102,57 @@ type Discount struct {
 	CreatedAt    string  `json:"created_at"`
 }
 
+// ModelPrice 是模型单价（model_prices 表）的行映射。单位：元/百万 token。
+// model = '*' 表示默认价（所有未单独定价的模型都用它）。
+type ModelPrice struct {
+	ID         uint    `json:"id"`
+	Model      string  `json:"model"`       // 上游真实模型名；'*' = 默认
+	PriceInput float64 `json:"price_input"` // 输入（缓存未命中）元/百万token
+	PriceCache float64 `json:"price_cache"` // 输入（缓存命中）元/百万token
+	PriceOut   float64 `json:"price_out"`   // 输出 元/百万token
+	Note       string  `json:"note"`
+	CreatedAt  string  `json:"created_at"`
+	UpdatedAt  string  `json:"updated_at"`
+}
+
+// ClientProfile 是 client_profiles 表的行映射（客户端程序分析结果）。
+type ClientProfile struct {
+	ID         uint    `json:"id"`
+	ClientAddr string  `json:"client_addr"` // IP:port
+	Program    string  `json:"program"`     // 识别出的程序名
+	Confidence float64 `json:"confidence"`  // 置信度 0-1
+	Evidence   string  `json:"evidence"`    // 分析依据（UA、端口、行为特征等）
+	UpdatedAt  string  `json:"updated_at"`
+}
+
+// ClientAddrFeature 是单个 client_addr 在分析窗口内的请求特征聚合（供程序推断用）。
+type ClientAddrFeature struct {
+	ClientAddr string // IP:port
+	Models     string // 逗号分隔的调用模型集合
+	Endpoints  string // 逗号分隔的端点集合
+	Requests   int    // 请求数
+}
+
+// CostRow 是费用统计的聚合行。
+type CostRow struct {
+	Name     string  `json:"name"`     // 上游名 / api_key 名 / 模型名
+	Cost     float64 `json:"cost"`     // 费用（元）
+	Requests int     `json:"requests"` // 请求数
+	Tokens   int64   `json:"tokens"`   // 总 token 数
+}
+
 // Store 封装 SQLite 连接与表结构。
 type Store struct {
-	db *sql.DB
+	db   *sql.DB
+	path string
+}
+
+// DBPath 返回数据库文件路径。
+func (s *Store) DBPath() string { return s.path }
+
+// BackupDir 返回备份目录（数据库同目录 backups/）。
+func (s *Store) BackupDir() string {
+	return filepath.Join(filepath.Dir(s.path), "backups")
 }
 
 // Open 打开（或创建）SQLite 数据库文件，启用 WAL，建表。
@@ -130,12 +186,59 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
-	s := &Store{db: db}
+	s := &Store{db: db, path: path}
 	if err := s.init(); err != nil {
 		db.Close()
 		return nil, err
 	}
 	return s, nil
+}
+
+// CreateBackup 用 SQLite 在线快照（VACUUM INTO）备份数据库，再 gzip 压缩。
+// VACUUM INTO 是官方推荐的在线一致性备份方式，不会阻塞正在进行的读写。
+// 返回备份文件名（backups/<db>.<ts>.gz）。
+func (s *Store) CreateBackup() (string, error) {
+	dir := s.BackupDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	ts := time.Now().Format("20060102_150405")
+	base := filepath.Base(s.path)
+	rawPath := filepath.Join(dir, fmt.Sprintf("%s.%s.tmp", base, ts))
+	gzPath := filepath.Join(dir, fmt.Sprintf("%s.%s.gz", base, ts))
+
+	// 在线快照到临时文件
+	if _, err := s.db.Exec(fmt.Sprintf(`VACUUM INTO '%s'`, rawPath)); err != nil {
+		os.Remove(rawPath)
+		return "", fmt.Errorf("vacuum: %w", err)
+	}
+	// gzip 压缩
+	if err := gzipFile(rawPath, gzPath); err != nil {
+		os.Remove(rawPath)
+		return "", fmt.Errorf("gzip: %w", err)
+	}
+	os.Remove(rawPath)
+	return filepath.Base(gzPath), nil
+}
+
+// gzipFile 将 src 压缩为 dst（gzip，保留原文件）。
+func gzipFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	gz := gzip.NewWriter(out)
+	if _, err := io.Copy(gz, in); err != nil {
+		gz.Close()
+		return err
+	}
+	return gz.Close()
 }
 
 // init 建表并创建查询索引。
@@ -149,7 +252,8 @@ func (s *Store) init() error {
 		endpoint    TEXT    NOT NULL,
 		status      INTEGER NOT NULL,
 		duration_ms INTEGER NOT NULL,
-		tokens      INTEGER NOT NULL DEFAULT 0
+		tokens      INTEGER NOT NULL DEFAULT 0,
+		client_addr TEXT    NOT NULL DEFAULT ''
 	);
 	CREATE INDEX IF NOT EXISTS idx_request_log_ts ON request_log(ts);
 	CREATE INDEX IF NOT EXISTS idx_request_log_upstream ON request_log(upstream);
@@ -229,6 +333,29 @@ func (s *Store) init() error {
 		note          TEXT    NOT NULL DEFAULT '',
 		created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
 	);
+
+	CREATE TABLE IF NOT EXISTS model_prices (
+		id             INTEGER PRIMARY KEY AUTOINCREMENT,
+		model          TEXT    NOT NULL UNIQUE,   -- 上游真实模型名；'*' = 默认价
+		price_input    REAL    NOT NULL DEFAULT 1.0,   -- 输入（缓存未命中）元/百万token
+		price_output   REAL    NOT NULL DEFAULT 2.0,   -- 输出 元/百万token
+		price_cache    REAL    NOT NULL DEFAULT 0.02,  -- 输入（缓存命中）元/百万token
+		note           TEXT    NOT NULL DEFAULT '',
+		created_at     TEXT    NOT NULL DEFAULT (datetime('now')),
+		updated_at     TEXT    NOT NULL DEFAULT (datetime('now'))
+	);
+
+	-- 客户端程序分析结果（按 client_addr 唯一，标识 IP:port 对应的调用程序）。
+	-- 由分析服务定时/手动触发：聚合 request_log 去重 client_addr，调 pi CLI 推断，
+	-- 结果经应用层 API upsert 到此表，前端"客户端分析"页展示。
+	CREATE TABLE IF NOT EXISTS client_profiles (
+		id          INTEGER PRIMARY KEY AUTOINCREMENT,
+		client_addr TEXT    NOT NULL UNIQUE,    -- IP:port
+		program     TEXT    NOT NULL DEFAULT '',   -- 识别出的程序名
+		confidence  REAL    NOT NULL DEFAULT 0,    -- 置信度 0-1
+		evidence    TEXT    NOT NULL DEFAULT '',   -- 分析依据（UA、端口、行为特征等）
+		updated_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+	);
 	`
 	if _, err := s.db.Exec(schema); err != nil {
 		return err
@@ -237,13 +364,19 @@ func (s *Store) init() error {
 	for _, col := range []string{"prompt_tokens", "completion_tokens"} {
 		s.db.Exec("ALTER TABLE request_log ADD COLUMN " + col + " INTEGER NOT NULL DEFAULT 0")
 	}
-	// 迁移：新增前缀缓存命中统计列（DeepSeek prompt_cache_hit/miss_tokens）
+	// 迁移：新增 prefix 缓存命中统计列（DeepSeek prompt_cache_hit/miss_tokens）
 	for _, col := range []string{"prompt_cache_hit_tokens", "prompt_cache_miss_tokens"} {
 		s.db.Exec("ALTER TABLE request_log ADD COLUMN " + col + " INTEGER NOT NULL DEFAULT 0")
 	}
 	// 迁移：request_log 加 api_key 列（按下游 Key 统计）
 	s.db.Exec("ALTER TABLE request_log ADD COLUMN api_key TEXT NOT NULL DEFAULT ''")
 	s.db.Exec("CREATE INDEX IF NOT EXISTS idx_request_log_apikey ON request_log(api_key)")
+	// 迁移：request_log 加上游真实模型名列（计费按上游真实名查价）
+	s.db.Exec("ALTER TABLE request_log ADD COLUMN upstream_model TEXT NOT NULL DEFAULT ''")
+	// 迁移：request_log 加 cost 列（本次请求费用，元）
+	s.db.Exec("ALTER TABLE request_log ADD COLUMN cost REAL NOT NULL DEFAULT 0")
+	// 迁移：request_log 加 client_addr 列（客户端地址 "IP:port"，按调用程序分析）
+	s.db.Exec("ALTER TABLE request_log ADD COLUMN client_addr TEXT NOT NULL DEFAULT ''")
 	// 迁移：upstreams 加 enabled 列（禁用/启用）
 	s.db.Exec("ALTER TABLE upstreams ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1")
 	return nil
@@ -260,11 +393,11 @@ func (s *Store) DB() *sql.DB { return s.db }
 // Insert 单条插入一条请求记录。
 func (s *Store) Insert(rec Record) error {
 	_, err := s.db.Exec(
-		`INSERT INTO request_log (ts, upstream, model, endpoint, status, duration_ms, tokens, prompt_tokens, completion_tokens, api_key, prompt_cache_hit_tokens, prompt_cache_miss_tokens)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO request_log (ts, upstream, model, endpoint, status, duration_ms, tokens, prompt_tokens, completion_tokens, api_key, client_addr, prompt_cache_hit_tokens, prompt_cache_miss_tokens)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		rec.Timestamp.UTC().Format(time.RFC3339), rec.Upstream, rec.Model, rec.Endpoint,
 		rec.Status, rec.DurationMS, rec.Tokens, rec.PromptTokens, rec.CompletionTokens, rec.APIKey,
-		rec.PromptCacheHitTokens, rec.PromptCacheMissTokens,
+		rec.ClientAddr, rec.PromptCacheHitTokens, rec.PromptCacheMissTokens,
 	)
 	return err
 }
@@ -313,7 +446,7 @@ type APIKeyRow struct {
 }
 
 // MetricsByAPIKey 返回按下游 API Key 聚合的统计（用于"哪些程序用得多"）。
-// since 为空串时统计全部。按请求数降序。
+// MetricsByAPIKey 按下游 API Key 聚合请求量指标（按 token 降序）。
 func (s *Store) MetricsByAPIKey(since string) []APIKeyRow {
 	q := `SELECT COALESCE(NULLIF(api_key, ''), (SELECT name FROM api_tokens WHERE enabled=1 ORDER BY id LIMIT 1), '(未标识)') as name,
 	              COUNT(*) as requests,
@@ -343,6 +476,135 @@ func (s *Store) MetricsByAPIKey(since string) []APIKeyRow {
 	return out
 }
 
+// PriceFor 返回指定（上游真实）模型名的单价。没单独定价时回退到默认价（'*'）。
+// 返回四个值：输入价、缓存命中输入价、输出价、是否找到。
+func (s *Store) PriceFor(model string) (input, cache, out float64, ok bool) {
+	if model != "" {
+		row := s.db.QueryRow(`SELECT price_input, price_cache, price_output FROM model_prices WHERE model = ?`, model)
+		if err := row.Scan(&input, &cache, &out); err == nil {
+			return input, cache, out, true
+		}
+	}
+	row := s.db.QueryRow(`SELECT price_input, price_cache, price_output FROM model_prices WHERE model = '*'`)
+	if err := row.Scan(&input, &cache, &out); err == nil {
+		return input, cache, out, true
+	}
+	return 0, 0, 0, false
+}
+
+// ListPrices 返回全部模型单价（默认价 '*' 排第一）。
+func (s *Store) ListPrices() []ModelPrice {
+	rows, err := s.db.Query(`SELECT id, model, price_input, price_cache, price_output, note, created_at, updated_at FROM model_prices ORDER BY (model='*') DESC, model ASC`)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var out []ModelPrice
+	for rows.Next() {
+		var r ModelPrice
+		if err := rows.Scan(&r.ID, &r.Model, &r.PriceInput, &r.PriceCache, &r.PriceOut, &r.Note, &r.CreatedAt, &r.UpdatedAt); err != nil {
+			continue
+		}
+		out = append(out, r)
+	}
+	return out
+}
+
+// UpsertPrice 新增或更新模型单价（按 model 唯一）。
+func (s *Store) UpsertPrice(p ModelPrice) error {
+	_, err := s.db.Exec(`INSERT INTO model_prices (model, price_input, price_cache, price_output, note)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(model) DO UPDATE SET
+			price_input = excluded.price_input,
+			price_cache = excluded.price_cache,
+			price_output = excluded.price_output,
+			note = excluded.note,
+			updated_at = datetime('now')`,
+		p.Model, p.PriceInput, p.PriceCache, p.PriceOut, p.Note)
+	return err
+}
+
+// DeletePrice 删除模型单价。
+func (s *Store) DeletePrice(model string) error {
+	_, err := s.db.Exec(`DELETE FROM model_prices WHERE model = ?`, model)
+	return err
+}
+
+// EnsureDefaultPrice 确保默认价存在（'*'）。默认按 deepseek-v4-flash 定价：
+// 输入缓存命中 0.02 元/百万token，输入缓存未命中 1 元/百万token，输出 2 元/百万token。
+func (s *Store) EnsureDefaultPrice() {
+	_, err := s.db.Exec(`INSERT OR IGNORE INTO model_prices (model, price_input, price_cache, price_output, note)
+		VALUES ('*', 1.0, 0.02, 2.0, '默认价：按 deepseek-v4-flash 定价')`)
+	if err != nil {
+		slog.Error("ensure default price", "error", err)
+	}
+}
+
+// TotalCost 返回指定时间段内总费用（元）。
+func (s *Store) TotalCost(since, until string) (float64, int) {
+	q := `SELECT COALESCE(SUM(cost), 0), COUNT(*) FROM request_log WHERE cost > 0`
+	var args []any
+	if since != "" {
+		q += ` AND ts >= ?`
+		args = append(args, since)
+	}
+	if until != "" {
+		q += ` AND ts <= ?`
+		args = append(args, until)
+	}
+	var cost float64
+	var cnt int
+	if err := s.db.QueryRow(q, args...).Scan(&cost, &cnt); err != nil {
+		return 0, 0
+	}
+	return cost, cnt
+}
+
+// CostByUpstream 按上游聚合费用。
+func (s *Store) CostByUpstream(since, until string) []CostRow {
+	return s.costGroupBy(`upstream`, since, until)
+}
+
+// CostByAPIKey 按下游 API Key 聚合费用（含总 token）。
+func (s *Store) CostByAPIKey(since, until string) []CostRow {
+	return s.costGroupBy(`api_key`, since, until)
+}
+
+// CostByModel 按上游真实模型名聚合费用（费用饼图的二级拆分）。
+func (s *Store) CostByModel(since, until string) []CostRow {
+	return s.costGroupBy(`upstream_model`, since, until)
+}
+
+// costGroupBy 通用费用聚合。
+func (s *Store) costGroupBy(col, since, until string) []CostRow {
+	q := `SELECT COALESCE(NULLIF(` + col + `, ''), '(未知)'), COALESCE(SUM(cost), 0), COUNT(*), COALESCE(SUM(tokens), 0)
+	       FROM request_log WHERE cost > 0`
+	var args []any
+	if since != "" {
+		q += ` AND ts >= ?`
+		args = append(args, since)
+	}
+	if until != "" {
+		q += ` AND ts <= ?`
+		args = append(args, until)
+	}
+	q += ` GROUP BY ` + col + ` ORDER BY SUM(cost) DESC`
+	rows, err := s.db.Query(q, args...)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var out []CostRow
+	for rows.Next() {
+		var r CostRow
+		if err := rows.Scan(&r.Name, &r.Cost, &r.Requests, &r.Tokens); err != nil {
+			continue
+		}
+		out = append(out, r)
+	}
+	return out
+}
+
 // InsertBatch 在单个事务内批量插入多条记录。
 func (s *Store) InsertBatch(recs []Record) error {
 	if len(recs) == 0 {
@@ -355,8 +617,8 @@ func (s *Store) InsertBatch(recs []Record) error {
 	defer tx.Rollback()
 
 	stmt, err := tx.Prepare(
-		`INSERT INTO request_log (ts, upstream, model, endpoint, status, duration_ms, tokens, prompt_tokens, completion_tokens, api_key, prompt_cache_hit_tokens, prompt_cache_miss_tokens)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO request_log (ts, upstream, model, upstream_model, cost, endpoint, status, duration_ms, tokens, prompt_tokens, completion_tokens, api_key, client_addr, prompt_cache_hit_tokens, prompt_cache_miss_tokens)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 	)
 	if err != nil {
 		return err
@@ -365,9 +627,10 @@ func (s *Store) InsertBatch(recs []Record) error {
 
 	for _, rec := range recs {
 		if _, err := stmt.Exec(
-			rec.Timestamp.UTC().Format(time.RFC3339), rec.Upstream, rec.Model, rec.Endpoint,
+			rec.Timestamp.UTC().Format(time.RFC3339), rec.Upstream, rec.Model, rec.UpstreamModel, rec.Cost,
+			rec.Endpoint,
 			rec.Status, rec.DurationMS, rec.Tokens, rec.PromptTokens, rec.CompletionTokens, rec.APIKey,
-			rec.PromptCacheHitTokens, rec.PromptCacheMissTokens,
+			rec.ClientAddr, rec.PromptCacheHitTokens, rec.PromptCacheMissTokens,
 		); err != nil {
 			return err
 		}
@@ -567,7 +830,7 @@ func (s *Store) DeleteUpstream(name string) error {
 		return err
 	}
 	type ruleRow struct {
-		id       int64
+		id        int64
 		upstreams string
 	}
 	var toUpdate []ruleRow
@@ -668,12 +931,12 @@ func (s *Store) DeleteRoutingRule(model string) error {
 
 // EffortConfigRow 是 effort_config 表的行映射。
 type EffortConfigRow struct {
-	ID           uint   `json:"id"`
-	Model        string `json:"model"`        // 模型匹配 pattern（支持 * 通配）
-	Recommended  string `json:"recommended"`  // 推荐思考等级（客户端未传时自动补）
-	Forced       string `json:"forced"`       // 强制思考等级（覆盖客户端传的）
-	CreatedAt    string `json:"created_at"`
-	UpdatedAt    string `json:"updated_at"`
+	ID          uint   `json:"id"`
+	Model       string `json:"model"`       // 模型匹配 pattern（支持 * 通配）
+	Recommended string `json:"recommended"` // 推荐思考等级（客户端未传时自动补）
+	Forced      string `json:"forced"`      // 强制思考等级（覆盖客户端传的）
+	CreatedAt   string `json:"created_at"`
+	UpdatedAt   string `json:"updated_at"`
 }
 
 // ListEffortConfig 返回所有最佳思考等级配置。
@@ -776,17 +1039,22 @@ func (s *Store) SeedDefaults() error {
 		"retry.max_retries":             "3",
 		"retry.retry_statuses":          "429,500,502,503,504",
 		"retry.retry_keywords":          "套餐用完了,余额不足,quota,rate limit",
-		"retry.fast_fail_minutes":        "5",
-		"retry.fast_fail_probe_minutes":   "5",
+		"retry.fast_fail_minutes":       "5",
+		"retry.fast_fail_probe_minutes": "5",
 		"retry.upstream_timeout":        "60",
 		// 视频透传（默认关）
 		"proxy.video_pass_through": "false",
+		// reasoning_content 回传缓存（DeepSeek thinking 模式 tool-calling 兼容，默认开）
+		"proxy.cache_reasoning_content": "true",
 		// per-key 冷却（商汤默认 1 秒）
-		"proxy.cooldown_seconds":      "1",
-		"proxy.cooldown_upstreams":    "[\"商汤\"]",
+		"proxy.cooldown_seconds":   "1",
+		"proxy.cooldown_upstreams": "[\"商汤\"]",
 		// 最佳思考等级（默认关）
 		"proxy.auto_best_effort":  "false",
 		"proxy.force_best_effort": "false",
+		// 客户端程序分析（默认关；开启后按间隔定时调 pi CLI 识别 client_addr 对应程序）
+		"proxy.client_analysis":          "false",
+		"proxy.client_analysis_interval": "600",
 	}
 	if count == 0 {
 		// 首次启动：全量插入
@@ -1012,4 +1280,94 @@ func (s *Store) UpdateDiscount(id uint, d *Discount) error {
 func (s *Store) DeleteDiscount(id uint) error {
 	_, err := s.db.Exec(`DELETE FROM discounts WHERE id = ?`, id)
 	return err
+}
+
+// ===== 客户端程序分析（client_profiles）=====
+
+// UpsertClientProfile 新增或更新客户端程序分析档案（按 client_addr 唯一）。
+// 由分析服务经应用层调用；重复分析同一 addr 时更新 program/confidence/evidence。
+func (s *Store) UpsertClientProfile(p ClientProfile) error {
+	_, err := s.db.Exec(`INSERT INTO client_profiles (client_addr, program, confidence, evidence)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT(client_addr) DO UPDATE SET
+			program = excluded.program,
+			confidence = excluded.confidence,
+			evidence = excluded.evidence,
+			updated_at = datetime('now')`,
+		p.ClientAddr, p.Program, p.Confidence, p.Evidence)
+	return err
+}
+
+// ListClientProfiles 返回全部客户端程序分析档案（按更新时间倒序）。
+func (s *Store) ListClientProfiles() ([]ClientProfile, error) {
+	rows, err := s.db.Query(`SELECT id, client_addr, program, confidence, evidence, updated_at
+		FROM client_profiles ORDER BY updated_at DESC, id DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []ClientProfile
+	for rows.Next() {
+		var p ClientProfile
+		if err := rows.Scan(&p.ID, &p.ClientAddr, &p.Program, &p.Confidence, &p.Evidence, &p.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// GetDistinctClientAddrs 返回最近 minutes 分钟内 request_log 中去重后的 client_addr 列表
+// （非空、按 addr 排序），供客户端程序分析聚合使用。
+func (s *Store) GetDistinctClientAddrs(minutes int) ([]string, error) {
+	if minutes <= 0 {
+		minutes = 10
+	}
+	since := time.Now().Add(-time.Duration(minutes) * time.Minute).UTC().Format(time.RFC3339)
+	rows, err := s.db.Query(`SELECT DISTINCT client_addr FROM request_log
+		WHERE client_addr != '' AND ts >= ? ORDER BY client_addr`, since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []string
+	for rows.Next() {
+		var addr string
+		if err := rows.Scan(&addr); err != nil {
+			return nil, err
+		}
+		out = append(out, addr)
+	}
+	return out, rows.Err()
+}
+
+// GetClientAddrFeatures 返回最近 minutes 分钟内各 client_addr 的请求特征聚合
+// （模型集合/端点集合/请求数），作为 pi 推断调用程序的线索。
+func (s *Store) GetClientAddrFeatures(minutes int) ([]ClientAddrFeature, error) {
+	if minutes <= 0 {
+		minutes = 10
+	}
+	since := time.Now().Add(-time.Duration(minutes) * time.Minute).UTC().Format(time.RFC3339)
+	rows, err := s.db.Query(`SELECT client_addr,
+		       COALESCE(GROUP_CONCAT(DISTINCT model), ''),
+		       COALESCE(GROUP_CONCAT(DISTINCT endpoint), ''),
+		       COUNT(*)
+		FROM request_log WHERE client_addr != '' AND ts >= ?
+		GROUP BY client_addr ORDER BY client_addr`, since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []ClientAddrFeature
+	for rows.Next() {
+		var f ClientAddrFeature
+		if err := rows.Scan(&f.ClientAddr, &f.Models, &f.Endpoints, &f.Requests); err != nil {
+			return nil, err
+		}
+		out = append(out, f)
+	}
+	return out, rows.Err()
 }
