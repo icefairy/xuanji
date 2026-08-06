@@ -1130,11 +1130,42 @@ func fmtCST(ts string) string {
 	return t.In(time.FixedZone("CST", 8*3600)).Format("2006-01-02 15:04:05")
 }
 
+// logProfile 是 /admin/logs 响应中 profile_map 的元素（client_addr → 已识别程序）。
+type logProfile struct {
+	Program    string  `json:"program"`    // 识别出的程序名（非空且非'未知'）
+	Confidence float64 `json:"confidence"` // 置信度 0-1
+}
+
+// clientProfileMap 查询 client_profiles 中已识别出程序（program 非空且非'未知'）
+// 的档案，返回 client_addr → {program, confidence} 映射，供请求日志页直接把
+// 客户端列显示为程序名。store 为 nil 或查询失败时返回空 map（不阻断日志返回）。
+func (h *Handler) clientProfileMap() map[string]logProfile {
+	out := map[string]logProfile{}
+	if h.store == nil {
+		return out
+	}
+	rows, err := h.store.DB().Query(`SELECT client_addr, program, confidence
+		FROM client_profiles WHERE program != '' AND program != '未知'`)
+	if err != nil {
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var addr, program string
+		var conf float64
+		if rows.Scan(&addr, &program, &conf) == nil {
+			out[addr] = logProfile{Program: program, Confidence: conf}
+		}
+	}
+	return out
+}
+
 // RequestLogs 返回最近请求日志（GET /admin/logs?limit=50&offset=0&upstream=xx&model=yy）。
-// 支持按上游/模型筛选与分页；响应含 total 和筛选选项（日志中出现过的上游/模型）。
+// 支持按上游/模型筛选与分页；响应含 total、筛选选项和 profile_map
+// （client_addr → 已识别程序名，供前端客户端列显示程序名）。
 func (h *Handler) RequestLogs(w http.ResponseWriter, r *http.Request) {
 	if h.store == nil {
-		writeJSON(w, map[string]interface{}{"total": 0, "limit": 50, "offset": 0, "logs": []map[string]interface{}{}})
+		writeJSON(w, map[string]interface{}{"total": 0, "limit": 50, "offset": 0, "logs": []map[string]interface{}{}, "profile_map": map[string]logProfile{}})
 		return
 	}
 	limit := 50
@@ -1178,7 +1209,7 @@ func (h *Handler) RequestLogs(w http.ResponseWriter, r *http.Request) {
 				SELECT ts, upstream, model, endpoint, status, duration_ms, prompt_tokens, completion_tokens, tokens, prompt_cache_hit_tokens, prompt_cache_miss_tokens, api_key, cost, upstream_model, client_addr
 				FROM request_log`+where+` ORDER BY id DESC LIMIT ? OFFSET ?`, queryArgs...)
 	if err != nil {
-		writeJSON(w, map[string]interface{}{"total": total, "limit": limit, "offset": offset, "logs": []map[string]interface{}{}})
+		writeJSON(w, map[string]interface{}{"total": total, "limit": limit, "offset": offset, "logs": []map[string]interface{}{}, "profile_map": map[string]logProfile{}})
 		return
 	}
 	defer rows.Close()
@@ -1233,12 +1264,29 @@ func (h *Handler) RequestLogs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, map[string]interface{}{
-		"total":   total,
-		"limit":   limit,
-		"offset":  offset,
-		"logs":    out,
-		"filters": map[string]interface{}{"upstreams": upstreams, "models": models},
+		"total":       total,
+		"limit":       limit,
+		"offset":      offset,
+		"logs":        out,
+		"filters":     map[string]interface{}{"upstreams": upstreams, "models": models},
+		"profile_map": h.clientProfileMap(),
 	})
+}
+
+// RecalcCost 重算历史请求费用（POST /admin/logs/recalc-cost）。
+// 对缓存字段全 0 且有输入 token 的历史请求，按「未命中价全额」口径重算 cost
+// （修复 calcCost 之前无缓存统计时输入白嫖的问题）。返回更新条数。
+func (h *Handler) RecalcCost(w http.ResponseWriter, _ *http.Request) {
+	if h.store == nil {
+		writeJSON(w, map[string]string{"error": "store not available"})
+		return
+	}
+	updated, err := h.store.RecalcCost()
+	if err != nil {
+		writeJSON(w, map[string]interface{}{"error": err.Error()})
+		return
+	}
+	writeJSON(w, map[string]interface{}{"updated": updated})
 }
 
 // CloneUpstream 克隆上游：读取原上游配置，改名称和 API key 后创建（POST /admin/upstreams/{name}/clone）。

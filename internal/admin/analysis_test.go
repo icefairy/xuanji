@@ -311,6 +311,73 @@ func TestAnalysisProfiles_Endpoint(t *testing.T) {
 	}
 }
 
+// TestAnalysisProfiles_CacheFields 验证 GET /admin/analysis/profiles 每条档案附带
+// 缓存命中率统计（cache_max/cache_min/cache_avg，百分比 0-100）；无统计的为 null。
+func TestAnalysisProfiles_CacheFields(t *testing.T) {
+	s, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer s.Close()
+	// 两个 profile；addr1 有缓存统计，addr2 无任何日志
+	for _, p := range []store.ClientProfile{
+		{ClientAddr: "192.168.1.20:53211", Program: "Hermes", Confidence: 0.8, Evidence: "UA=Hermes/0.5.2"},
+		{ClientAddr: "192.168.1.21:6000", Program: "未知", Confidence: 0.1, Evidence: "UA 未识别"},
+	} {
+		if err := s.UpsertClientProfile(p); err != nil {
+			t.Fatalf("UpsertClientProfile: %v", err)
+		}
+	}
+	// addr1 两条日志：命中率 50% 与 100% → max=100 min=50 avg=75
+	now := time.Now()
+	for _, rec := range []store.Record{
+		{Timestamp: now, Upstream: "up", Model: "m", Endpoint: "chat", Status: 200, ClientAddr: "192.168.1.20:53211", PromptTokens: 100, PromptCacheHitTokens: 50},
+		{Timestamp: now, Upstream: "up", Model: "m", Endpoint: "chat", Status: 200, ClientAddr: "192.168.1.20:53211", PromptTokens: 200, PromptCacheHitTokens: 200},
+	} {
+		if err := s.Insert(rec); err != nil {
+			t.Fatalf("Insert: %v", err)
+		}
+	}
+
+	h, hc := newTestHandler(t, testConfig())
+	defer hc.Close()
+	h.SetStore(s)
+
+	rr := httptest.NewRecorder()
+	h.AnalysisProfiles(rr, httptest.NewRequest(http.MethodGet, "/admin/analysis/profiles", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("code = %d, want 200", rr.Code)
+	}
+	var out []profileWithCacheStats
+	if err := json.Unmarshal(rr.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(out) != 2 {
+		t.Fatalf("profiles len = %d, want 2", len(out))
+	}
+	var withStat, withoutStat *profileWithCacheStats
+	for i := range out {
+		if out[i].ClientAddr == "192.168.1.20:53211" {
+			withStat = &out[i]
+		} else {
+			withoutStat = &out[i]
+		}
+	}
+	if withStat == nil || withStat.CacheMax == nil || withStat.CacheMin == nil || withStat.CacheAvg == nil {
+		t.Fatalf("addr1 cache 字段应为非空，got %+v", withStat)
+	}
+	if *withStat.CacheMax != 100 || *withStat.CacheMin != 50 || *withStat.CacheAvg != 75 {
+		t.Errorf("addr1 cache = max=%v min=%v avg=%v, want 100/50/75", *withStat.CacheMax, *withStat.CacheMin, *withStat.CacheAvg)
+	}
+	if withoutStat == nil || withoutStat.CacheMax != nil || withoutStat.CacheMin != nil || withoutStat.CacheAvg != nil {
+		t.Errorf("addr2 cache 字段应为 null，got %+v", withoutStat)
+	}
+	// 原有字段（嵌入 ClientProfile）不被破坏
+	if withStat.Program != "Hermes" || withStat.Confidence != 0.8 {
+		t.Errorf("addr1 program/confidence = %+v, want Hermes/0.8", withStat)
+	}
+}
+
 // TestAnalysisRun_Endpoint 验证 POST /admin/analysis/run 手动触发端点。
 func TestAnalysisRun_Endpoint(t *testing.T) {
 	s, err := store.Open(filepath.Join(t.TempDir(), "test.db"))

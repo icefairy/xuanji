@@ -681,10 +681,22 @@ func (h *Handler) AnalysisRun(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, resp)
 }
 
+// profileWithCacheStats 是客户端分析档案 + 缓存命中率统计的响应体（GET /admin/analysis/profiles）。
+// 嵌入 store.ClientProfile 展开原有字段；cache_max/min/avg 为百分比（0-100），
+// 无有效统计时为 null（前端显示 '-'）。
+type profileWithCacheStats struct {
+	store.ClientProfile
+	CacheMax *float64 `json:"cache_max"` // 最大缓存命中率（百分比），无数据显示 null
+	CacheMin *float64 `json:"cache_min"` // 最小缓存命中率（百分比），无数据显示 null
+	CacheAvg *float64 `json:"cache_avg"` // 平均缓存命中率（百分比），无数据显示 null
+}
+
 // AnalysisProfiles 返回全部客户端程序分析档案（GET /admin/analysis/profiles）。
+// 每条档案附带该 client_addr 的缓存命中率统计（cache_max/cache_min/cache_avg，
+// 百分比 0-100）；无统计数据的地址对应字段为 null。
 func (h *Handler) AnalysisProfiles(w http.ResponseWriter, _ *http.Request) {
 	if h.store == nil {
-		writeJSON(w, []store.ClientProfile{})
+		writeJSON(w, []profileWithCacheStats{})
 		return
 	}
 	profiles, err := h.store.ListClientProfiles()
@@ -692,5 +704,22 @@ func (h *Handler) AnalysisProfiles(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, map[string]string{"error": err.Error()})
 		return
 	}
-	writeJSON(w, profiles)
+	// 缓存命中率聚合（按 client_addr 匹配，一次查询全量）
+	cacheStats, err := h.store.ClientProfileCacheStats()
+	if err != nil {
+		slog.Warn("client profile cache stats failed", "error", err)
+		cacheStats = nil
+	}
+	out := make([]profileWithCacheStats, 0, len(profiles))
+	for _, p := range profiles {
+		item := profileWithCacheStats{ClientProfile: p}
+		if st, ok := cacheStats[p.ClientAddr]; ok {
+			maxR, minR, avgR := st.Max, st.Min, st.Avg
+			item.CacheMax = &maxR
+			item.CacheMin = &minR
+			item.CacheAvg = &avgR
+		}
+		out = append(out, item)
+	}
+	writeJSON(w, out)
 }

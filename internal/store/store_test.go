@@ -397,6 +397,42 @@ func TestClientProfiles(t *testing.T) {
 }
 
 // TestRecorder_UserAgentTruncation 验证 Recorder.Record 对超长 UA 截断 200 字符。
+// TestClientProfileCacheStats 验证按 client_addr 聚合的缓存命中率统计
+// （命中率 = prompt_cache_hit_tokens/prompt_tokens，prompt_tokens=0 不参与）。
+func TestClientProfileCacheStats(t *testing.T) {
+	s := openTestStore(t)
+	now := time.Now()
+	// addr1：三条记录命中率 50%、0%、100% → max=100 min=0 avg=50
+	for _, rec := range []Record{
+		{Timestamp: now, Upstream: "up", Model: "m1", Endpoint: "chat", Status: 200, ClientAddr: "10.0.0.1:1111", PromptTokens: 100, PromptCacheHitTokens: 50},
+		{Timestamp: now, Upstream: "up", Model: "m1", Endpoint: "chat", Status: 200, ClientAddr: "10.0.0.1:1111", PromptTokens: 200, PromptCacheHitTokens: 0},
+		{Timestamp: now, Upstream: "up", Model: "m1", Endpoint: "chat", Status: 200, ClientAddr: "10.0.0.1:1111", PromptTokens: 100, PromptCacheHitTokens: 100},
+		// addr2：一条 50%，一条 prompt_tokens=0 不参与 → max=min=avg=50
+		{Timestamp: now, Upstream: "up", Model: "m1", Endpoint: "chat", Status: 200, ClientAddr: "10.0.0.2:2222", PromptTokens: 300, PromptCacheHitTokens: 150},
+		{Timestamp: now, Upstream: "up", Model: "m1", Endpoint: "chat", Status: 200, ClientAddr: "10.0.0.2:2222", PromptTokens: 0, PromptCacheHitTokens: 0},
+		// addr3：全部 prompt_tokens=0 → 无有效统计，不应出现在结果中
+		{Timestamp: now, Upstream: "up", Model: "m1", Endpoint: "chat", Status: 200, ClientAddr: "10.0.0.3:3333", PromptTokens: 0, PromptCacheHitTokens: 0},
+	} {
+		if err := s.Insert(rec); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+	}
+
+	stats, err := s.ClientProfileCacheStats()
+	if err != nil {
+		t.Fatalf("ClientProfileCacheStats: %v", err)
+	}
+	if len(stats) != 2 {
+		t.Fatalf("stats count = %d, want 2（addr3 无有效统计应排除）", len(stats))
+	}
+	if st := stats["10.0.0.1:1111"]; st.Max != 100 || st.Min != 0 || st.Avg != 50 {
+		t.Errorf("addr1 stats = %+v, want max=100 min=0 avg=50", st)
+	}
+	if st := stats["10.0.0.2:2222"]; st.Max != 50 || st.Min != 50 || st.Avg != 50 {
+		t.Errorf("addr2 stats = %+v, want max=min=avg=50", st)
+	}
+}
+
 func TestRecorder_UserAgentTruncation(t *testing.T) {
 	s := openTestStore(t)
 	r := newRecorder(s, 100, time.Hour) // 不自动刷盘，直接检查 channel 里的记录

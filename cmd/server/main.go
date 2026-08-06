@@ -368,6 +368,7 @@ func buildServeMux(cfg *config.Config, rt *router.Router, hc *health.Checker, re
 	mux.HandleFunc("GET /admin/metrics/keys/{name}/models", adminAuth(admHandler.MetricsByAPIKeyModels))
 	mux.HandleFunc("GET /admin/config/retry", adminAuth(admHandler.GetRetryConfig))
 	mux.HandleFunc("GET /admin/logs", adminAuth(admHandler.RequestLogs))
+	mux.HandleFunc("POST /admin/logs/recalc-cost", adminAuth(admHandler.RecalcCost))
 	mux.HandleFunc("GET /admin/api-keys", adminAuth(admHandler.APIKeys))
 	mux.HandleFunc("POST /admin/api-keys", adminAuth(admHandler.AddAPIKey))
 	mux.HandleFunc("DELETE /admin/api-keys/{key}", adminAuth(admHandler.DeleteAPIKey))
