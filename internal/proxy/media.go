@@ -221,6 +221,7 @@ func (h *Handler) forwardMediaJSON(w http.ResponseWriter, r *http.Request, ctx c
 			Tokens:     0,
 			APIKey:     h.recordAPIKey(r),
 			ClientAddr: r.RemoteAddr, // 客户端地址 "IP:port"，用于区分调用程序
+			UserAgent:  r.UserAgent(), // 客户端 UA，程序识别最强信号
 		})
 	}()
 	reqBody := body
@@ -299,6 +300,7 @@ func (h *Handler) forwardAudioTranscription(w http.ResponseWriter, r *http.Reque
 			Tokens:     0,
 			APIKey:     h.recordAPIKey(r),
 			ClientAddr: r.RemoteAddr, // 客户端地址 "IP:port"，用于区分调用程序
+			UserAgent:  r.UserAgent(), // 客户端 UA，程序识别最强信号
 		})
 	}()
 	var reqBody io.Reader

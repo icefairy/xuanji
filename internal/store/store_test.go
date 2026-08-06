@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -357,9 +358,9 @@ func TestClientProfiles(t *testing.T) {
 	// 3. 写入两条日志，验证 GetDistinctClientAddrs 与 GetClientAddrFeatures
 	now := time.Now()
 	for i, rec := range []Record{
-		{Timestamp: now, Upstream: "up", Model: "deepseek-v4-flash", Endpoint: "chat", Status: 200, ClientAddr: "192.168.1.20:53211"},
-		{Timestamp: now, Upstream: "up", Model: "deepseek-v4-flash", Endpoint: "chat", Status: 200, ClientAddr: "192.168.1.21:6000"},
-		{Timestamp: now, Upstream: "up", Model: "gpt-5", Endpoint: "chat", Status: 200, ClientAddr: "192.168.1.20:53211"},
+		{Timestamp: now, Upstream: "up", Model: "deepseek-v4-flash", Endpoint: "chat", Status: 200, ClientAddr: "192.168.1.20:53211", UserAgent: "Hermes/0.5.2"},
+		{Timestamp: now, Upstream: "up", Model: "deepseek-v4-flash", Endpoint: "chat", Status: 200, ClientAddr: "192.168.1.21:6000", UserAgent: "claude-cli/1.0.66"},
+		{Timestamp: now, Upstream: "up", Model: "gpt-5", Endpoint: "chat", Status: 200, ClientAddr: "192.168.1.20:53211", UserAgent: "Hermes/0.5.2"},
 	} {
 		if err := s.Insert(rec); err != nil {
 			t.Fatalf("insert %d: %v", i, err)
@@ -387,6 +388,39 @@ func TestClientProfiles(t *testing.T) {
 			if f.Models != "deepseek-v4-flash,gpt-5" && f.Models != "gpt-5,deepseek-v4-flash" {
 				t.Errorf("addr models = %q, want deepseek-v4-flash,gpt-5", f.Models)
 			}
+			// UA 聚合：两条同 addr 日志 UA 相同，DISTINCT 后应为单值
+			if f.UserAgents != "Hermes/0.5.2" {
+				t.Errorf("addr 192.168.1.20 user_agents = %q, want Hermes/0.5.2", f.UserAgents)
+			}
 		}
+	}
+}
+
+// TestRecorder_UserAgentTruncation 验证 Recorder.Record 对超长 UA 截断 200 字符。
+func TestRecorder_UserAgentTruncation(t *testing.T) {
+	s := openTestStore(t)
+	r := newRecorder(s, 100, time.Hour) // 不自动刷盘，直接检查 channel 里的记录
+	defer r.Close()
+
+	longUA := strings.Repeat("Mozilla/5.0 ", 100) // 1100 字符
+	r.Record(Record{
+		Timestamp:  time.Now(),
+		Upstream:   "up",
+		Model:      "m",
+		Endpoint:   "chat",
+		Status:     200,
+		ClientAddr: "127.0.0.1:5555",
+		UserAgent:  longUA,
+	})
+	select {
+	case rec := <-r.ch:
+		if len(rec.UserAgent) != 200 {
+			t.Errorf("UserAgent length = %d, want 200（截断）", len(rec.UserAgent))
+		}
+		if rec.UserAgent != longUA[:200] {
+			t.Errorf("UserAgent = %q..., want 前 200 字符", rec.UserAgent[:30])
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("recorder channel 未收到记录")
 	}
 }

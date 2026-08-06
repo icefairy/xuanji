@@ -1268,7 +1268,13 @@
           clientAnalysisInterval/60 : 1 }}分钟的去重地址，调用 pi CLI
           推断后落库。
         </div>
-        <div v-if="!clientAnalysisEnabled" style="margin-bottom: 12px">
+        <div v-if="configLoadFailed" style="margin-bottom: 12px">
+          <span class="badge badge-red">配置加载失败</span>
+          <span style="color: #909399; font-size: 12px; margin-left: 8px"
+            >客户端分析配置加载失败，请刷新页面后重试（当前开关状态未知，已按未开启处理）。</span
+          >
+        </div>
+        <div v-else-if="!clientAnalysisEnabled" style="margin-bottom: 12px">
           <span class="badge badge-red">未开启</span>
           <span style="color: #909399; font-size: 12px; margin-left: 8px"
             >客户端分析默认关闭，请到"系统设置"打开开关后再触发分析。</span
@@ -2320,6 +2326,7 @@
             cacheReasoningContent: true,
             clientAnalysisEnabled: false,
             clientAnalysisInterval: 600,
+            configLoadFailed: false,
             clientProfiles: [],
             analysisRunning: false,
             loginUsername: "",
@@ -3192,7 +3199,13 @@
                         self.clientAnalysisInterval = 600;
                       }
                     })
-                    .catch(function () {});
+                    .catch(function () {
+                      // 配置加载失败：不静默吞掉，保持 clientAnalysisEnabled=false
+                      // 但给出可见提示，避免“未开启”假象（真实原因可能是后端挂了）
+                      self.configLoadFailed = true;
+                      console.error("加载客户端分析配置失败");
+                      alert("配置加载失败，请刷新页面");
+                    });
                   self.loadDiscounts();
                   self.loadBackups();
                 }

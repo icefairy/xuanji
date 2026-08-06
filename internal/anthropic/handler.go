@@ -173,6 +173,7 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, claudeReq 
 			Tokens:     0,
 			APIKey:     h.recordAPIKey(r),
 			ClientAddr: r.RemoteAddr, // 客户端地址 "IP:port"，用于区分调用程序
+			UserAgent:  r.UserAgent(), // 客户端 UA，程序识别最强信号
 		})
 	}()
 	// 模型映射（model_mapping 只改 model 字段）
