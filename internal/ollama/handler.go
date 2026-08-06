@@ -188,6 +188,7 @@ func (h *Handler) forward(w http.ResponseWriter, r *http.Request, path string) {
 			Tokens:     0,
 			APIKey:     h.recordAPIKey(r),
 			ClientAddr: r.RemoteAddr, // 客户端地址 "IP:port"，用于区分调用程序
+			UserAgent:  r.UserAgent(), // 客户端 UA，程序识别最强信号
 		})
 	}
 	h.log.Info("ollama "+path,
@@ -277,6 +278,7 @@ func (h *Handler) openAIForward(w http.ResponseWriter, r *http.Request, kind str
 			DurationMS: time.Since(start).Milliseconds(),
 			Tokens:     0,
 			ClientAddr: r.RemoteAddr, // 客户端地址 "IP:port"，用于区分调用程序
+			UserAgent:  r.UserAgent(), // 客户端 UA，程序识别最强信号
 		})
 	}()
 

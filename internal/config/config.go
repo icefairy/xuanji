@@ -87,7 +87,8 @@ type Proxy struct {
 	// EffortConfigs 是最佳思考等级配置（模型 pattern → 推荐/强制等级）。
 	EffortConfigs []EffortConfig `yaml:"effort_configs"`
 	// ClientAnalysis 开启后，定期分析 client_addr 对应的调用程序（默认 false）。
-	// 聚合最近 N 分钟去重的 client_addr，调 pi CLI 推断程序名，结果存 client_profiles 表。
+	// 聚合最近 N 分钟去重的 client_addr，按 User-Agent → 端口查进程识别程序名，
+	// 结果存 client_profiles 表。
 	ClientAnalysis bool `yaml:"client_analysis"`
 	// ClientAnalysisInterval 分析间隔秒数（默认 600，即 10 分钟）。
 	ClientAnalysisInterval int `yaml:"client_analysis_interval"`

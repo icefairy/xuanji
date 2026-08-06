@@ -2,9 +2,12 @@ package admin
 
 import (
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -13,68 +16,112 @@ import (
 	"github.com/icefairy/xuanji/internal/store"
 )
 
-// TestParsePiJSON 验证 pi 输出的宽松 JSON 提取：
-// 纯 JSON / Markdown 代码块 / 带前后缀文字 都应解析成功。
-func TestParsePiJSON(t *testing.T) {
-	cases := []struct {
-		name    string
-		in      string
-		program string
-		conf    float64
-		evid    string
-		wantErr bool
-	}{
-		{name: "plain", in: `{"program":"Hermes","confidence":0.8,"evidence":"UA=python-requests"}`,
-			program: "Hermes", conf: 0.8, evid: "UA=python-requests"},
-		{name: "code fence", in: "```json\n{\"program\":\"Claude Code\",\"confidence\":0.9,\"evidence\":\"UA=claude-cli\"}\n```",
-			program: "Claude Code", conf: 0.9, evid: "UA=claude-cli"},
-		{name: "prefix text", in: "好的，分析结果如下：\n{\"program\":\"OpenCode\",\"confidence\":0.7,\"evidence\":\"端口特征\"}\n希望对你有帮助",
-			program: "OpenCode", conf: 0.7, evid: "端口特征"},
-		{name: "confidence clamp high", in: `{"program":"pi","confidence":1.5,"evidence":"x"}`,
-			program: "pi", conf: 1.0, evid: "x"},
-		{name: "empty program", in: `{"program":"","confidence":0.1,"evidence":""}`,
-			program: "未知", conf: 0.1},
-		{name: "no json", in: "我不确定", wantErr: true},
-		{name: "invalid json", in: `{"program":`, wantErr: true},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			program, conf, evid, err := parsePiJSON([]byte(c.in))
-			if c.wantErr {
-				if err == nil {
-					t.Fatalf("want error, got program=%q conf=%v", program, conf)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("parsePiJSON: %v", err)
-			}
-			if program != c.program || conf != c.conf || evid != c.evid {
-				t.Errorf("got (%q, %v, %q), want (%q, %v, %q)", program, conf, evid, c.program, c.conf, c.evid)
-			}
-		})
-	}
-}
-
-// TestIsLocalAddr 验证本机 IP 过滤。
-func TestIsLocalAddr(t *testing.T) {
-	locals := localIPs()
+// TestIsMeaninglessAddr 验证无意义地址过滤：只排除空串/0.0.0.0/::，
+// 本机地址（127.0.0.1 / ::1 / 本机网卡 IP）不再被过滤。
+func TestIsMeaninglessAddr(t *testing.T) {
 	cases := []struct {
 		addr string
 		want bool
 	}{
-		{"127.0.0.1:53211", true},
-		{"::1:53211", true},
+		{"", true},
 		{"0.0.0.0:80", true},
-		{"localhost:8080", true},
-		{"192.168.1.10:53211", true}, // 网关自身内网 IP（任务文档明确要求过滤）
+		{"::", true},
+		{"[::]:80", true},
+		{"127.0.0.1:53211", false}, // 本机地址保留（按端口查进程）
+		{"::1:53211", false},
+		{"localhost:8080", false},
+		{"192.168.1.10:53211", false}, // 本机网卡 IP 保留
 		{"192.168.1.20:53211", false},
 		{"10.0.0.5:443", false},
 	}
 	for _, c := range cases {
-		if got := isLocalAddr(c.addr, locals); got != c.want {
-			t.Errorf("isLocalAddr(%q) = %v, want %v", c.addr, got, c.want)
+		if got := isMeaninglessAddr(c.addr); got != c.want {
+			t.Errorf("isMeaninglessAddr(%q) = %v, want %v", c.addr, got, c.want)
 		}
+	}
+}
+
+// TestLookupProcessByPort 验证端口→进程确定性识别：
+// 空闲端口返回空；活跃监听端口能查到 PID 与进程名。
+// ss/lsof 都不可用时跳过（精简容器/非 Linux 环境）。
+func TestLookupProcessByPort(t *testing.T) {
+	if !havePortTool() {
+		t.Skip("ss/lsof 均不可用，跳过端口进程查询测试")
+	}
+	// 1. 空闲端口 → 返回空（先监听拿一个空闲端口号，关闭后该端口无进程占用）
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	freePort := strconv.Itoa(ln.Addr().(*net.TCPAddr).Port)
+	_ = ln.Close()
+	if p := lookupProcessByPort(freePort); p.Name != "" || p.PID != "" || p.Cmdline != "" {
+		t.Errorf("空闲端口 %s 查到进程 %+v，want 空", freePort, p)
+	}
+	// 2. 活跃监听端口 → 能查到 PID/进程名（本测试进程自己监听的 socket）
+	ln2, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	defer ln2.Close()
+	activePort := strconv.Itoa(ln2.Addr().(*net.TCPAddr).Port)
+	p := lookupProcessByPort(activePort)
+	if p.PID == "" || p.Name == "" {
+		t.Fatalf("监听端口 %s 未查到进程（ss/lsof 输出可能受限）: %+v", activePort, p)
+	}
+	if p.Cmdline == "" {
+		t.Logf("端口 %s 查到进程 %s(pid=%s)，但 cmdline 为空（权限受限）", activePort, p.Name, p.PID)
+	}
+}
+
+// havePortTool 探测 ss / lsof 是否至少有一个可用。
+func havePortTool() bool {
+	for _, tool := range []string{"ss", "lsof"} {
+		if _, err := exec.LookPath(tool); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+// TestClassifyFromCmdline 验证 cmdline 确定性识别：
+// 明确程序标识直接判定；裸解释器（python3/java）判定为模糊（标记未知）。
+func TestClassifyFromCmdline(t *testing.T) {
+	cases := []struct {
+		name    string
+		proc    procInfo
+		program string
+		conf    float64
+		ok      bool
+	}{
+		{"hermes cmdline", procInfo{Name: "python3", PID: "100", Cmdline: "python3 hermes-agent --daemon"},
+			"Hermes", 0.9, true},
+		{"claude cmdline", procInfo{Name: "claude", PID: "101", Cmdline: "/usr/local/bin/claude"},
+			"Claude Code", 0.9, true},
+		{"node pi", procInfo{Name: "node", PID: "102", Cmdline: "node /usr/bin/pi"},
+			"pi agent", 0.9, true},
+		{"curl", procInfo{Name: "curl", PID: "103", Cmdline: "curl -s https://example.com"},
+			"curl", 0.9, true},
+		{"python script", procInfo{Name: "python3", PID: "104", Cmdline: "python3 /opt/agent.py --server"},
+			"agent", 0.85, true},
+		{"bare python3", procInfo{Name: "python3", PID: "105", Cmdline: "python3"},
+			"", 0, false},
+		{"bare java", procInfo{Name: "java", PID: "106", Cmdline: "java -Xmx1g"},
+			"", 0, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			program, conf, evid, ok := classifyFromCmdline("53211", c.proc)
+			if ok != c.ok {
+				t.Fatalf("ok = %v, want %v (program=%q evid=%q)", ok, c.ok, program, evid)
+			}
+			if !ok {
+				return
+			}
+			if program != c.program || conf != c.conf {
+				t.Errorf("got (%q, %v), want (%q, %v)", program, conf, c.program, c.conf)
+			}
+		})
 	}
 }
 
@@ -86,8 +133,56 @@ func testClientAnalysisConfig() *config.Config {
 	return cfg
 }
 
+// TestClassifyFromUA 验证 User-Agent 判定：已知前缀直接命中（含大小写变体与逗号
+// 分隔的 UA 集合），未知 UA 返回 ok=false 走后续推断。
+func TestClassifyFromUA(t *testing.T) {
+	cases := []struct {
+		name    string
+		ua      string
+		program string
+		ok      bool
+	}{
+		{"hermes", "Hermes/0.5.2", "Hermes", true},
+		{"claude-cli", "claude-cli/1.0.66 (Claude Code)", "Claude Code", true},
+		{"pi agent", "pi/0.83.0", "pi agent", true},
+		{"curl", "curl/8.5.0", "curl", true},
+		{"curl upper", "Curl/8.1.2", "curl", true},
+		{"python-requests", "python-requests/2.32.3", "python (requests)", true},
+		{"node-fetch", "node-fetch/3.3.2", "node (fetch)", true},
+		{"opencode", "opencode/0.2.0", "OpenCode", true},
+		{"codex contain", "Mozilla/5.0 (Codex CLI)", "Codex", true}, // 无斜杠条目子串匹配
+		{"cursor contain", "Cursor/0.44.7", "Cursor", true},
+		{"cherry contain", "Cherry Studio/1.2.0", "Cherry Studio", true},
+		{"pi-agent contain", "pi-agent/0.1.0", "pi agent", true},
+		{"go-http-client", "Go-http-client/1.1", "Go HTTP", true},
+		{"openai prefix", "OpenAI/Go 1.2.0", "OpenAI SDK", true},
+		{"ua set", "Hermes/0.5.2, python-requests/2.32.3", "Hermes", true},
+		{"ua set second hits", "python-requests/2.32.3, claude-cli/1.0.66", "python (requests)", true},
+		{"empty", "", "", false},
+		{"unknown", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36", "", false},
+		{"unknown with pi-like", "apifox/2.5.0", "", false}, // api/ 不匹配 pi/，不能误伤
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			program, _, evid, ok := classifyFromUA(c.ua)
+			if ok != c.ok {
+				t.Fatalf("ok = %v, want %v (program=%q evid=%q)", ok, c.ok, program, evid)
+			}
+			if !ok {
+				return
+			}
+			if program != c.program {
+				t.Errorf("program = %q, want %q", program, c.program)
+			}
+			if !strings.Contains(evid, "User-Agent:") {
+				t.Errorf("evidence = %q, want contains User-Agent:", evid)
+			}
+		})
+	}
+}
+
 // TestAnalyzer_RunOnce 端到端验证分析流程：
-// 聚合去重 client_addr → 过滤本机 IP → pi 推断 → upsert 落库。
+// 聚合去重 client_addr → 全量分析（本机地址不再过滤）→ 识别函数推断 → upsert 落库。
 func TestAnalyzer_RunOnce(t *testing.T) {
 	s, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
@@ -96,7 +191,7 @@ func TestAnalyzer_RunOnce(t *testing.T) {
 	defer s.Close()
 
 	now := time.Now().UTC()
-	// 两条外部地址（192.168.1.20 出现 2 次，192.168.1.21 出现 1 次）+ 一条本机地址（应被过滤）
+	// 两条外部地址（192.168.1.20 出现 2 次，192.168.1.21 出现 1 次）+ 一条本机地址（保留，不过滤）
 	recs := []store.Record{
 		{Timestamp: now, Upstream: "up", Model: "deepseek-v4-flash", Endpoint: "chat", Status: 200, ClientAddr: "192.168.1.20:53211"},
 		{Timestamp: now, Upstream: "up", Model: "deepseek-v4-flash", Endpoint: "chat", Status: 200, ClientAddr: "192.168.1.20:53211"},
@@ -109,7 +204,7 @@ func TestAnalyzer_RunOnce(t *testing.T) {
 
 	cfg := testClientAnalysisConfig()
 	a := NewClientAnalyzer(cfg, s)
-	// 注入假 pi：按 addr 返回不同结果
+	// 注入假识别函数（替换真实 UA/端口查进程流程）：按 addr 返回不同结果
 	a.piRunner = func(addr string, feat store.ClientAddrFeature) (string, float64, string, error) {
 		if strings.HasPrefix(addr, "192.168.1.20") {
 			return "Hermes", 0.8, "UA=python-requests, 端口53211", nil
@@ -124,11 +219,11 @@ func TestAnalyzer_RunOnce(t *testing.T) {
 	if resp.Status != "ok" {
 		t.Errorf("status = %q, want ok", resp.Status)
 	}
-	if resp.Analyzed != 2 {
-		t.Errorf("analyzed = %d, want 2（本机 127.0.0.1 应被过滤）", resp.Analyzed)
+	if resp.Analyzed != 3 {
+		t.Errorf("analyzed = %d, want 3（本机 127.0.0.1 不再过滤）", resp.Analyzed)
 	}
-	if resp.NewProfiles != 2 {
-		t.Errorf("new_profiles = %d, want 2", resp.NewProfiles)
+	if resp.NewProfiles != 3 {
+		t.Errorf("new_profiles = %d, want 3", resp.NewProfiles)
 	}
 
 	// 落库检查
@@ -136,8 +231,8 @@ func TestAnalyzer_RunOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListClientProfiles: %v", err)
 	}
-	if len(profiles) != 2 {
-		t.Fatalf("profiles count = %d, want 2", len(profiles))
+	if len(profiles) != 3 {
+		t.Fatalf("profiles count = %d, want 3", len(profiles))
 	}
 	byAddr := map[string]store.ClientProfile{}
 	for _, p := range profiles {
@@ -149,9 +244,9 @@ func TestAnalyzer_RunOnce(t *testing.T) {
 	if p := byAddr["192.168.1.21:6000"]; p.Program != "OpenCode" || p.Confidence != 0.7 {
 		t.Errorf("192.168.1.21 profile = %+v, want OpenCode/0.7", p)
 	}
-	// 本机地址不应出现在档案里
-	if _, ok := byAddr["127.0.0.1:5555"]; ok {
-		t.Error("127.0.0.1:5555 不应出现在 profiles（本机过滤失败）")
+	// 本机地址保留并正常分析（不再过滤）
+	if p := byAddr["127.0.0.1:5555"]; p.Program != "OpenCode" || p.Confidence != 0.7 {
+		t.Errorf("127.0.0.1:5555 profile = %+v, want OpenCode/0.7（本机地址不再过滤）", p)
 	}
 
 	// 再次运行：重复分析应 upsert 更新而非新增（行数不变）
@@ -159,8 +254,8 @@ func TestAnalyzer_RunOnce(t *testing.T) {
 		t.Fatalf("RunOnce second: %v", err)
 	}
 	profiles2, _ := s.ListClientProfiles()
-	if len(profiles2) != 2 {
-		t.Errorf("profiles after second run = %d, want 2（upsert 去重）", len(profiles2))
+	if len(profiles2) != 3 {
+		t.Errorf("profiles after second run = %d, want 3（upsert 去重）", len(profiles2))
 	}
 }
 

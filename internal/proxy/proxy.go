@@ -674,6 +674,7 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 			Tokens:                promptTokens + completionTokens,
 			APIKey:                h.recordAPIKey(r),
 			ClientAddr:            r.RemoteAddr, // 客户端地址 "IP:port"，用于区分调用程序
+			UserAgent:             r.UserAgent(), // 客户端 UA，程序识别最强信号
 			PromptCacheHitTokens:  promptCacheHitTokens,
 			PromptCacheMissTokens: promptCacheMissTokens,
 		})
@@ -1218,6 +1219,7 @@ func (h *Handler) forwardRerank(w http.ResponseWriter, r *http.Request, body []b
 			Tokens:           promptTokens + completionTokens,
 			APIKey:           h.recordAPIKey(r),
 			ClientAddr:       r.RemoteAddr, // 客户端地址 "IP:port"，用于区分调用程序
+			UserAgent:        r.UserAgent(), // 客户端 UA，程序识别最强信号
 		})
 	}()
 
@@ -1384,6 +1386,7 @@ func (h *Handler) forwardEmbedding(w http.ResponseWriter, r *http.Request, body 
 			Tokens:           promptTokens + completionTokens,
 			APIKey:           h.recordAPIKey(r),
 			ClientAddr:       r.RemoteAddr, // 客户端地址 "IP:port"，用于区分调用程序
+			UserAgent:        r.UserAgent(), // 客户端 UA，程序识别最强信号
 		})
 	}()
 

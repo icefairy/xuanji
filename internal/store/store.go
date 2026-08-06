@@ -31,6 +31,7 @@ type Record struct {
 	Tokens                int64   // 总 token 数 = PromptTokens + CompletionTokens
 	APIKey                string  // 下游 API Key 名称（api_tokens.name，用于按 Key 统计）
 	ClientAddr            string  // 客户端地址 "IP:port"（r.RemoteAddr 原样），用于区分调用程序
+	UserAgent             string  // 客户端 User-Agent（r.UserAgent()，写入时截断 200 字符）
 	PromptCacheHitTokens  int64   // 上游前缀缓存命中 token 数（DeepSeek prompt_cache_hit_tokens）
 	PromptCacheMissTokens int64   // 上游前缀缓存未命中 token 数（DeepSeek prompt_cache_miss_tokens）
 }
@@ -131,6 +132,7 @@ type ClientAddrFeature struct {
 	Models     string // 逗号分隔的调用模型集合
 	Endpoints  string // 逗号分隔的端点集合
 	Requests   int    // 请求数
+	UserAgents string // 逗号分隔的 User-Agent 集合（最强识别信号，客户端自报身份）
 }
 
 // CostRow 是费用统计的聚合行。
@@ -346,8 +348,8 @@ func (s *Store) init() error {
 	);
 
 	-- 客户端程序分析结果（按 client_addr 唯一，标识 IP:port 对应的调用程序）。
-	-- 由分析服务定时/手动触发：聚合 request_log 去重 client_addr，调 pi CLI 推断，
-	-- 结果经应用层 API upsert 到此表，前端"客户端分析"页展示。
+	-- 由分析服务定时/手动触发：聚合 request_log 去重 client_addr，按 User-Agent →
+	-- 端口查进程识别，结果经应用层 API upsert 到此表，前端"客户端分析"页展示。
 	CREATE TABLE IF NOT EXISTS client_profiles (
 		id          INTEGER PRIMARY KEY AUTOINCREMENT,
 		client_addr TEXT    NOT NULL UNIQUE,    -- IP:port
@@ -377,9 +379,39 @@ func (s *Store) init() error {
 	s.db.Exec("ALTER TABLE request_log ADD COLUMN cost REAL NOT NULL DEFAULT 0")
 	// 迁移：request_log 加 client_addr 列（客户端地址 "IP:port"，按调用程序分析）
 	s.db.Exec("ALTER TABLE request_log ADD COLUMN client_addr TEXT NOT NULL DEFAULT ''")
+	// 迁移：request_log 加 user_agent 列（客户端 User-Agent，程序识别最强信号）。
+	// 用 PRAGMA table_info 判断列是否存在，保证旧库（无此列）与新建库都幂等可启动。
+	ensureColumn(s.db, "request_log", "user_agent", "user_agent TEXT NOT NULL DEFAULT ''")
 	// 迁移：upstreams 加 enabled 列（禁用/启用）
 	s.db.Exec("ALTER TABLE upstreams ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1")
 	return nil
+}
+
+// ensureColumn 幂等添加列：先查 PRAGMA table_info 判断列是否已存在，已存在则跳过。
+// SQLite 的 ALTER TABLE ADD COLUMN 对已存在列会报 duplicate column name，
+// 不能只依赖忽略错误——旧库与新库结构不同，显式判断最稳妥。
+// table 参数只传内部常量（如 "request_log"），不接用户输入。
+func ensureColumn(db *sql.DB, table, column, ddl string) {
+	// pragma_table_info 是表值函数形式，支持绑定参数（PRAGMA table_info(?) 不支持）
+	rows, err := db.Query(`SELECT name FROM pragma_table_info(?)`, table)
+	if err != nil {
+		slog.Warn("ensureColumn: table_info failed", "table", table, "error", err)
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			slog.Warn("ensureColumn: scan failed", "table", table, "error", err)
+			return
+		}
+		if name == column {
+			return // 列已存在，跳过
+		}
+	}
+	if _, err := db.Exec("ALTER TABLE " + table + " ADD COLUMN " + ddl); err != nil {
+		slog.Warn("ensureColumn: alter failed", "table", table, "column", column, "error", err)
+	}
 }
 
 // Close 关闭数据库连接。
@@ -393,11 +425,11 @@ func (s *Store) DB() *sql.DB { return s.db }
 // Insert 单条插入一条请求记录。
 func (s *Store) Insert(rec Record) error {
 	_, err := s.db.Exec(
-		`INSERT INTO request_log (ts, upstream, model, endpoint, status, duration_ms, tokens, prompt_tokens, completion_tokens, api_key, client_addr, prompt_cache_hit_tokens, prompt_cache_miss_tokens)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO request_log (ts, upstream, model, endpoint, status, duration_ms, tokens, prompt_tokens, completion_tokens, api_key, client_addr, user_agent, prompt_cache_hit_tokens, prompt_cache_miss_tokens)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		rec.Timestamp.UTC().Format(time.RFC3339), rec.Upstream, rec.Model, rec.Endpoint,
 		rec.Status, rec.DurationMS, rec.Tokens, rec.PromptTokens, rec.CompletionTokens, rec.APIKey,
-		rec.ClientAddr, rec.PromptCacheHitTokens, rec.PromptCacheMissTokens,
+		rec.ClientAddr, rec.UserAgent, rec.PromptCacheHitTokens, rec.PromptCacheMissTokens,
 	)
 	return err
 }
@@ -617,8 +649,8 @@ func (s *Store) InsertBatch(recs []Record) error {
 	defer tx.Rollback()
 
 	stmt, err := tx.Prepare(
-		`INSERT INTO request_log (ts, upstream, model, upstream_model, cost, endpoint, status, duration_ms, tokens, prompt_tokens, completion_tokens, api_key, client_addr, prompt_cache_hit_tokens, prompt_cache_miss_tokens)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO request_log (ts, upstream, model, upstream_model, cost, endpoint, status, duration_ms, tokens, prompt_tokens, completion_tokens, api_key, client_addr, user_agent, prompt_cache_hit_tokens, prompt_cache_miss_tokens)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 	)
 	if err != nil {
 		return err
@@ -630,7 +662,7 @@ func (s *Store) InsertBatch(recs []Record) error {
 			rec.Timestamp.UTC().Format(time.RFC3339), rec.Upstream, rec.Model, rec.UpstreamModel, rec.Cost,
 			rec.Endpoint,
 			rec.Status, rec.DurationMS, rec.Tokens, rec.PromptTokens, rec.CompletionTokens, rec.APIKey,
-			rec.ClientAddr, rec.PromptCacheHitTokens, rec.PromptCacheMissTokens,
+			rec.ClientAddr, rec.UserAgent, rec.PromptCacheHitTokens, rec.PromptCacheMissTokens,
 		); err != nil {
 			return err
 		}
@@ -717,7 +749,11 @@ func (r *Recorder) loop(batchSize int, batchPeriod time.Duration) {
 }
 
 // Record 非阻塞记录一条指标：channel 满时丢弃（记录量超限不拖垮网关）。
+// user_agent 在此统一截断 200 字符，避免超长 UA（如完整浏览器 UA 字符串）撑爆 request_log。
 func (r *Recorder) Record(rec Record) {
+	if len(rec.UserAgent) > 200 {
+		rec.UserAgent = rec.UserAgent[:200]
+	}
 	select {
 	case r.ch <- rec:
 	default:
@@ -1052,7 +1088,7 @@ func (s *Store) SeedDefaults() error {
 		// 最佳思考等级（默认关）
 		"proxy.auto_best_effort":  "false",
 		"proxy.force_best_effort": "false",
-		// 客户端程序分析（默认关；开启后按间隔定时调 pi CLI 识别 client_addr 对应程序）
+		// 客户端程序分析（默认关；开启后按间隔定时按 UA/端口查进程识别 client_addr 对应程序）
 		"proxy.client_analysis":          "false",
 		"proxy.client_analysis_interval": "600",
 	}
@@ -1344,7 +1380,9 @@ func (s *Store) GetDistinctClientAddrs(minutes int) ([]string, error) {
 }
 
 // GetClientAddrFeatures 返回最近 minutes 分钟内各 client_addr 的请求特征聚合
-// （模型集合/端点集合/请求数），作为 pi 推断调用程序的线索。
+// （模型集合/端点集合/请求数/User-Agent 集合），作为推断调用程序的线索。
+// user_agent 用 GROUP_CONCAT(DISTINCT ...) 聚合：UA 是程序识别的最强信号
+// （客户端自报身份，如 Hermes/x.x.x、claude-cli/x.x.x、pi/x.x.x）。
 func (s *Store) GetClientAddrFeatures(minutes int) ([]ClientAddrFeature, error) {
 	if minutes <= 0 {
 		minutes = 10
@@ -1353,7 +1391,8 @@ func (s *Store) GetClientAddrFeatures(minutes int) ([]ClientAddrFeature, error) 
 	rows, err := s.db.Query(`SELECT client_addr,
 		       COALESCE(GROUP_CONCAT(DISTINCT model), ''),
 		       COALESCE(GROUP_CONCAT(DISTINCT endpoint), ''),
-		       COUNT(*)
+		       COUNT(*),
+		       COALESCE(GROUP_CONCAT(DISTINCT user_agent), '')
 		FROM request_log WHERE client_addr != '' AND ts >= ?
 		GROUP BY client_addr ORDER BY client_addr`, since)
 	if err != nil {
@@ -1364,7 +1403,7 @@ func (s *Store) GetClientAddrFeatures(minutes int) ([]ClientAddrFeature, error) 
 	var out []ClientAddrFeature
 	for rows.Next() {
 		var f ClientAddrFeature
-		if err := rows.Scan(&f.ClientAddr, &f.Models, &f.Endpoints, &f.Requests); err != nil {
+		if err := rows.Scan(&f.ClientAddr, &f.Models, &f.Endpoints, &f.Requests, &f.UserAgents); err != nil {
 			return nil, err
 		}
 		out = append(out, f)
