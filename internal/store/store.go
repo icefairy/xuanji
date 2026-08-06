@@ -542,6 +542,68 @@ func (s *Store) ListPrices() []ModelPrice {
 	return out
 }
 
+// RecalcCost 重新计算历史请求费用：对缓存字段全 0（上游没返回缓存统计）
+// 且有输入 token 的请求，按「未命中价全额」口径重算 cost（与 calcCost 修复后
+// 的逻辑一致：无缓存统计时输入按未命中价计费）。
+// 返回更新条数。事务内执行，失败自动回滚。
+func (s *Store) RecalcCost() (int64, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+
+	rows, err := tx.Query(`SELECT id, model, upstream_model, prompt_tokens, completion_tokens, cost
+		FROM request_log
+		WHERE prompt_cache_hit_tokens <= 0 AND prompt_cache_miss_tokens <= 0 AND prompt_tokens > 0`)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+
+	type row struct {
+		id             int64
+		model          string
+		upstreamModel  string
+		promptTokens   int64
+		completionToks  int64
+		oldCost        float64
+	}
+	var targets []row
+	for rows.Next() {
+		var r row
+		if err := rows.Scan(&r.id, &r.model, &r.upstreamModel, &r.promptTokens, &r.completionToks, &r.oldCost); err != nil {
+			continue
+		}
+		targets = append(targets, r)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+
+	const perMillion = 1e6
+	updated := int64(0)
+	for _, r := range targets {
+		// 与 proxy.calcCost 口径一致：优先上游真实模型名，其次客户端模型名，最后默认价
+		input, _, out, ok := s.PriceFor(r.upstreamModel)
+		if !ok {
+			input, _, out, ok = s.PriceFor(r.model)
+		}
+		if !ok || (input <= 0 && out <= 0) {
+			continue // 无价格表，跳过（保持原值）
+		}
+		newCost := float64(r.promptTokens)/perMillion*input + float64(r.completionToks)/perMillion*out
+		if _, err := tx.Exec(`UPDATE request_log SET cost = ? WHERE id = ?`, newCost, r.id); err != nil {
+			return 0, err
+		}
+		updated++
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return updated, nil
+}
+
 // UpsertPrice 新增或更新模型单价（按 model 唯一）。
 func (s *Store) UpsertPrice(p ModelPrice) error {
 	_, err := s.db.Exec(`INSERT INTO model_prices (model, price_input, price_cache, price_output, note)
@@ -1375,6 +1437,51 @@ func (s *Store) GetDistinctClientAddrs(minutes int) ([]string, error) {
 			return nil, err
 		}
 		out = append(out, addr)
+	}
+	return out, rows.Err()
+}
+
+// ClientProfileCacheStat 是单个 client_addr 的缓存命中率聚合统计（百分比 0-100）。
+// 命中率 = prompt_cache_hit_tokens / prompt_tokens，仅统计 prompt_tokens > 0 的请求。
+type ClientProfileCacheStat struct {
+	Max float64 // 最大命中率（百分比）
+	Min float64 // 最小命中率（百分比）
+	Avg float64 // 平均命中率（百分比，算术平均）
+}
+
+// ClientProfileCacheStats 返回每个 client_addr 的缓存命中率聚合统计（按 client_addr
+// 分组，命中率 = prompt_cache_hit_tokens*1.0/prompt_tokens，prompt_tokens > 0 才参与）。
+// 与前端 cacheRate 口径一致：无 cache 统计或 prompt_tokens=0 的请求不参与计算。
+// 无任何有效统计的 client_addr 不出现在返回 map 中。
+func (s *Store) ClientProfileCacheStats() (map[string]ClientProfileCacheStat, error) {
+	rows, err := s.db.Query(`SELECT client_addr,
+			MAX(CASE WHEN prompt_tokens > 0 THEN prompt_cache_hit_tokens*1.0/prompt_tokens END) AS max_rate,
+			MIN(CASE WHEN prompt_tokens > 0 THEN prompt_cache_hit_tokens*1.0/prompt_tokens END) AS min_rate,
+			AVG(CASE WHEN prompt_tokens > 0 THEN prompt_cache_hit_tokens*1.0/prompt_tokens END) AS avg_rate
+		FROM request_log
+		WHERE client_addr != ''
+		GROUP BY client_addr`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make(map[string]ClientProfileCacheStat)
+	for rows.Next() {
+		var addr string
+		var maxRate, minRate, avgRate sql.NullFloat64
+		if err := rows.Scan(&addr, &maxRate, &minRate, &avgRate); err != nil {
+			return nil, err
+		}
+		// 该 addr 全部请求 prompt_tokens <= 0 时聚合结果为 NULL，跳过（无有效统计）
+		if !maxRate.Valid || !minRate.Valid || !avgRate.Valid {
+			continue
+		}
+		out[addr] = ClientProfileCacheStat{
+			Max: maxRate.Float64 * 100, // 比率 0-1 → 百分比 0-100
+			Min: minRate.Float64 * 100,
+			Avg: avgRate.Float64 * 100,
+		}
 	}
 	return out, rows.Err()
 }

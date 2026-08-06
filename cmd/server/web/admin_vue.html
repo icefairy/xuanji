@@ -764,51 +764,53 @@
             >共 {{ logTotal }} 条（每 10 秒刷新）</span
           >
           <button class="btn" @click="loadLogs()">刷新</button>
+          <button class="btn" @click="showLogColsDialog = true"
+            >列设置</button
+          >
         </div>
         <table>
           <thead>
             <tr>
-              <th>时间</th>
-              <th>API Key</th>
-              <th>上游</th>
-              <th>客户端</th>
-              <th>模型</th>
-              <th>状态</th>
-              <th>耗时(ms)</th>
-              <th>输入t</th>
-              <th>输出t</th>
-              <th>总计t</th>
-              <th>缓存命中</th>
-              <th>费用(元)</th>
+              <th v-for="col in visibleLogColsFiltered" :key="col.key">
+                {{ col.label }}
+              </th>
             </tr>
           </thead>
           <tbody>
             <tr v-for="l in logs">
-              <td>{{ (l.ts||'').substring(0,19) }}</td>
-              <td :title="l.api_key || ''">
-                {{ truncKeyName(l.api_key||'') }}
+              <td v-for="col in visibleLogColsFiltered" :key="col.key">
+                <template v-if="col.key === 'ts'">{{ (l.ts||'').substring(0,19) }}</template>
+                <template v-else-if="col.key === 'api_key'"><span :title="l.api_key || ''">{{ truncKeyName(l.api_key||'') }}</span></template>
+                <template v-else-if="col.key === 'upstream'">{{ l.upstream }}</template>
+                <template v-else-if="col.key === 'client'">
+                  <span
+                    v-if="logProfileMap[l.client_addr]"
+                    class="badge badge-blue"
+                    :title="'原始地址 ' + (l.client_addr||'') + ' (' + logProfileMap[l.client_addr].program + ', 置信度 ' + fmtNum(logProfileMap[l.client_addr].confidence*100,0) + '%)'"
+                    >{{ logProfileMap[l.client_addr].program }}</span
+                  >
+                  <span v-else :title="l.client_addr || ''">{{ l.client_addr || '-' }}</span>
+                </template>
+                <template v-else-if="col.key === 'model'">{{ l.model }}</template>
+                <template v-else-if="col.key === 'status'">
+                  <span
+                    class="badge"
+                    :class="l.status<400?'badge-green':'badge-red'"
+                    >{{ l.status }}</span
+                  >
+                </template>
+                <template v-else-if="col.key === 'duration_ms'">{{ l.duration_ms }}</template>
+                <template v-else-if="col.key === 'prompt_tokens'">{{ l.prompt_tokens }}</template>
+                <template v-else-if="col.key === 'completion_tokens'">{{ l.completion_tokens }}</template>
+                <template v-else-if="col.key === 'tokens'">{{ l.tokens }}</template>
+                <template v-else-if="col.key === 'cache_hit'">
+                  <span
+                    :title="'命中 '+fmtNum(l.prompt_cache_hit_tokens||0,0)+' / 未命中 '+fmtNum(l.prompt_cache_miss_tokens||0,0)"
+                    >{{ cacheRate(l) }}</span
+                  >
+                </template>
+                <template v-else>{{ fmtMoney(l.cost) }}</template>
               </td>
-              <td>{{ l.upstream }}</td>
-              <td :title="l.client_addr || ''">{{ l.client_addr || '-' }}</td>
-              <td>{{ l.model }}</td>
-              <td>
-                <span
-                  class="badge"
-                  :class="l.status<400?'badge-green':'badge-red'"
-                  >{{ l.status }}</span
-                >
-              </td>
-              <td>{{ l.duration_ms }}</td>
-              <td>{{ l.prompt_tokens }}</td>
-              <td>{{ l.completion_tokens }}</td>
-              <td>{{ l.tokens }}</td>
-              <td>
-                <span
-                  :title="'命中 '+fmtNum(l.prompt_cache_hit_tokens||0,0)+' / 未命中 '+fmtNum(l.prompt_cache_miss_tokens||0,0)"
-                  >{{ cacheRate(l) }}</span
-                >
-              </td>
-              <td>{{ fmtMoney(l.cost) }}</td>
             </tr>
           </tbody>
         </table>
@@ -838,6 +840,59 @@
           >
             下一页
           </button>
+        </div>
+
+        <!-- 请求日志列设置弹窗：勾选要显示的列，选择结果存 localStorage -->
+        <div
+          class="modal"
+          v-if="showLogColsDialog"
+          @click.self="showLogColsDialog=false"
+        >
+          <div class="modal-content" style="max-width: 360px">
+            <h3>列设置</h3>
+            <div style="color: #909399; font-size: 12px; margin-bottom: 10px"
+              >勾选要在请求日志表格中显示的列：</div
+            >
+            <label
+              v-for="c in logColumns"
+              :key="c.key"
+              style="
+                display: flex;
+                align-items: center;
+                gap: 6px;
+                padding: 4px 0;
+                font-size: 13px;
+                cursor: pointer;
+              "
+            >
+              <input
+                type="checkbox"
+                :value="c.key"
+                v-model="visibleLogCols"
+                style="cursor: pointer"
+              />
+              {{ c.label }}
+            </label>
+            <div
+              style="
+                margin-top: 8px;
+                display: flex;
+                gap: 8px;
+                flex-wrap: wrap;
+              "
+            >
+              <button
+                class="btn"
+                @click="visibleLogCols = allLogColKeys.slice()"
+              >
+                全选
+              </button>
+              <button class="btn" @click="visibleLogCols = []">清空</button>
+            </div>
+            <div class="modal-footer">
+              <button class="btn" @click="showLogColsDialog=false">关闭</button>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -908,7 +963,7 @@
               style="color: #fa8c16"
               :title="'费用按各模型单价 × 实际 token 用量计算'"
             >
-              {{ fmtMoney(costStats.total_cost) }}
+              {{ fmtMoney2(costStats.total_cost) }}
             </div>
             <div class="label">总费用(元)</div>
           </div>
@@ -1286,6 +1341,9 @@
               <th>client_addr</th>
               <th>程序</th>
               <th>置信度</th>
+              <th>最大命中</th>
+              <th>最小命中</th>
+              <th>平均命中</th>
               <th>分析依据</th>
               <th>更新时间</th>
             </tr>
@@ -1302,13 +1360,16 @@
                 </span>
               </td>
               <td>{{ fmtNum(p.confidence * 100, 0) + '%' }}</td>
+              <td>{{ p.cache_max === null || p.cache_max === undefined ? '-' : fmtNum(p.cache_max, 1) + '%' }}</td>
+              <td>{{ p.cache_min === null || p.cache_min === undefined ? '-' : fmtNum(p.cache_min, 1) + '%' }}</td>
+              <td>{{ p.cache_avg === null || p.cache_avg === undefined ? '-' : fmtNum(p.cache_avg, 1) + '%' }}</td>
               <td style="max-width: 320px; word-break: break-all">
                 {{ p.evidence || '-' }}
               </td>
               <td>{{ p.updated_at || '-' }}</td>
             </tr>
             <tr v-if="!clientProfiles.length">
-              <td colspan="5" style="color: #909399; text-align: center">
+              <td colspan="8" style="color: #909399; text-align: center">
                 暂无分析结果，点击"立即分析"或等待定时任务生成。
               </td>
             </tr>
@@ -2346,6 +2407,40 @@
             ruleSelectedUpstreams: [],
             ruleUpstreamOptions: [],
             logs: [],
+            // 请求日志表格列定义（key 与后端字段对应，label 为表头显示）
+            logColumns: [
+              { key: "ts", label: "时间" },
+              { key: "api_key", label: "API Key" },
+              { key: "upstream", label: "上游" },
+              { key: "client", label: "客户端" },
+              { key: "model", label: "模型" },
+              { key: "status", label: "状态" },
+              { key: "duration_ms", label: "耗时(ms)" },
+              { key: "prompt_tokens", label: "输入t" },
+              { key: "completion_tokens", label: "输出t" },
+              { key: "tokens", label: "总计t" },
+              { key: "cache_hit", label: "缓存命中" },
+              { key: "cost", label: "费用(元)" },
+            ],
+            // 全部列 key（全选/清空用，且 localStorage 为空时默认全选）
+            allLogColKeys: [
+              "ts",
+              "api_key",
+              "upstream",
+              "client",
+              "model",
+              "status",
+              "duration_ms",
+              "prompt_tokens",
+              "completion_tokens",
+              "tokens",
+              "cache_hit",
+              "cost",
+            ],
+            visibleLogCols: [],
+            showLogColsDialog: false,
+            // client_addr → {program, confidence}（/admin/logs 返回的 profile_map）
+            logProfileMap: {},
             summary: {},
             upstreamStats: [],
             apiKeyStats: [],
@@ -2666,6 +2761,13 @@
               v = parseFloat(v);
               if (isNaN(v) || v <= 0) return "0.00000";
               return v.toFixed(5);
+            },
+            // 金额格式化（2 位小数版）：总费用等总计场景，parseFloat + toFixed(2)
+            fmtMoney2: function (v) {
+              if (v === null || v === undefined || v === "") return "-";
+              v = parseFloat(v);
+              if (isNaN(v) || v <= 0) return "0.00";
+              return v.toFixed(2);
             },
             // 金额格式化（整数版）：趋势图纵坐标等总计场景，保留小数无意义
             fmtMoneyInt: function (v) {
@@ -3499,6 +3601,7 @@
                   self.logs = d.logs || [];
                   self.logTotal = d.total || 0;
                   self.logFilters = d.filters || { upstreams: [], models: [] };
+                  self.logProfileMap = d.profile_map || {};
                   // 筛选后页码可能越界，回退到最后一页
                   var maxPage = Math.max(
                     1,
@@ -4360,9 +4463,44 @@
               };
               return map[this.metricsRange] || "";
             },
+            // 当前可见的日志列（按 visibleLogCols 过滤，保持 logColumns 定义顺序）
+            visibleLogColsFiltered: function () {
+              var self = this;
+              return self.logColumns.filter(function (c) {
+                return self.visibleLogCols.indexOf(c.key) >= 0;
+              });
+            },
+          },
+          watch: {
+            // 列勾选变化即写 localStorage（容错：存储失败不影响页面）
+            visibleLogCols: function (val) {
+              try {
+                localStorage.setItem(
+                  "xuanji_log_columns",
+                  JSON.stringify(val || []),
+                );
+              } catch (e) {}
+            },
           },
           mounted: function () {
             var self = this;
+            // 恢复请求日志列选择（localStorage；非法/空则全选，并过滤掉已不存在的列 key）
+            self.visibleLogCols = self.allLogColKeys.slice();
+            try {
+              var saved = JSON.parse(
+                localStorage.getItem("xuanji_log_columns") || "",
+              );
+              if (Array.isArray(saved) && saved.length) {
+                var valid = saved.filter(function (k) {
+                  return self.allLogColKeys.indexOf(k) >= 0;
+                });
+                if (valid.length) {
+                  self.visibleLogCols = valid;
+                }
+              }
+            } catch (e) {
+              // JSON.parse 失败：保持全选
+            }
             // 拉取构建日期（/healthz 不鉴权，首页即可显示）
             axios
               .get("/healthz")

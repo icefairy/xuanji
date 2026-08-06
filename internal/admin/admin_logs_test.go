@@ -139,3 +139,51 @@ func TestRequestLogs_FilterAndPaging(t *testing.T) {
 		t.Errorf("combined filter total = %d, want 0", out4.Total)
 	}
 }
+
+// TestRequestLogs_ProfileMap 验证 /admin/logs 响应带 profile_map
+// （client_addr → 已识别程序；program 为空或'未知'的不进映射）。
+func TestRequestLogs_ProfileMap(t *testing.T) {
+	s, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	// addr1 → Hermes（进映射）；addr2 → 未知（不进映射）
+	for _, p := range []store.ClientProfile{
+		{ClientAddr: "127.0.0.1:52001", Program: "Hermes", Confidence: 0.95, Evidence: "UA=Hermes/0.5.2"},
+		{ClientAddr: "127.0.0.1:52002", Program: "未知", Confidence: 0.1, Evidence: "UA 未识别"},
+	} {
+		if err := s.UpsertClientProfile(p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.Insert(store.Record{Timestamp: time.Now(), Upstream: "up", Model: "m", Endpoint: "chat", Status: 200, ClientAddr: "127.0.0.1:52001"}); err != nil {
+		t.Fatal(err)
+	}
+
+	h := New(testConfig(), nil)
+	h.SetStore(s)
+
+	rr := httptest.NewRecorder()
+	h.RequestLogs(rr, httptest.NewRequest("GET", "/admin/logs", nil))
+	var out struct {
+		Logs       []map[string]interface{} `json:"logs"`
+		ProfileMap map[string]struct {
+			Program    string  `json:"program"`
+			Confidence float64 `json:"confidence"`
+		} `json:"profile_map"`
+	}
+	decodeBody(t, rr, &out)
+	if out.ProfileMap == nil {
+		t.Fatal("profile_map 缺失")
+	}
+	if p, ok := out.ProfileMap["127.0.0.1:52001"]; !ok || p.Program != "Hermes" || p.Confidence != 0.95 {
+		t.Errorf("profile_map[52001] = %+v, want Hermes/0.95", p)
+	}
+	if _, ok := out.ProfileMap["127.0.0.1:52002"]; ok {
+		t.Errorf("profile_map 不应包含 '未知' 程序地址")
+	}
+	if len(out.Logs) != 1 {
+		t.Errorf("logs len = %d, want 1", len(out.Logs))
+	}
+}

@@ -136,6 +136,11 @@ func (h *Handler) calcCost(upstreamModel, clientModel string, promptTokens, comp
 	if !ok || (input <= 0 && cache <= 0 && out <= 0) {
 		return 0
 	}
+	// 无缓存统计（hit=miss=0 且输入>0）时，输入按未命中价全额计费：
+	// 上游没报缓存命中，保守按全价（未命中价）算，避免输入 token 白嫖。
+	if cacheHit <= 0 && cacheMiss <= 0 && promptTokens > 0 {
+		cacheMiss = promptTokens
+	}
 	// token 单价：元/百万token → 每 token 价格
 	const perMillion = 1e6
 	cost := float64(cacheMiss)/perMillion*input +
