@@ -2,6 +2,7 @@
 package proxy
 
 import (
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -20,6 +21,7 @@ type FastFailCache struct {
 	mu       sync.RWMutex
 	entries  map[string]time.Time
 	duration time.Duration
+	log      *slog.Logger
 }
 
 // NewFastFailCache 创建快速失败缓存。duration 为冷却时间。
@@ -27,6 +29,7 @@ func NewFastFailCache(duration time.Duration) *FastFailCache {
 	return &FastFailCache{
 		entries:  make(map[string]time.Time),
 		duration: duration,
+		log:      slog.Default(),
 	}
 }
 
@@ -40,10 +43,24 @@ func ffKey(name, model string) string {
 
 // MarkFailed 标记上游（或上游+模型）为失败状态。
 // model 为空时标记整个渠道；model 非空时仅标记该渠道下的该模型。
+// 兼容旧调用：不提供失败原因，内部委托给 MarkFailedWithReason（reason 为空）。
 func (f *FastFailCache) MarkFailed(name, model string) {
+	f.MarkFailedWithReason(name, model, "")
+}
+
+// MarkFailedWithReason 标记上游（或上游+模型）为失败状态，并记录失败原因。
+// 与 MarkFailed 行为完全一致，额外以 Warn 级别记录拉黑原因：
+// fastfail mark_failed upstream=X model=Y reason="..."，便于排查"为什么被拉黑"。
+// model 为空（渠道级拉黑）时不输出 model 字段。
+func (f *FastFailCache) MarkFailedWithReason(name, model, reason string) {
 	f.mu.Lock()
 	f.entries[ffKey(name, model)] = time.Now()
 	f.mu.Unlock()
+	attrs := []any{"upstream", name, "reason", reason}
+	if model != "" {
+		attrs = append(attrs, "model", model)
+	}
+	f.log.Warn("fastfail mark_failed", attrs...)
 }
 
 // MarkSuccess 清除上游（或上游+模型）的失败标记（成功恢复后调用）。

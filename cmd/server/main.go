@@ -16,6 +16,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -121,6 +123,9 @@ var (
 	cfg   *config.Config
 	state appState
 
+	// clientAnalyzer 是全局客户端程序分析器（main 与 reloadConfig 重建，buildServeMux 引用）。
+	clientAnalyzer *admin.ClientAnalyzer
+
 	flagPort = flag.Int("port", 8787, "监听端口（默认 8787）")
 	flagDB   = flag.String("db", "/data/codes/xuanji/data/xuanji.db", "数据库路径（默认 /data/codes/xuanji/data/xuanji.db）")
 	flagHelp = flag.Bool("help", false, "显示帮助")
@@ -195,6 +200,12 @@ func main() {
 	// 管理端 JWT 也放行（前端测试按钮直接用登录 token 调转发）
 	keys := auth.New(cfg.Server.APIKeys, storeInst, admJWTSecret(storeInst))
 
+	// 客户端程序分析器：默认关闭（cfg.Proxy.ClientAnalysis=false 时 Start 不启动定时器），
+	// 开启后按 proxy.client_analysis_interval 秒定时识别调用程序。reload 时在
+	// reloadConfig 中 Stop 并用新配置重建。
+	clientAnalyzer = admin.NewClientAnalyzer(cfg, storeInst)
+	clientAnalyzer.Start()
+
 	mux := buildServeMux(cfg, rt, hc, rec, storeInst, keys)
 
 	addr := fmt.Sprintf(":%d", cfg.Server.Port)
@@ -220,6 +231,19 @@ func main() {
 		_ = srv.Shutdown(ctx)
 	}()
 
+	// 每周自动备份：启动后立即做一次（确保服务重启也有备份），之后每 7 天一次。
+	// 备份为 gzip 压缩快照，自动保留最近 10 个（store.CreateBackup 由 admin 层轮转）。
+	if storeInst != nil {
+		go func() {
+			backupOnce(storeInst)
+			ticker := time.NewTicker(7 * 24 * time.Hour)
+			defer ticker.Stop()
+			for range ticker.C {
+				backupOnce(storeInst)
+			}
+		}()
+	}
+
 	slog.Info("xuanji gateway listening",
 		"addr", addr,
 		"upstreams", len(cfg.Upstreams),
@@ -230,6 +254,33 @@ func main() {
 		os.Exit(1)
 	}
 	hc.Close()
+}
+
+// backupOnce 执行一次自动备份并轮转保留最近 10 个，失败只记日志不影响主流程。
+func backupOnce(storeInst *store.Store) {
+	name, err := storeInst.CreateBackup()
+	if err != nil {
+		slog.Error("auto backup failed", "error", err)
+		return
+	}
+	// 轮转保留最近 10 个
+	entries, _ := os.ReadDir(storeInst.BackupDir())
+	var gz []string
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".gz") {
+			gz = append(gz, e.Name())
+		}
+	}
+	removed := 0
+	for len(gz) > 10 {
+		sort.Strings(gz)
+		old := gz[0]
+		if os.Remove(filepath.Join(storeInst.BackupDir(), old)) == nil {
+			removed++
+		}
+		gz = gz[1:]
+	}
+	slog.Info("auto backup done", "name", name, "pruned", removed)
 }
 
 // buildServeMux 构造 HTTP 路由 mux。
@@ -264,6 +315,7 @@ func buildServeMux(cfg *config.Config, rt *router.Router, hc *health.Checker, re
 			return reloadConfig(storeInst, rec)
 		})
 	}
+	admHandler.SetAnalyzer(clientAnalyzer)
 	adminAuth := func(next http.HandlerFunc) http.HandlerFunc {
 		return func(w http.ResponseWriter, r *http.Request) {
 			// 管理端统一走 JWT（用户名密码登录），不再用 API Key
@@ -357,11 +409,28 @@ func buildServeMux(cfg *config.Config, rt *router.Router, hc *health.Checker, re
 	mux.HandleFunc("GET /api/admin/logs", adminKeyAuth(admHandler.RequestLogs))
 	mux.HandleFunc("POST /api/admin/reload", adminKeyAuth(admHandler.Reload))
 
+	// 客户端程序分析（手动触发 + 档案列表）
+	mux.HandleFunc("POST /admin/analysis/run", adminAuth(admHandler.AnalysisRun))
+	mux.HandleFunc("GET /admin/analysis/profiles", adminAuth(admHandler.AnalysisProfiles))
+
 	// 渠道优惠时段
 	mux.HandleFunc("GET /admin/discounts", adminAuth(admHandler.Discounts))
 	mux.HandleFunc("POST /admin/discounts", adminAuth(admHandler.AddDiscount))
 	mux.HandleFunc("PUT /admin/discounts/{id}", adminAuth(admHandler.UpdateDiscount))
 	mux.HandleFunc("DELETE /admin/discounts/{id}", adminAuth(admHandler.DeleteDiscount))
+
+	// 模型单价（计费）
+	mux.HandleFunc("GET /admin/prices", adminAuth(admHandler.Prices))
+	mux.HandleFunc("POST /admin/prices", adminAuth(admHandler.AddPrice))
+	mux.HandleFunc("PUT /admin/prices/{model}", adminAuth(admHandler.UpdatePrice))
+	mux.HandleFunc("DELETE /admin/prices/{model}", adminAuth(admHandler.DeletePrice))
+	// 费用统计（总金额/上游/apikey/模型 四维）
+	mux.HandleFunc("GET /admin/metrics/cost", adminAuth(admHandler.MetricsCost))
+
+	// 数据库备份（手动 + 列表 + 删除）
+	mux.HandleFunc("GET /admin/backups", adminAuth(admHandler.Backups))
+	mux.HandleFunc("POST /admin/backups", adminAuth(admHandler.CreateBackup))
+	mux.HandleFunc("DELETE /admin/backups/{name}", adminAuth(admHandler.DeleteBackup))
 
 	olHandler := ollama.New(rt, hc)
 	olHandler.SetTimeout(time.Duration(cfg.Retry.UpstreamTimeout) * time.Second)
@@ -395,6 +464,11 @@ func buildServeMux(cfg *config.Config, rt *router.Router, hc *health.Checker, re
 		olHandler.SetKeyName(keyNameFn)
 		pxHandler.SetKeyName(keyNameFn)
 	}
+	// 模型单价查询：按上游真实模型名定价（默认价兜底在 store.PriceFor 内部）
+	pxHandler.SetPriceFor(storeInst.PriceFor)
+	// 计费初始化：所有模型默认按 deepseek-v4-flash 定价
+	// （输入缓存命中 0.02 元/M，输入缓存未命中 1 元/M，输出 2 元/M）
+	storeInst.EnsureDefaultPrice()
 	// ⚠ 2026-08-02 用户拍板：对外只暴露 OpenAI 协议 + Anthropic 协议，
 	// 不提供 Ollama 原生入口（/api/chat /api/generate /api/embed）。
 	// ollama 类型上游仍支持——通过 /v1/* OpenAI 入口自动转换（dispatchOpenAI/dispatchEmbeddings）。
@@ -440,6 +514,13 @@ func reloadConfig(storeInst *store.Store, rec *store.Recorder) error {
 	hc := health.New(newCfg)
 	hc.SetProbeRecorder(probeRecorder(rec.Store()))
 	hc.Start()
+
+	// 重建客户端程序分析器：开关/间隔可能已变化，先停旧的再用新配置启动
+	if clientAnalyzer != nil {
+		clientAnalyzer.Stop()
+	}
+	clientAnalyzer = admin.NewClientAnalyzer(newCfg, rec.Store())
+	clientAnalyzer.Start()
 
 	state.mu.Lock()
 	state.hc = hc

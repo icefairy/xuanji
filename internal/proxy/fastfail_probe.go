@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -111,6 +112,8 @@ func (h *Handler) probeUpstream(name, model string) {
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewReader(payload))
 	if err != nil {
+		h.log.Warn("fastfail probe failed",
+			"upstream", name, "model", model, "reason", "build request: "+err.Error())
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
@@ -120,8 +123,10 @@ func (h *Handler) probeUpstream(name, model string) {
 
 	resp, err := h.client.Do(req)
 	if err != nil {
-		h.log.Debug("fastfail probe error", "upstream", name, "model", model, "error", err)
-		h.fastFail.MarkFailed(name, model) // 顺延
+		reason := "request failed: " + err.Error()
+		h.log.Warn("fastfail probe failed",
+			"upstream", name, "model", model, "reason", reason)
+		h.fastFail.MarkFailedWithReason(name, model, reason) // 顺延冷却
 		return
 	}
 	defer resp.Body.Close()
@@ -130,7 +135,9 @@ func (h *Handler) probeUpstream(name, model string) {
 		h.fastFail.MarkSuccess(name, model)
 		h.log.Info("fastfail probe recovered", "upstream", name, "model", model)
 	} else {
-		h.fastFail.MarkFailed(name, model) // 顺延
-		h.log.Debug("fastfail probe still down", "upstream", name, "model", model, "status", resp.StatusCode)
+		reason := fmt.Sprintf("status=%d", resp.StatusCode)
+		h.log.Warn("fastfail probe failed",
+			"upstream", name, "model", model, "status", resp.StatusCode, "reason", reason)
+		h.fastFail.MarkFailedWithReason(name, model, reason) // 顺延冷却
 	}
 }

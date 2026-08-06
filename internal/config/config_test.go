@@ -231,6 +231,70 @@ func TestLoadFromDB_Defaults(t *testing.T) {
 	if cfg.Routing.DefaultStrategy != DefaultStrategy {
 		t.Errorf("DefaultStrategy = %q, want %q", cfg.Routing.DefaultStrategy, DefaultStrategy)
 	}
+	// developer 角色兼容默认开启：config 表未显式存该 key 时应为 true
+	if !cfg.Proxy.NormalizeDeveloperRole {
+		t.Errorf("NormalizeDeveloperRole = false, want default true")
+	}
+	// reasoning_content 回传缓存默认开启：config 表未显式存该 key 时应为 true
+	if !cfg.Proxy.CacheReasoningContent {
+		t.Errorf("CacheReasoningContent = false, want default true")
+	}
+}
+
+func TestLoadFromDB_CacheReasoningContent(t *testing.T) {
+	s := openTestStore(t)
+
+	// 显式 false → 关闭（缓存不写、注入不执行，body 原样透传）
+	if err := s.SetConfig("proxy.cache_reasoning_content", "false"); err != nil {
+		t.Fatalf("SetConfig: %v", err)
+	}
+	cfg, err := LoadFromDB(s)
+	if err != nil {
+		t.Fatalf("LoadFromDB: %v", err)
+	}
+	if cfg.Proxy.CacheReasoningContent {
+		t.Errorf("CacheReasoningContent = true, want false (explicit false)")
+	}
+
+	// 显式 true → 开启
+	if err := s.SetConfig("proxy.cache_reasoning_content", "true"); err != nil {
+		t.Fatalf("SetConfig: %v", err)
+	}
+	cfg, err = LoadFromDB(s)
+	if err != nil {
+		t.Fatalf("LoadFromDB: %v", err)
+	}
+	if !cfg.Proxy.CacheReasoningContent {
+		t.Errorf("CacheReasoningContent = false, want true (explicit true)")
+	}
+}
+
+func TestLoadFromDB_NormalizeDeveloperRole(t *testing.T) {
+	s := openTestStore(t)
+
+	// 显式 false → 关闭
+	if err := s.SetConfig("proxy.normalize_developer_role", "false"); err != nil {
+		t.Fatalf("SetConfig: %v", err)
+	}
+	cfg, err := LoadFromDB(s)
+	if err != nil {
+		t.Fatalf("LoadFromDB: %v", err)
+	}
+	if cfg.Proxy.NormalizeDeveloperRole {
+		t.Errorf("NormalizeDeveloperRole = true, want false (explicit false)")
+	}
+
+	// 显式 true → 开启
+	if err := s.SetConfig("proxy.normalize_developer_role", "true"); err != nil {
+		t.Fatalf("SetConfig: %v", err)
+	}
+	cfg, err = LoadFromDB(s)
+	if err != nil {
+		t.Fatalf("LoadFromDB: %v", err)
+	}
+	if !cfg.Proxy.NormalizeDeveloperRole {
+		t.Errorf("NormalizeDeveloperRole = false, want true (explicit true)")
+	}
 }
 
 func TestLoadFromDB_CustomValues(t *testing.T) {
@@ -327,5 +391,53 @@ func TestLoadFromDB_UpstreamsAndRules(t *testing.T) {
 	}
 	if len(r.Upstreams) != 1 || r.Upstreams[0] != "u1" {
 		t.Errorf("rule.Upstreams = %v, want [u1]", r.Upstreams)
+	}
+}
+
+// TestLoadFromDB_ClientAnalysis 验证客户端分析配置的加载与默认值：
+// 默认关闭 + 间隔 600；显式配置后生效；非法间隔回退默认。
+func TestLoadFromDB_ClientAnalysis(t *testing.T) {
+	s := openTestStore(t)
+
+	// 默认：未配置任何 key → 关闭 + 间隔 600
+	cfg, err := LoadFromDB(s)
+	if err != nil {
+		t.Fatalf("LoadFromDB: %v", err)
+	}
+	if cfg.Proxy.ClientAnalysis {
+		t.Errorf("ClientAnalysis = true, want default false")
+	}
+	if cfg.Proxy.ClientAnalysisInterval != 600 {
+		t.Errorf("ClientAnalysisInterval = %d, want default 600", cfg.Proxy.ClientAnalysisInterval)
+	}
+
+	// 显式开启 + 1 分钟
+	if err := s.SetConfig("proxy.client_analysis", "true"); err != nil {
+		t.Fatalf("SetConfig: %v", err)
+	}
+	if err := s.SetConfig("proxy.client_analysis_interval", "60"); err != nil {
+		t.Fatalf("SetConfig interval: %v", err)
+	}
+	cfg, err = LoadFromDB(s)
+	if err != nil {
+		t.Fatalf("LoadFromDB: %v", err)
+	}
+	if !cfg.Proxy.ClientAnalysis {
+		t.Errorf("ClientAnalysis = false, want true (explicit true)")
+	}
+	if cfg.Proxy.ClientAnalysisInterval != 60 {
+		t.Errorf("ClientAnalysisInterval = %d, want 60", cfg.Proxy.ClientAnalysisInterval)
+	}
+
+	// 非法间隔（小于 60 秒）→ 回退默认 600
+	if err := s.SetConfig("proxy.client_analysis_interval", "10"); err != nil {
+		t.Fatalf("SetConfig interval: %v", err)
+	}
+	cfg, err = LoadFromDB(s)
+	if err != nil {
+		t.Fatalf("LoadFromDB: %v", err)
+	}
+	if cfg.Proxy.ClientAnalysisInterval != 600 {
+		t.Errorf("ClientAnalysisInterval = %d, want 600 (invalid falls back)", cfg.Proxy.ClientAnalysisInterval)
 	}
 }

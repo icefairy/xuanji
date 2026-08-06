@@ -32,10 +32,11 @@ type Handler struct {
 	cfg    *config.Config
 	hc     *health.Checker
 	start  time.Time
-	store  *store.Store     // nil 时 metrics 端点返回空数据
-	reload func() error     // 热重载回调，nil 时不可用
+	store  *store.Store         // nil 时 metrics 端点返回空数据
+	reload func() error         // 热重载回调，nil 时不可用
 	ff     *proxy.FastFailCache // 快速失败缓存；nil 时不显示 fast_fail 状态
-	auth   *auth.APIKeys    // 下游 key 鉴权缓存；nil 时无需刷新
+	auth   *auth.APIKeys        // 下游 key 鉴权缓存；nil 时无需刷新
+	ana    *ClientAnalyzer      // 客户端程序分析器；nil 时分析端点返回错误
 }
 
 // SetAuth 注入下游 key 鉴权器（api_tokens CRUD 后刷新内存缓存）。
@@ -122,7 +123,7 @@ type upstreamResponse struct {
 	Tier         string   `json:"tier"`
 	Priority     int      `json:"priority"`
 	Weight       int      `json:"weight"`
-	Enabled      bool     `json:"enabled"` // 1=启用 0=禁用（禁用的不参与转发）
+	Enabled      bool     `json:"enabled"`   // 1=启用 0=禁用（禁用的不参与转发）
 	FastFail     bool     `json:"fast_fail"` // 快速失败黑名单中（后台探测可自动恢复）
 	State        string   `json:"state"`
 	LatencyMS    int64    `json:"latency_ms"`
@@ -339,11 +340,11 @@ func (h *Handler) Rules(w http.ResponseWriter, _ *http.Request) {
 				hs := h.ruleHealthState(upstreams)
 				upstreams, ff, en, hs = sortRuleUpstreams(upstreams, ff, en, hs, h)
 				resp = append(resp, ruleResponse{
-					Model:     r.Model,
-					Strategy:  strategy,
-					Upstreams: upstreams,
-					FastFail:  ff,
-					Enabled:   en,
+					Model:       r.Model,
+					Strategy:    strategy,
+					Upstreams:   upstreams,
+					FastFail:    ff,
+					Enabled:     en,
 					HealthState: hs,
 				})
 			}
@@ -363,11 +364,11 @@ func (h *Handler) Rules(w http.ResponseWriter, _ *http.Request) {
 		hs := h.ruleHealthState(rule.Upstreams)
 		upstreams, ff, en, hs := sortRuleUpstreams(rule.Upstreams, ff, en, hs, h)
 		resp = append(resp, ruleResponse{
-			Model:     rule.Model,
-			Strategy:  strategy,
-			Upstreams: upstreams,
-			FastFail:  ff,
-			Enabled:   en,
+			Model:       rule.Model,
+			Strategy:    strategy,
+			Upstreams:   upstreams,
+			FastFail:    ff,
+			Enabled:     en,
 			HealthState: hs,
 		})
 	}
@@ -645,8 +646,8 @@ func (h *Handler) MetricsByAPIKey(w http.ResponseWriter, r *http.Request) {
 
 // APIKeyModelUsage 是单个 API Key 的模型使用分布。
 type APIKeyModelUsage struct {
-	Model  string `json:"model"`
-	Count  int64  `json:"count"`
+	Model string `json:"model"`
+	Count int64  `json:"count"`
 }
 
 // MetricsByAPIKeyModels 返回指定 API Key 的模型使用分布（支持 ?range=...）。
@@ -828,6 +829,9 @@ func (h *Handler) UpdateConfig(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]string{"error": "invalid request"})
 		return
 	}
+	// 只读保护：proxy.cooldown_* 属于运行期内部机制，不允许通过配置修改。
+	// 前端已置灰，这里做后端兜底拦截，防止 API 直调绕过。
+	// 注意：2026-08-06 用户要求改为可编辑，此拦截已移除。
 	for k, v := range req {
 		if err := h.store.SetConfig(k, v); err != nil {
 			writeJSON(w, map[string]string{"error": err.Error()})
@@ -1171,8 +1175,8 @@ func (h *Handler) RequestLogs(w http.ResponseWriter, r *http.Request) {
 	queryArgs := append([]interface{}{}, args...)
 	queryArgs = append(queryArgs, limit, offset)
 	rows, err := h.store.DB().Query(`
-		SELECT ts, upstream, model, endpoint, status, duration_ms, prompt_tokens, completion_tokens, tokens, prompt_cache_hit_tokens, prompt_cache_miss_tokens, api_key
-		FROM request_log`+where+` ORDER BY id DESC LIMIT ? OFFSET ?`, queryArgs...)
+				SELECT ts, upstream, model, endpoint, status, duration_ms, prompt_tokens, completion_tokens, tokens, prompt_cache_hit_tokens, prompt_cache_miss_tokens, api_key, cost, upstream_model, client_addr
+				FROM request_log`+where+` ORDER BY id DESC LIMIT ? OFFSET ?`, queryArgs...)
 	if err != nil {
 		writeJSON(w, map[string]interface{}{"total": total, "limit": limit, "offset": offset, "logs": []map[string]interface{}{}})
 		return
@@ -1181,9 +1185,10 @@ func (h *Handler) RequestLogs(w http.ResponseWriter, r *http.Request) {
 
 	var out []map[string]interface{}
 	for rows.Next() {
-		var ts, upstream, model, endpoint, apiKey string
+		var ts, upstream, model, endpoint, apiKey, upstreamModel, clientAddr string
 		var status, durationMs, promptTokens, completionTokens, tokens, cacheHitTokens, cacheMissTokens int64
-		if err := rows.Scan(&ts, &upstream, &model, &endpoint, &status, &durationMs, &promptTokens, &completionTokens, &tokens, &cacheHitTokens, &cacheMissTokens, &apiKey); err != nil {
+		var cost float64
+		if err := rows.Scan(&ts, &upstream, &model, &endpoint, &status, &durationMs, &promptTokens, &completionTokens, &tokens, &cacheHitTokens, &cacheMissTokens, &apiKey, &cost, &upstreamModel, &clientAddr); err != nil {
 			continue
 		}
 		out = append(out, map[string]interface{}{
@@ -1199,6 +1204,9 @@ func (h *Handler) RequestLogs(w http.ResponseWriter, r *http.Request) {
 			"prompt_cache_hit_tokens":  cacheHitTokens,
 			"prompt_cache_miss_tokens": cacheMissTokens,
 			"api_key":                  apiKey,
+			"cost":                     cost,
+			"upstream_model":           upstreamModel,
+			"client_addr":              clientAddr,
 		})
 	}
 
@@ -1506,14 +1514,14 @@ func (h *Handler) upstreamByName(name string) *config.Upstream {
 				u := &rows[i]
 				if u.Name == name {
 					return &config.Upstream{
-						Name:        u.Name,
-						Type:        u.Type,
-						BaseURL:     u.BaseURL,
-						APIKey:      u.APIKey,
-						Tier:        u.Tier,
-						Priority:    u.Priority,
-						Weight:      u.Weight,
-						Models:      parseStringSlice(u.Models),
+						Name:         u.Name,
+						Type:         u.Type,
+						BaseURL:      u.BaseURL,
+						APIKey:       u.APIKey,
+						Tier:         u.Tier,
+						Priority:     u.Priority,
+						Weight:       u.Weight,
+						Models:       parseStringSlice(u.Models),
 						ModelMapping: parseStringMap(u.ModelMapping),
 					}
 				}
@@ -1691,6 +1699,115 @@ func (h *Handler) DeleteDiscount(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]string{"status": "ok"})
 }
 
+// Prices 列出所有模型单价（GET /admin/prices）。
+func (h *Handler) Prices(w http.ResponseWriter, _ *http.Request) {
+	if h.store == nil {
+		writeJSON(w, []store.ModelPrice{})
+		return
+	}
+	writeJSON(w, h.store.ListPrices())
+}
+
+// AddPrice 新增/更新模型单价（POST /admin/prices，按 model upsert）。
+func (h *Handler) AddPrice(w http.ResponseWriter, r *http.Request) {
+	if h.store == nil {
+		writeJSON(w, map[string]string{"error": "store not available"})
+		return
+	}
+	var p store.ModelPrice
+	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+		writeJSON(w, map[string]string{"error": "invalid request: " + err.Error()})
+		return
+	}
+	p.Model = strings.TrimSpace(p.Model)
+	if p.Model == "" {
+		writeJSON(w, map[string]string{"error": "模型名必填（* 表示默认价）"})
+		return
+	}
+	if p.PriceInput < 0 || p.PriceCache < 0 || p.PriceOut < 0 {
+		writeJSON(w, map[string]string{"error": "价格不能为负数"})
+		return
+	}
+	if err := h.store.UpsertPrice(p); err != nil {
+		writeJSON(w, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, p)
+}
+
+// UpdatePrice 更新模型单价（PUT /admin/prices/{model}）。
+func (h *Handler) UpdatePrice(w http.ResponseWriter, r *http.Request) {
+	if h.store == nil {
+		writeJSON(w, map[string]string{"error": "store not available"})
+		return
+	}
+	model := r.PathValue("model")
+	if model == "" {
+		writeJSON(w, map[string]string{"error": "model required"})
+		return
+	}
+	var p store.ModelPrice
+	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+		writeJSON(w, map[string]string{"error": "invalid request: " + err.Error()})
+		return
+	}
+	if p.PriceInput < 0 || p.PriceCache < 0 || p.PriceOut < 0 {
+		writeJSON(w, map[string]string{"error": "价格不能为负数"})
+		return
+	}
+	p.Model = model
+	if err := h.store.UpsertPrice(p); err != nil {
+		writeJSON(w, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, p)
+}
+
+// DeletePrice 删除模型单价（DELETE /admin/prices/{model}）。默认价（*）不可删。
+func (h *Handler) DeletePrice(w http.ResponseWriter, r *http.Request) {
+	if h.store == nil {
+		writeJSON(w, map[string]string{"error": "store not available"})
+		return
+	}
+	model := r.PathValue("model")
+	if model == "*" {
+		writeJSON(w, map[string]string{"error": "默认价不可删除"})
+		return
+	}
+	if err := h.store.DeletePrice(model); err != nil {
+		writeJSON(w, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, map[string]string{"status": "ok"})
+}
+
+// costMetricsResponse 是 GET /admin/metrics/cost 的响应。
+type costMetricsResponse struct {
+	TotalCost  float64         `json:"total_cost"` // 时间段内总费用（元）
+	ByUpstream []store.CostRow `json:"by_upstream"`
+	ByAPIKey   []store.CostRow `json:"by_api_key"`
+	ByModel    []store.CostRow `json:"by_model"`
+}
+
+// MetricsCost 返回费用统计（GET /admin/metrics/cost，支持 ?range=today|3d|7d|30d|all）。
+func (h *Handler) MetricsCost(w http.ResponseWriter, r *http.Request) {
+	if h.store == nil {
+		writeJSON(w, costMetricsResponse{})
+		return
+	}
+	since := metricsSince(r)
+	until := ""
+	if since != "" {
+		until = time.Now().UTC().Format(time.RFC3339)
+	}
+	var resp costMetricsResponse
+	resp.TotalCost, _ = h.store.TotalCost(since, until)
+	resp.ByUpstream = h.store.CostByUpstream(since, until)
+	resp.ByAPIKey = h.store.CostByAPIKey(since, until)
+	resp.ByModel = h.store.CostByModel(since, until)
+	writeJSON(w, resp)
+}
+
 // TestUpstream 直接使用上游自己的 API Key 测试（POST /admin/upstreams/{name}/test）。
 // 绕过网关路由，直连该上游的 /v1/chat/completions，验证 key 与模型可用性。
 func (h *Handler) TestUpstream(w http.ResponseWriter, r *http.Request) {
@@ -1703,14 +1820,18 @@ func (h *Handler) TestUpstream(w http.ResponseWriter, r *http.Request) {
 
 	var req struct {
 		Model     string `json:"model"`
+		Content   string `json:"content"`
 		MaxTokens int    `json:"max_tokens"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&req)
 	if req.Model == "" {
 		req.Model = "deepseek-v4-flash"
 	}
+	if req.Content == "" {
+		req.Content = "你好，请用一句话回复"
+	}
 	if req.MaxTokens <= 0 {
-		req.MaxTokens = 50
+		req.MaxTokens = 512
 	}
 
 	// 应用 model_mapping：把客户端简单名还原为上游真实模型名
@@ -1723,8 +1844,8 @@ func (h *Handler) TestUpstream(w http.ResponseWriter, r *http.Request) {
 
 	// 构造直连请求体（用还原后的真实模型名）
 	body := map[string]any{
-		"model":     realModel,
-		"messages":  []map[string]string{{"role": "user", "content": "你好，请用一句话回复"}},
+		"model":      realModel,
+		"messages":   []map[string]string{{"role": "user", "content": req.Content}},
 		"max_tokens": req.MaxTokens,
 	}
 	payload, _ := json.Marshal(body)

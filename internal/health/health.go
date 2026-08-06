@@ -47,6 +47,19 @@ const (
 	recoveryProbeDivisor = 2
 )
 
+// maxRespBodyLog 是健康检查失败日志中响应体摘要的最大字符数，防止刷屏。
+const maxRespBodyLog = 500
+
+// probeOutcome 描述一次健康检查探测的结果，用于状态更新与排障日志。
+type probeOutcome struct {
+	ok       bool          // 是否健康（2xx）
+	timedOut bool          // 是否超时（超时直接判 dead）
+	latency  time.Duration // 往返延迟
+	status   int           // 非 2xx 时的 HTTP 状态码；其余情况为 0
+	reason   string        // 失败原因：timeout / 连接错误信息 / non-2xx response
+	respBody string        // 非 2xx 时的响应体摘要（截断 maxRespBodyLog 字符）
+}
+
 // upstreamState 记录单个上游的健康状态，current/fails/latency 受 Checker.mu 保护。
 type upstreamState struct {
 	up       *config.Upstream
@@ -160,24 +173,34 @@ func (c *Checker) loop(ctx context.Context, st *upstreamState) {
 // checkOnce 对单个上游执行一次探测并更新状态与延迟。
 // 探测的成功/失败同时累加 ProbeSuccess/ProbeFail 统计（健康度指标数据源），
 // 并通过 recorder 持久化（若注入）供 metrics 按时间范围聚合。
+// 日志约定：成功（healthy）记 Info；失败且状态恶化为 degraded/dead 记 Warn 完整原因；
+// 失败但状态保持 healthy（连续失败不足 degradedAfterFails）时不打扰、不记失败日志。
 func (c *Checker) checkOnce(ctx context.Context, st *upstreamState) {
-	ok, timedOut, latency := c.ping(ctx, st)
+	out := c.ping(ctx, st)
 	if c.recorder != nil {
-		c.recorder.RecordProbe(st.up.Name, ok, time.Now())
+		c.recorder.RecordProbe(st.up.Name, out.ok, time.Now())
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	switch {
-	case ok:
+	case out.ok:
 		st.fails = 0
 		st.current = StateHealthy
-		st.latency = latency
+		st.latency = out.latency
 		st.ProbeSuccess++
-	case timedOut:
+		c.log.Info("health check",
+			"upstream", st.up.Name,
+			"state", st.current,
+			"fails", st.fails,
+			"latency", st.latency.String(),
+		)
+	case out.timedOut:
+		// 超时直接判 dead，原因固定为 timeout
 		st.fails = deadAfterFails
 		st.current = StateDead
 		st.latency = 0
 		st.ProbeFail++
+		c.logProbeFailure(st, out)
 	default:
 		st.fails++
 		st.latency = 0
@@ -190,20 +213,42 @@ func (c *Checker) checkOnce(ctx context.Context, st *upstreamState) {
 		default:
 			st.current = StateHealthy
 		}
+		// 状态保持 healthy 时不打扰：不记失败日志，等下次探测恶化了再 Warn
+		if st.current == StateHealthy {
+			return
+		}
+		c.logProbeFailure(st, out)
 	}
-	c.log.Info("health check",
+}
+
+// logProbeFailure 记录健康检查失败详情（状态已恶化为 degraded/dead 时调用）。
+// 字段统一 snake_case：upstream/state/fails/status/reason/resp_body；
+// status 仅在非 2xx 时有值，resp_body 截断 maxRespBodyLog 字符防刷屏。
+func (c *Checker) logProbeFailure(st *upstreamState, out probeOutcome) {
+	attrs := []any{
 		"upstream", st.up.Name,
 		"state", st.current,
 		"fails", st.fails,
-		"latency", st.latency.String(),
-	)
+		"reason", out.reason,
+	}
+	if out.status != 0 {
+		attrs = append(attrs, "status", out.status)
+	}
+	if out.respBody != "" {
+		attrs = append(attrs, "resp_body", out.respBody)
+	}
+	c.log.Warn("health check failed", attrs...)
 }
 
 // ping 探测上游：GET {base_url}/models（OpenAI）或 /api/tags（Ollama），2xx 视为健康。
-// 返回是否健康、是否因超时失败，以及本次探测的往返延迟。
+// 返回探测结果（probeOutcome），失败时携带具体原因：
+//   - 超时：reason="timeout"，timedOut=true
+//   - 连接错误：reason=连接错误信息
+//   - 非 2xx：status=状态码，reason="non-2xx response"，respBody=响应体摘要（截断）
+//
 // ⚠ base_url 不带 /v1 时探测路径必须拼 /v1/models：部分上游（商汤日日新、基元律动）
 // 只认 /v1/ 前缀，打 {base_url}/models 会 404 导致误判 dead（与 chatPath 同源坑，2026-08 修复）。
-func (c *Checker) ping(ctx context.Context, st *upstreamState) (ok, timedOut bool, latency time.Duration) {
+func (c *Checker) ping(ctx context.Context, st *upstreamState) probeOutcome {
 	target := strings.TrimRight(st.up.BaseURL, "/")
 	if st.up.IsOllama() {
 		target += "/api/tags"
@@ -216,22 +261,39 @@ func (c *Checker) ping(ctx context.Context, st *upstreamState) (ok, timedOut boo
 	start := time.Now()
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, target, nil)
 	if err != nil {
-		return false, false, 0
+		return probeOutcome{reason: "build request: " + err.Error()}
 	}
 	req.Header.Set("Authorization", "Bearer "+st.up.APIKey)
 
 	resp, err := c.client.Do(req)
-	latency = time.Since(start)
+	latency := time.Since(start)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(reqCtx.Err(), context.DeadlineExceeded) {
-			return false, true, 0
+			return probeOutcome{timedOut: true, latency: latency, reason: "timeout"}
 		}
-		return false, false, 0
+		return probeOutcome{latency: latency, reason: err.Error()}
 	}
 	defer resp.Body.Close()
-	// 排空响应体以复用连接
-	_, _ = io.Copy(io.Discard, resp.Body)
-	return resp.StatusCode >= 200 && resp.StatusCode < 300, false, latency
+	// 读取响应体：2xx 时消费以复用连接；非 2xx 时截断摘要供排障日志
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return probeOutcome{
+			latency:  latency,
+			status:   resp.StatusCode,
+			reason:   "non-2xx response",
+			respBody: truncateStr(string(body), maxRespBodyLog),
+		}
+	}
+	return probeOutcome{ok: true, latency: latency}
+}
+
+// truncateStr 截断字符串到 max 字节，超出时末尾加省略号标记。
+// 用于日志中的响应体/错误信息，防止超长内容刷屏。
+func truncateStr(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "...(truncated)"
 }
 
 // isDead 判断单个上游当前是否处于 dead。
