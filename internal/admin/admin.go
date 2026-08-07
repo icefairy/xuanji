@@ -1453,7 +1453,8 @@ func (h *Handler) SetAPIKeyEnabled(w http.ResponseWriter, r *http.Request) {
 }
 
 // RenameAPIKey 修改下游 API Key 的名称（PUT /admin/api-keys/{id}/name）。
-// 请求体：{"name":"新名称"}。
+// 请求体：{"name":"新名称"}。改名后同步刷新鉴权缓存，并把 request_log 中
+// 该 key 的历史记录名称快照一并更新（保持请求日志显示一致）。
 func (h *Handler) RenameAPIKey(w http.ResponseWriter, r *http.Request) {
 	if h.store == nil {
 		writeJSON(w, map[string]string{"error": "store not available"})
@@ -1472,10 +1473,28 @@ func (h *Handler) RenameAPIKey(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]string{"error": "invalid request: " + err.Error()})
 		return
 	}
+	// 先取旧名（用于同步历史 request_log 快照）
+	oldName := ""
+	if tokens, err := h.store.ListAPITokens(); err == nil {
+		for _, t := range tokens {
+			if t.ID == uint(id) {
+				oldName = t.Name
+				break
+			}
+		}
+	}
 	if err := h.store.UpdateAPITokenName(uint(id), req.Name); err != nil {
 		writeJSON(w, map[string]string{"error": err.Error()})
 		return
 	}
+	// 同步历史 request_log 名称快照（旧名 → 新名）
+	if oldName != "" && oldName != req.Name {
+		if err := h.store.RenameLogAPIKey(oldName, strings.TrimSpace(req.Name)); err != nil {
+			writeJSON(w, map[string]string{"error": err.Error()})
+			return
+		}
+	}
+	h.refreshAuth()
 	writeJSON(w, map[string]string{"status": "ok"})
 }
 
