@@ -39,22 +39,25 @@ type Record struct {
 
 // UpstreamRow 是 upstreams 表的行映射。
 type UpstreamRow struct {
-	ID           uint   `json:"id"`
-	Name         string `json:"name"`
-	Type         string `json:"type"`
-	BaseURL      string `json:"base_url"`
-	APIKey       string `json:"api_key"`
-	Tier         string `json:"tier"`
-	Priority     int    `json:"priority"`
-	Weight       int    `json:"weight"`
-	Models       string `json:"models"`
-	ModelMapping string `json:"model_mapping"`
-	Enabled      int    `json:"enabled"` // 1=启用 0=禁用（禁用的不参与转发路由）
+	ID            uint   `json:"id"`
+	Name          string `json:"name"`
+	Type          string `json:"type"`
+	BaseURL       string `json:"base_url"`
+	APIKey        string `json:"api_key"`
+	Tier          string `json:"tier"`
+	Priority      int    `json:"priority"`
+	Weight        int    `json:"weight"`
+	Models        string `json:"models"`
+	ModelMapping  string `json:"model_mapping"`
+	Enabled       int    `json:"enabled"` // 1=启用 0=禁用（禁用的不参与转发路由）
+	BillingExempt int    `json:"billing_exempt"` // 1=不参与计费（统计费用记 0，路由不受影响）
 	// EnabledPtr 区分 JSON body 中 enabled 字段"未传"(nil) 与"显式传 0/1"。
 	// UpdateUpstream 用它避免未传时误禁用上游。
-	EnabledPtr *int   `json:"-"`
-	CreatedAt  string `json:"created_at"`
-	UpdatedAt  string `json:"updated_at"`
+	EnabledPtr *int `json:"-"`
+	// BillingExemptPtr 区分 JSON body 中 billing_exempt 字段"未传"(nil) 与"显式传 0/1"。
+	BillingExemptPtr *int  `json:"-"`
+	CreatedAt        string `json:"created_at"`
+	UpdatedAt        string `json:"updated_at"`
 }
 
 // RoutingRuleRow 是 routing_rules 表的行映射。
@@ -115,25 +118,6 @@ type ModelPrice struct {
 	Note       string  `json:"note"`
 	CreatedAt  string  `json:"created_at"`
 	UpdatedAt  string  `json:"updated_at"`
-}
-
-// ClientProfile 是 client_profiles 表的行映射（客户端程序分析结果）。
-type ClientProfile struct {
-	ID         uint    `json:"id"`
-	ClientAddr string  `json:"client_addr"` // IP:port
-	Program    string  `json:"program"`     // 识别出的程序名
-	Confidence float64 `json:"confidence"`  // 置信度 0-1
-	Evidence   string  `json:"evidence"`    // 分析依据（UA、端口、行为特征等）
-	UpdatedAt  string  `json:"updated_at"`
-}
-
-// ClientAddrFeature 是单个 client_addr 在分析窗口内的请求特征聚合（供程序推断用）。
-type ClientAddrFeature struct {
-	ClientAddr string // IP:port
-	Models     string // 逗号分隔的调用模型集合
-	Endpoints  string // 逗号分隔的端点集合
-	Requests   int    // 请求数
-	UserAgents string // 逗号分隔的 User-Agent 集合（最强识别信号，客户端自报身份）
 }
 
 // CostRow 是费用统计的聚合行。
@@ -384,7 +368,9 @@ func (s *Store) init() error {
 	// 用 PRAGMA table_info 判断列是否存在，保证旧库（无此列）与新建库都幂等可启动。
 	ensureColumn(s.db, "request_log", "user_agent", "user_agent TEXT NOT NULL DEFAULT ''")
 	// 迁移：upstreams 加 enabled 列（禁用/启用）
-	s.db.Exec("ALTER TABLE upstreams ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1")
+	ensureColumn(s.db, "upstreams", "enabled", "enabled INTEGER NOT NULL DEFAULT 1")
+	// 迁移：upstreams 加 billing_exempt 列（不参与计费：统计模块费用记 0，路由不受影响）
+	ensureColumn(s.db, "upstreams", "billing_exempt", "billing_exempt INTEGER NOT NULL DEFAULT 0")
 	return nil
 }
 
@@ -636,15 +622,17 @@ func (s *Store) EnsureDefaultPrice() {
 }
 
 // TotalCost 返回指定时间段内总费用（元）。
+// billing_exempt=1 的上游（标记为不参与计费）在统计中费用记 0，但请求日志照常记录。
 func (s *Store) TotalCost(since, until string) (float64, int) {
-	q := `SELECT COALESCE(SUM(cost), 0), COUNT(*) FROM request_log WHERE cost > 0`
+	q := `SELECT COALESCE(SUM(CASE WHEN u.billing_exempt = 1 THEN 0 ELSE rl.cost END), 0), COUNT(*)
+	       FROM request_log rl LEFT JOIN upstreams u ON u.name = rl.upstream WHERE rl.cost > 0`
 	var args []any
 	if since != "" {
-		q += ` AND ts >= ?`
+		q += ` AND rl.ts >= ?`
 		args = append(args, since)
 	}
 	if until != "" {
-		q += ` AND ts <= ?`
+		q += ` AND rl.ts <= ?`
 		args = append(args, until)
 	}
 	var cost float64
@@ -671,19 +659,22 @@ func (s *Store) CostByModel(since, until string) []CostRow {
 }
 
 // costGroupBy 通用费用聚合。
+// billing_exempt=1 的上游（不参与计费）在统计中费用记 0，但请求日志照常记录。
 func (s *Store) costGroupBy(col, since, until string) []CostRow {
-	q := `SELECT COALESCE(NULLIF(` + col + `, ''), '(未知)'), COALESCE(SUM(cost), 0), COUNT(*), COALESCE(SUM(tokens), 0)
-	       FROM request_log WHERE cost > 0`
+	q := `SELECT COALESCE(NULLIF(rl.` + col + `, ''), '(未知)'),
+	              COALESCE(SUM(CASE WHEN u.billing_exempt = 1 THEN 0 ELSE rl.cost END), 0),
+	              COUNT(*), COALESCE(SUM(rl.tokens), 0)
+	       FROM request_log rl LEFT JOIN upstreams u ON u.name = rl.upstream WHERE rl.cost > 0`
 	var args []any
 	if since != "" {
-		q += ` AND ts >= ?`
+		q += ` AND rl.ts >= ?`
 		args = append(args, since)
 	}
 	if until != "" {
-		q += ` AND ts <= ?`
+		q += ` AND rl.ts <= ?`
 		args = append(args, until)
 	}
-	q += ` GROUP BY ` + col + ` ORDER BY SUM(cost) DESC`
+	q += ` GROUP BY rl.` + col + ` ORDER BY SUM(CASE WHEN u.billing_exempt = 1 THEN 0 ELSE rl.cost END) DESC`
 	rows, err := s.db.Query(q, args...)
 	if err != nil {
 		return nil
@@ -841,7 +832,7 @@ func (r *Recorder) Close() {
 
 // ListUpstreams 返回所有上游。
 func (s *Store) ListUpstreams() ([]UpstreamRow, error) {
-	rows, err := s.db.Query(`SELECT id, name, type, base_url, api_key, tier, priority, weight, models, model_mapping, enabled, created_at, updated_at FROM upstreams ORDER BY id`)
+	rows, err := s.db.Query(`SELECT id, name, type, base_url, api_key, tier, priority, weight, models, model_mapping, enabled, billing_exempt, created_at, updated_at FROM upstreams ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -850,7 +841,7 @@ func (s *Store) ListUpstreams() ([]UpstreamRow, error) {
 	var out []UpstreamRow
 	for rows.Next() {
 		var u UpstreamRow
-		if err := rows.Scan(&u.ID, &u.Name, &u.Type, &u.BaseURL, &u.APIKey, &u.Tier, &u.Priority, &u.Weight, &u.Models, &u.ModelMapping, &u.Enabled, &u.CreatedAt, &u.UpdatedAt); err != nil {
+		if err := rows.Scan(&u.ID, &u.Name, &u.Type, &u.BaseURL, &u.APIKey, &u.Tier, &u.Priority, &u.Weight, &u.Models, &u.ModelMapping, &u.Enabled, &u.BillingExempt, &u.CreatedAt, &u.UpdatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, u)
@@ -861,24 +852,28 @@ func (s *Store) ListUpstreams() ([]UpstreamRow, error) {
 // GetUpstream 按名称查询上游。
 func (s *Store) GetUpstream(name string) (*UpstreamRow, error) {
 	var u UpstreamRow
-	err := s.db.QueryRow(`SELECT id, name, type, base_url, api_key, tier, priority, weight, models, model_mapping, enabled, created_at, updated_at FROM upstreams WHERE name = ?`, name).
-		Scan(&u.ID, &u.Name, &u.Type, &u.BaseURL, &u.APIKey, &u.Tier, &u.Priority, &u.Weight, &u.Models, &u.ModelMapping, &u.Enabled, &u.CreatedAt, &u.UpdatedAt)
+	err := s.db.QueryRow(`SELECT id, name, type, base_url, api_key, tier, priority, weight, models, model_mapping, enabled, billing_exempt, created_at, updated_at FROM upstreams WHERE name = ?`, name).
+		Scan(&u.ID, &u.Name, &u.Type, &u.BaseURL, &u.APIKey, &u.Tier, &u.Priority, &u.Weight, &u.Models, &u.ModelMapping, &u.Enabled, &u.BillingExempt, &u.CreatedAt, &u.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
 	return &u, nil
 }
 
-// CreateUpstream 创建上游。
 // CreateUpstream 创建上游。enabled 未传（nil）时默认启用（1）。
+// billing_exempt 未传（nil）时默认不豁免（0）。
 func (s *Store) CreateUpstream(u *UpstreamRow) error {
 	enabled := 1
 	if u.EnabledPtr != nil {
 		enabled = *u.EnabledPtr
 	}
+	billingExempt := 0
+	if u.BillingExemptPtr != nil {
+		billingExempt = *u.BillingExemptPtr
+	}
 	_, err := s.db.Exec(
-		`INSERT INTO upstreams (name, type, base_url, api_key, tier, priority, weight, models, model_mapping, enabled) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		u.Name, u.Type, u.BaseURL, u.APIKey, u.Tier, u.Priority, u.Weight, u.Models, u.ModelMapping, enabled,
+		`INSERT INTO upstreams (name, type, base_url, api_key, tier, priority, weight, models, model_mapping, enabled, billing_exempt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		u.Name, u.Type, u.BaseURL, u.APIKey, u.Tier, u.Priority, u.Weight, u.Models, u.ModelMapping, enabled, billingExempt,
 	)
 	return err
 }
@@ -886,17 +881,22 @@ func (s *Store) CreateUpstream(u *UpstreamRow) error {
 // UpdateUpstream 更新上游（按名称匹配）。
 // enabled 用指针区分"未传"（nil=保持原值）与"显式传 0/1"，
 // 避免前端编辑表单不传 enabled 时误把上游禁用。
+// billing_exempt 同样用指针区分，未传保持原值。
 func (s *Store) UpdateUpstream(name string, u *UpstreamRow) error {
-	var enabledExpr string
+	var setExpr string
 	var args []any
 	args = append(args, u.Name, u.Type, u.BaseURL, u.APIKey, u.Tier, u.Priority, u.Weight, u.Models, u.ModelMapping)
 	if u.EnabledPtr != nil {
-		enabledExpr = ", enabled=?"
+		setExpr += ", enabled=?"
 		args = append(args, *u.EnabledPtr)
+	}
+	if u.BillingExemptPtr != nil {
+		setExpr += ", billing_exempt=?"
+		args = append(args, *u.BillingExemptPtr)
 	}
 	args = append(args, name)
 	_, err := s.db.Exec(
-		`UPDATE upstreams SET name=?, type=?, base_url=?, api_key=?, tier=?, priority=?, weight=?, models=?, model_mapping=?`+enabledExpr+`, updated_at=datetime('now') WHERE name=?`,
+		`UPDATE upstreams SET name=?, type=?, base_url=?, api_key=?, tier=?, priority=?, weight=?, models=?, model_mapping=?`+setExpr+`, updated_at=datetime('now') WHERE name=?`,
 		args...,
 	)
 	return err
@@ -1398,142 +1398,4 @@ func (s *Store) UpdateDiscount(id uint, d *Discount) error {
 func (s *Store) DeleteDiscount(id uint) error {
 	_, err := s.db.Exec(`DELETE FROM discounts WHERE id = ?`, id)
 	return err
-}
-
-// ===== 客户端程序分析（client_profiles）=====
-
-// UpsertClientProfile 新增或更新客户端程序分析档案（按 client_addr 唯一）。
-// 由分析服务经应用层调用；重复分析同一 addr 时更新 program/confidence/evidence。
-func (s *Store) UpsertClientProfile(p ClientProfile) error {
-	_, err := s.db.Exec(`INSERT INTO client_profiles (client_addr, program, confidence, evidence)
-		VALUES (?, ?, ?, ?)
-		ON CONFLICT(client_addr) DO UPDATE SET
-			program = excluded.program,
-			confidence = excluded.confidence,
-			evidence = excluded.evidence,
-			updated_at = datetime('now')`,
-		p.ClientAddr, p.Program, p.Confidence, p.Evidence)
-	return err
-}
-
-// ListClientProfiles 返回全部客户端程序分析档案（按更新时间倒序）。
-func (s *Store) ListClientProfiles() ([]ClientProfile, error) {
-	rows, err := s.db.Query(`SELECT id, client_addr, program, confidence, evidence, updated_at
-		FROM client_profiles ORDER BY updated_at DESC, id DESC`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var out []ClientProfile
-	for rows.Next() {
-		var p ClientProfile
-		if err := rows.Scan(&p.ID, &p.ClientAddr, &p.Program, &p.Confidence, &p.Evidence, &p.UpdatedAt); err != nil {
-			return nil, err
-		}
-		out = append(out, p)
-	}
-	return out, rows.Err()
-}
-
-// GetDistinctClientAddrs 返回最近 minutes 分钟内 request_log 中去重后的 client_addr 列表
-// （非空、按 addr 排序），供客户端程序分析聚合使用。
-func (s *Store) GetDistinctClientAddrs(minutes int) ([]string, error) {
-	if minutes <= 0 {
-		minutes = 10
-	}
-	since := time.Now().Add(-time.Duration(minutes) * time.Minute).UTC().Format(time.RFC3339)
-	rows, err := s.db.Query(`SELECT DISTINCT client_addr FROM request_log
-		WHERE client_addr != '' AND ts >= ? ORDER BY client_addr`, since)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var out []string
-	for rows.Next() {
-		var addr string
-		if err := rows.Scan(&addr); err != nil {
-			return nil, err
-		}
-		out = append(out, addr)
-	}
-	return out, rows.Err()
-}
-
-// ClientProfileCacheStat 是单个 client_addr 的缓存命中率聚合统计（百分比 0-100）。
-// 命中率 = prompt_cache_hit_tokens / prompt_tokens，仅统计 prompt_tokens > 0 的请求。
-type ClientProfileCacheStat struct {
-	Max float64 // 最大命中率（百分比）
-	Min float64 // 最小命中率（百分比）
-	Avg float64 // 平均命中率（百分比，算术平均）
-}
-
-// ClientProfileCacheStats 返回每个 client_addr 的缓存命中率聚合统计（按 client_addr
-// 分组，命中率 = prompt_cache_hit_tokens*1.0/prompt_tokens，prompt_tokens > 0 才参与）。
-// 与前端 cacheRate 口径一致：无 cache 统计或 prompt_tokens=0 的请求不参与计算。
-// 无任何有效统计的 client_addr 不出现在返回 map 中。
-func (s *Store) ClientProfileCacheStats() (map[string]ClientProfileCacheStat, error) {
-	rows, err := s.db.Query(`SELECT client_addr,
-			MAX(CASE WHEN prompt_tokens > 0 THEN prompt_cache_hit_tokens*1.0/prompt_tokens END) AS max_rate,
-			MIN(CASE WHEN prompt_tokens > 0 THEN prompt_cache_hit_tokens*1.0/prompt_tokens END) AS min_rate,
-			AVG(CASE WHEN prompt_tokens > 0 THEN prompt_cache_hit_tokens*1.0/prompt_tokens END) AS avg_rate
-		FROM request_log
-		WHERE client_addr != ''
-		GROUP BY client_addr`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	out := make(map[string]ClientProfileCacheStat)
-	for rows.Next() {
-		var addr string
-		var maxRate, minRate, avgRate sql.NullFloat64
-		if err := rows.Scan(&addr, &maxRate, &minRate, &avgRate); err != nil {
-			return nil, err
-		}
-		// 该 addr 全部请求 prompt_tokens <= 0 时聚合结果为 NULL，跳过（无有效统计）
-		if !maxRate.Valid || !minRate.Valid || !avgRate.Valid {
-			continue
-		}
-		out[addr] = ClientProfileCacheStat{
-			Max: maxRate.Float64 * 100, // 比率 0-1 → 百分比 0-100
-			Min: minRate.Float64 * 100,
-			Avg: avgRate.Float64 * 100,
-		}
-	}
-	return out, rows.Err()
-}
-
-// GetClientAddrFeatures 返回最近 minutes 分钟内各 client_addr 的请求特征聚合
-// （模型集合/端点集合/请求数/User-Agent 集合），作为推断调用程序的线索。
-// user_agent 用 GROUP_CONCAT(DISTINCT ...) 聚合：UA 是程序识别的最强信号
-// （客户端自报身份，如 Hermes/x.x.x、claude-cli/x.x.x、pi/x.x.x）。
-func (s *Store) GetClientAddrFeatures(minutes int) ([]ClientAddrFeature, error) {
-	if minutes <= 0 {
-		minutes = 10
-	}
-	since := time.Now().Add(-time.Duration(minutes) * time.Minute).UTC().Format(time.RFC3339)
-	rows, err := s.db.Query(`SELECT client_addr,
-		       COALESCE(GROUP_CONCAT(DISTINCT model), ''),
-		       COALESCE(GROUP_CONCAT(DISTINCT endpoint), ''),
-		       COUNT(*),
-		       COALESCE(GROUP_CONCAT(DISTINCT user_agent), '')
-		FROM request_log WHERE client_addr != '' AND ts >= ?
-		GROUP BY client_addr ORDER BY client_addr`, since)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var out []ClientAddrFeature
-	for rows.Next() {
-		var f ClientAddrFeature
-		if err := rows.Scan(&f.ClientAddr, &f.Models, &f.Endpoints, &f.Requests, &f.UserAgents); err != nil {
-			return nil, err
-		}
-		out = append(out, f)
-	}
-	return out, rows.Err()
 }

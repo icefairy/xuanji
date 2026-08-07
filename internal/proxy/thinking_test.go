@@ -38,7 +38,10 @@ func TestNormalizeThinkingEffort_DeepSeek(t *testing.T) {
 		{"low → low", "low", "", true},
 		{"medium → high", "medium", "high", true},
 		{"high → high", "high", "high", true},
-		{"max → max", "max", "max", true},
+		// xhigh/max → xhigh：DeepSeek 官方与挂名上游（商汤等）都接受 xhigh，不输出 max
+		// （商汤枚举 low/medium/high/xhigh/none 不认 max，输出 max 会 400）
+		{"max → xhigh", "max", "xhigh", true},
+		{"xhigh → xhigh", "xhigh", "xhigh", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

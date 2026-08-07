@@ -444,13 +444,6 @@
         </button>
         <button
           class="tab-btn"
-          :class="{ active: tab === 'clients' }"
-          @click="switchTab('clients')"
-        >
-          客户端分析
-        </button>
-        <button
-          class="tab-btn"
           :class="{ active: tab === 'settings' }"
           @click="switchTab('settings')"
         >
@@ -497,6 +490,12 @@
                   >{{
                   u.tier==='free'?'免费':u.tier==='subscription'?'订阅':'付费'
                   }}</span
+                >
+                <span
+                  v-if="u.billing_exempt"
+                  class="badge badge-gray"
+                  title="不参与计费：统计费用记 0"
+                  >不计费</span
                 >
               </td>
               <td>
@@ -761,6 +760,21 @@
             <option value="">全部模型</option>
             <option v-for="m in logFilters.models" :value="m">{{ m }}</option>
           </select>
+          <select
+            v-model="logStatusFilter"
+            @change="logPage=1;loadLogs()"
+            style="
+              padding: 4px 8px;
+              border: 1px solid #dcdfe6;
+              border-radius: 4px;
+              font-size: 13px;
+              background: #fff;
+            "
+          >
+            <option value="">全部状态</option>
+            <option value="normal">正常 (2xx)</option>
+            <option value="error">异常 (非2xx)</option>
+          </select>
           <span style="color: #909399; font-size: 13px"
             >共 {{ logTotal }} 条（每 10 秒刷新）</span
           >
@@ -789,12 +803,6 @@
                     class="badge badge-green"
                     :title="'User-Agent: ' + l.user_agent + ' | 地址 ' + (l.client_addr||'')"
                     >{{ l.user_agent.length > 28 ? l.user_agent.substring(0, 26) + '..' : l.user_agent }}</span
-                  >
-                  <span
-                    v-else-if="logProfileMap[l.client_addr]"
-                    class="badge badge-blue"
-                    :title="'原始地址 ' + (l.client_addr||'') + ' (' + logProfileMap[l.client_addr].program + ', 置信度 ' + fmtNum(logProfileMap[l.client_addr].confidence*100,0) + '%)'"
-                    >{{ logProfileMap[l.client_addr].program }}</span
                   >
                   <span v-else :title="l.client_addr || ''">{{ l.client_addr || '-' }}</span>
                 </template>
@@ -1290,89 +1298,6 @@
         </table>
       </div>
 
-      <!-- 客户端分析 -->
-      <div class="tab-content" v-if="tab === 'clients'">
-        <div
-          style="
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 12px;
-          "
-        >
-          <div style="color: #303133; font-weight: 600; font-size: 14px">
-            客户端程序分析
-          </div>
-          <button
-            class="btn btn-primary"
-            :disabled="analysisRunning || !clientAnalysisEnabled"
-            @click="runAnalysis"
-          >
-            {{ analysisRunning ? '分析中…' : '立即分析' }}
-          </button>
-        </div>
-        <div style="color: #909399; font-size: 12px; margin-bottom: 12px">
-          识别每个 client_addr（IP:port）对应的调用程序（Hermes、Claude
-          Code、Cursor
-          等），帮助排查缓存命中率低的程序。分析需在系统设置中开启"客户端分析"；
-          每次聚合最近{{ clientAnalysisInterval >= 60 ?
-          clientAnalysisInterval/60 : 1 }}分钟的去重地址，调用 pi CLI
-          推断后落库。
-        </div>
-        <div v-if="configLoadFailed" style="margin-bottom: 12px">
-          <span class="badge badge-red">配置加载失败</span>
-          <span style="color: #909399; font-size: 12px; margin-left: 8px"
-            >客户端分析配置加载失败，请刷新页面后重试（当前开关状态未知，已按未开启处理）。</span
-          >
-        </div>
-        <div v-else-if="!clientAnalysisEnabled" style="margin-bottom: 12px">
-          <span class="badge badge-red">未开启</span>
-          <span style="color: #909399; font-size: 12px; margin-left: 8px"
-            >客户端分析默认关闭，请到"系统设置"打开开关后再触发分析。</span
-          >
-        </div>
-        <table>
-          <thead>
-            <tr>
-              <th>client_addr</th>
-              <th>程序</th>
-              <th>置信度</th>
-              <th>最大命中</th>
-              <th>最小命中</th>
-              <th>平均命中</th>
-              <th>分析依据</th>
-              <th>更新时间</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="p in clientProfiles">
-              <td>{{ p.client_addr }}</td>
-              <td>
-                <span
-                  class="badge"
-                  :class="p.confidence >= 0.5 ? 'badge-green' : 'badge-blue'"
-                >
-                  {{ p.program || '未知' }}
-                </span>
-              </td>
-              <td>{{ fmtNum(p.confidence * 100, 0) + '%' }}</td>
-              <td>{{ p.cache_max === null || p.cache_max === undefined ? '-' : fmtNum(p.cache_max, 1) + '%' }}</td>
-              <td>{{ p.cache_min === null || p.cache_min === undefined ? '-' : fmtNum(p.cache_min, 1) + '%' }}</td>
-              <td>{{ p.cache_avg === null || p.cache_avg === undefined ? '-' : fmtNum(p.cache_avg, 1) + '%' }}</td>
-              <td style="max-width: 320px; word-break: break-all">
-                {{ p.evidence || '-' }}
-              </td>
-              <td>{{ p.updated_at || '-' }}</td>
-            </tr>
-            <tr v-if="!clientProfiles.length">
-              <td colspan="8" style="color: #909399; text-align: center">
-                暂无分析结果，点击"立即分析"或等待定时任务生成。
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-
       <!-- 系统设置 -->
       <div class="tab-content" v-if="tab === 'settings'">
         <div
@@ -1583,79 +1508,7 @@
           >
         </div>
 
-        <div
-          style="
-            margin-bottom: 12px;
-            color: #303133;
-            font-weight: 600;
-            font-size: 14px;
-          "
-        >
-          客户端分析
-        </div>
-        <div
-          style="
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            margin-bottom: 16px;
-            flex-wrap: wrap;
-          "
-        >
-          <label
-            style="
-              display: flex;
-              align-items: center;
-              gap: 8px;
-              font-size: 14px;
-              cursor: pointer;
-            "
-          >
-            <input
-              type="checkbox"
-              v-model="clientAnalysisEnabled"
-              @change="saveClientAnalysisSwitch"
-              style="cursor: pointer"
-            />
-            开启客户端分析（聚合最近 N 分钟去重 client_addr，调 pi CLI 识别
-            对应的调用程序，结果在"客户端分析"页展示）
-          </label>
-          <label
-            style="
-              display: flex;
-              align-items: center;
-              gap: 8px;
-              font-size: 14px;
-              cursor: pointer;
-            "
-          >
-            分析间隔：
-            <select
-              v-model="clientAnalysisInterval"
-              @change="saveClientAnalysisSwitch"
-              style="
-                padding: 4px 8px;
-                border: 1px solid #dcdfe6;
-                border-radius: 4px;
-              "
-            >
-              <option :value="60">1 分钟</option>
-              <option :value="600">10 分钟</option>
-            </select>
-          </label>
-          <button
-            class="btn"
-            :disabled="analysisRunning || !clientAnalysisEnabled"
-            @click="runAnalysis"
-          >
-            {{ analysisRunning ? '分析中…' : '立即分析' }}
-          </button>
-          <span style="color: #909399; font-size: 12px"
-            >默认关闭：识别每个 IP:port 对应的程序（Hermes/Claude Code/Cursor
-            等），帮助发现缓存命中率低的程序。需要本机可执行 pi CLI；本机 IP
-            自动过滤。</span
-          >
-        </div>
+        
 
         <div
           style="
@@ -1891,6 +1744,18 @@
               <option value="subscription">订阅</option>
               <option value="payg">付费</option>
             </select>
+          </div>
+          <div class="form-group">
+            <label
+              style="display: flex; align-items: center; gap: 8px; cursor: pointer"
+            >
+              <input
+                type="checkbox"
+                v-model="editForm.billing_exempt"
+                style="cursor: pointer"
+              />
+              不参与计费（统计费用记 0，路由不受影响；适合完全不关注成本的真实免费渠道）
+            </label>
           </div>
           <div class="form-group">
             <label>模型列表（逗号分隔，如 glm4:9b, qwen2.5:7b）</label
@@ -2381,11 +2246,6 @@
             videoPassThrough: false,
             normalizeDeveloperRole: true,
             cacheReasoningContent: true,
-            clientAnalysisEnabled: false,
-            clientAnalysisInterval: 600,
-            configLoadFailed: false,
-            clientProfiles: [],
-            analysisRunning: false,
             loginUsername: "",
             loginPassword: "",
             loginError: "",
@@ -2435,8 +2295,6 @@
             ],
             visibleLogCols: [],
             showLogColsDialog: false,
-            // client_addr → {program, confidence}（/admin/logs 返回的 profile_map）
-            logProfileMap: {},
             summary: {},
             upstreamStats: [],
             apiKeyStats: [],
@@ -2496,6 +2354,7 @@
             logPageSize: 50,
             logUpstreamFilter: "",
             logModelFilter: "",
+            logStatusFilter: "",
             logFilters: { upstreams: [], models: [] },
             metricsRange: "7d",
             showAddDialog: false,
@@ -2509,7 +2368,7 @@
               model_mapping: "{}",
             },
             showEditDialog: false,
-            editForm: {},
+            editForm: { billing_exempt: false },
             fetchingModels: false,
             showCloneDialog: false,
             cloneForm: { name: "", api_key: "" },
@@ -3210,8 +3069,6 @@
                       self.apiKeys = r.data || [];
                     })
                     .catch(function () {});
-                } else if (name === "clients") {
-                  self.loadClientProfiles();
                 } else if (name === "settings") {
                   self
                     .api("/admin/config")
@@ -3239,73 +3096,14 @@
                       // reasoning_content 回传缓存默认开启（与后端 LoadFromDB 默认值一致）
                       self.cacheReasoningContent =
                         cm["proxy.cache_reasoning_content"] !== "false";
-                      // 客户端分析默认关闭；间隔默认 600 秒（10 分钟）
-                      self.clientAnalysisEnabled =
-                        cm["proxy.client_analysis"] === "true";
-                      var iv = parseInt(
-                        cm["proxy.client_analysis_interval"],
-                        10,
-                      );
-                      if (iv === 60) {
-                        self.clientAnalysisInterval = 60;
-                      } else {
-                        self.clientAnalysisInterval = 600;
-                      }
                     })
                     .catch(function () {
-                      // 配置加载失败：不静默吞掉，保持 clientAnalysisEnabled=false
-                      // 但给出可见提示，避免“未开启”假象（真实原因可能是后端挂了）
-                      self.configLoadFailed = true;
-                      console.error("加载客户端分析配置失败");
                       alert("配置加载失败，请刷新页面");
                     });
                   self.loadDiscounts();
                   self.loadBackups();
                 }
               });
-            },
-            loadClientProfiles: function () {
-              var self = this;
-              self
-                .api("/admin/analysis/profiles")
-                .then(function (r) {
-                  self.clientProfiles = r.data || [];
-                })
-                .catch(function () {});
-            },
-            runAnalysis: function () {
-              var self = this;
-              if (!self.clientAnalysisEnabled) {
-                alert("客户端分析未开启，请先打开开关");
-                return;
-              }
-              self.analysisRunning = true;
-              self
-                .api("/admin/analysis/run", { method: "POST", body: {} })
-                .then(function (r) {
-                  if (r.data && r.data.status === "ok") {
-                    alert(
-                      "分析完成：共 " +
-                        r.data.analyzed +
-                        " 个地址，成功识别 " +
-                        r.data.new_profiles +
-                        " 个",
-                    );
-                  } else {
-                    alert(
-                      "分析失败：" + ((r.data && r.data.message) || "未知错误"),
-                    );
-                  }
-                  self.loadClientProfiles();
-                })
-                .catch(function (e) {
-                  alert(
-                    "分析失败：" + (e && e.message ? e.message : "网络错误"),
-                  );
-                })
-                .finally(function () {
-                  self.analysisRunning = false;
-                });
             },
             loadDiscounts: function () {
               var self = this;
@@ -3411,25 +3209,7 @@
                   alert("reasoning_content 回传开关已保存并热重载生效");
                 });
             },
-            saveClientAnalysisSwitch: function () {
-              var self = this;
-              self
-                .api("/admin/config", {
-                  method: "PUT",
-                  body: {
-                    "proxy.client_analysis": self.clientAnalysisEnabled
-                      ? "true"
-                      : "false",
-                    "proxy.client_analysis_interval": String(
-                      self.clientAnalysisInterval,
-                    ),
-                  },
-                })
-                .then(function () {
-                  alert("客户端分析设置已保存并热重载生效");
-                });
-            },
-            openPwdDialog: function () {
+                        openPwdDialog: function () {
               this.pwdForm = {
                 old_password: "",
                 new_password: "",
@@ -3545,6 +3325,8 @@
                 q += "&upstream=" + encodeURIComponent(self.logUpstreamFilter);
               if (self.logModelFilter)
                 q += "&model=" + encodeURIComponent(self.logModelFilter);
+              if (self.logStatusFilter)
+                q += "&status_type=" + encodeURIComponent(self.logStatusFilter);
               self
                 .api(q)
                 .then(function (r) {
@@ -3552,7 +3334,6 @@
                   self.logs = d.logs || [];
                   self.logTotal = d.total || 0;
                   self.logFilters = d.filters || { upstreams: [], models: [] };
-                  self.logProfileMap = d.profile_map || {};
                   // 筛选后页码可能越界，回退到最后一页
                   var maxPage = Math.max(
                     1,
@@ -4008,6 +3789,7 @@
                     weight: f.weight,
                     models: self.normalizeModels(f.models),
                     model_mapping: f.model_mapping || "{}",
+                    billing_exempt: f.billing_exempt ? 1 : 0,
                   },
                 })
                 .then(function () {

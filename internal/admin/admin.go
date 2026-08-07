@@ -36,7 +36,6 @@ type Handler struct {
 	reload func() error         // 热重载回调，nil 时不可用
 	ff     *proxy.FastFailCache // 快速失败缓存；nil 时不显示 fast_fail 状态
 	auth   *auth.APIKeys        // 下游 key 鉴权缓存；nil 时无需刷新
-	ana    *ClientAnalyzer      // 客户端程序分析器；nil 时分析端点返回错误
 }
 
 // SetAuth 注入下游 key 鉴权器（api_tokens CRUD 后刷新内存缓存）。
@@ -116,20 +115,21 @@ func (h *Handler) Status(w http.ResponseWriter, _ *http.Request) {
 // upstreamResponse 是 GET /admin/upstreams 的单个元素。
 // 绝不包含 api_key 字段（安全）。
 type upstreamResponse struct {
-	Name         string   `json:"name"`
-	Type         string   `json:"type"`
-	BaseURL      string   `json:"base_url"`
-	APIKey       string   `json:"api_key"`
-	Tier         string   `json:"tier"`
-	Priority     int      `json:"priority"`
-	Weight       int      `json:"weight"`
-	Enabled      bool     `json:"enabled"`   // 1=启用 0=禁用（禁用的不参与转发）
-	FastFail     bool     `json:"fast_fail"` // 快速失败黑名单中（后台探测可自动恢复）
-	State        string   `json:"state"`
-	LatencyMS    int64    `json:"latency_ms"`
-	Models       []string `json:"models"`
-	ModelCount   int      `json:"model_count"`
-	ModelMapping string   `json:"model_mapping"` // JSON 对象字符串
+	Name          string   `json:"name"`
+	Type          string   `json:"type"`
+	BaseURL       string   `json:"base_url"`
+	APIKey        string   `json:"api_key"`
+	Tier          string   `json:"tier"`
+	Priority      int      `json:"priority"`
+	Weight        int      `json:"weight"`
+	Enabled       bool     `json:"enabled"`        // 1=启用 0=禁用（禁用的不参与转发）
+	BillingExempt bool     `json:"billing_exempt"` // true=不参与计费（统计费用记 0，路由不受影响）
+	FastFail      bool     `json:"fast_fail"`      // 快速失败黑名单中（后台探测可自动恢复）
+	State         string   `json:"state"`
+	LatencyMS     int64    `json:"latency_ms"`
+	Models        []string `json:"models"`
+	ModelCount    int      `json:"model_count"`
+	ModelMapping  string   `json:"model_mapping"` // JSON 对象字符串
 }
 
 // fastFailState 返回上游是否处于快速失败黑名单（渠道级判断，不区分模型）。
@@ -145,22 +145,23 @@ func (h *Handler) Upstreams(w http.ResponseWriter, _ *http.Request) {
 			resp := make([]upstreamResponse, 0, len(rows))
 			for _, u := range rows {
 				models := parseStringSlice(u.Models)
-				resp = append(resp, upstreamResponse{
-					Name:         u.Name,
-					Type:         u.Type,
-					BaseURL:      u.BaseURL,
-					APIKey:       u.APIKey,
-					Tier:         u.Tier,
-					Priority:     u.Priority,
-					Weight:       u.Weight,
-					Enabled:      u.Enabled == 1,
-					FastFail:     h.fastFailState(u.Name),
-					State:        string(h.hc.Status(u.Name)),
-					LatencyMS:    h.hc.Latency(u.Name).Milliseconds(),
-					Models:       models,
-					ModelCount:   len(models),
-					ModelMapping: u.ModelMapping,
-				})
+								resp = append(resp, upstreamResponse{
+													Name:          u.Name,
+													Type:          u.Type,
+													BaseURL:       u.BaseURL,
+													APIKey:        u.APIKey,
+													Tier:          u.Tier,
+													Priority:      u.Priority,
+													Weight:        u.Weight,
+													Enabled:       u.Enabled == 1,
+													BillingExempt: u.BillingExempt == 1,
+													FastFail:      h.fastFailState(u.Name),
+													State:         string(h.hc.Status(u.Name)),
+													LatencyMS:     h.hc.Latency(u.Name).Milliseconds(),
+													Models:        models,
+													ModelCount:    len(models),
+													ModelMapping:  u.ModelMapping,
+												})
 			}
 			writeJSON(w, resp)
 			return
@@ -867,6 +868,12 @@ func (h *Handler) CreateUpstream(w http.ResponseWriter, r *http.Request) {
 				req.EnabledPtr = &e
 			}
 		}
+		if v, ok := raw["billing_exempt"]; ok {
+			var b int
+			if json.Unmarshal(v, &b) == nil {
+				req.BillingExemptPtr = &b
+			}
+		}
 	}
 	if err := h.store.CreateUpstream(&req); err != nil {
 		writeJSON(w, map[string]string{"error": err.Error()})
@@ -903,6 +910,13 @@ func (h *Handler) UpdateUpstream(w http.ResponseWriter, r *http.Request) {
 			var e int
 			if json.Unmarshal(v, &e) == nil {
 				req.EnabledPtr = &e
+			}
+		}
+		// billing_exempt 同样：显式传入（含 false/0）才允许改，未传保持原值。
+		if v, ok := raw["billing_exempt"]; ok {
+			var b int
+			if json.Unmarshal(v, &b) == nil {
+				req.BillingExemptPtr = &b
 			}
 		}
 	}
@@ -1130,42 +1144,12 @@ func fmtCST(ts string) string {
 	return t.In(time.FixedZone("CST", 8*3600)).Format("2006-01-02 15:04:05")
 }
 
-// logProfile 是 /admin/logs 响应中 profile_map 的元素（client_addr → 已识别程序）。
-type logProfile struct {
-	Program    string  `json:"program"`    // 识别出的程序名（非空且非'未知'）
-	Confidence float64 `json:"confidence"` // 置信度 0-1
-}
-
-// clientProfileMap 查询 client_profiles 中已识别出程序（program 非空且非'未知'）
-// 的档案，返回 client_addr → {program, confidence} 映射，供请求日志页直接把
-// 客户端列显示为程序名。store 为 nil 或查询失败时返回空 map（不阻断日志返回）。
-func (h *Handler) clientProfileMap() map[string]logProfile {
-	out := map[string]logProfile{}
-	if h.store == nil {
-		return out
-	}
-	rows, err := h.store.DB().Query(`SELECT client_addr, program, confidence
-		FROM client_profiles WHERE program != '' AND program != '未知'`)
-	if err != nil {
-		return out
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var addr, program string
-		var conf float64
-		if rows.Scan(&addr, &program, &conf) == nil {
-			out[addr] = logProfile{Program: program, Confidence: conf}
-		}
-	}
-	return out
-}
-
 // RequestLogs 返回最近请求日志（GET /admin/logs?limit=50&offset=0&upstream=xx&model=yy）。
-// 支持按上游/模型筛选与分页；响应含 total、筛选选项和 profile_map
-// （client_addr → 已识别程序名，供前端客户端列显示程序名）。
+// 支持按上游/模型筛选与分页；响应含 total、筛选选项
+// （客户端程序识别功能已删除，不再有 profile_map——请求日志以 api_key 区分调用方）。
 func (h *Handler) RequestLogs(w http.ResponseWriter, r *http.Request) {
 	if h.store == nil {
-		writeJSON(w, map[string]interface{}{"total": 0, "limit": 50, "offset": 0, "logs": []map[string]interface{}{}, "profile_map": map[string]logProfile{}})
+		writeJSON(w, map[string]interface{}{"total": 0, "limit": 50, "offset": 0, "logs": []map[string]interface{}{}})
 		return
 	}
 	limit := 50
@@ -1191,6 +1175,12 @@ func (h *Handler) RequestLogs(w http.ResponseWriter, r *http.Request) {
 		where += " AND model = ?"
 		args = append(args, m)
 	}
+	// 状态筛选：normal=2xx 正常，error=非 2xx（4xx/5xx/499 等异常）
+	if st := r.URL.Query().Get("status_type"); st == "normal" {
+		where += " AND status >= 200 AND status < 300"
+	} else if st == "error" {
+		where += " AND (status < 200 OR status >= 300)"
+	}
 	if where != "" {
 		where = " WHERE " + strings.TrimPrefix(where, " AND ")
 	}
@@ -1209,7 +1199,7 @@ func (h *Handler) RequestLogs(w http.ResponseWriter, r *http.Request) {
 				SELECT ts, upstream, model, endpoint, status, duration_ms, prompt_tokens, completion_tokens, tokens, prompt_cache_hit_tokens, prompt_cache_miss_tokens, api_key, cost, upstream_model, client_addr, user_agent
 				FROM request_log`+where+` ORDER BY id DESC LIMIT ? OFFSET ?`, queryArgs...)
 	if err != nil {
-		writeJSON(w, map[string]interface{}{"total": total, "limit": limit, "offset": offset, "logs": []map[string]interface{}{}, "profile_map": map[string]logProfile{}})
+		writeJSON(w, map[string]interface{}{"total": total, "limit": limit, "offset": offset, "logs": []map[string]interface{}{}})
 		return
 	}
 	defer rows.Close()
@@ -1270,7 +1260,6 @@ func (h *Handler) RequestLogs(w http.ResponseWriter, r *http.Request) {
 		"offset":      offset,
 		"logs":        out,
 		"filters":     map[string]interface{}{"upstreams": upstreams, "models": models},
-		"profile_map": h.clientProfileMap(),
 	})
 }
 
@@ -1319,8 +1308,9 @@ func (h *Handler) CloneUpstream(w http.ResponseWriter, r *http.Request) {
 	if req.APIKey != "" {
 		clone.APIKey = req.APIKey
 	}
-	// 保留原上游的启用状态（克隆语义）
+	// 保留原上游的启用状态与计费豁免状态（克隆语义）
 	clone.EnabledPtr = &clone.Enabled
+	clone.BillingExemptPtr = &clone.BillingExempt
 	if err := h.store.CreateUpstream(&clone); err != nil {
 		writeJSON(w, map[string]string{"error": err.Error()})
 		return
