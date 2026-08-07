@@ -373,6 +373,7 @@ func buildServeMux(cfg *config.Config, rt *router.Router, hc *health.Checker, re
 	mux.HandleFunc("POST /admin/api-keys", adminAuth(admHandler.AddAPIKey))
 	mux.HandleFunc("DELETE /admin/api-keys/{key}", adminAuth(admHandler.DeleteAPIKey))
 	mux.HandleFunc("PUT /admin/api-keys/{id}/toggle", adminAuth(admHandler.SetAPIKeyEnabled))
+	mux.HandleFunc("PUT /admin/api-keys/{id}/name", adminAuth(admHandler.RenameAPIKey))
 
 	// CRUD 端点
 	mux.HandleFunc("POST /admin/upstreams", adminAuth(admHandler.CreateUpstream))

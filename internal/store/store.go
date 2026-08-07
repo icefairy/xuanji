@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -1221,6 +1222,15 @@ func (s *Store) SetAPITokenEnabled(id uint, enabled bool) error {
 		v = 1
 	}
 	_, err := s.db.Exec(`UPDATE api_tokens SET enabled = ? WHERE id = ?`, v, id)
+	return err
+}
+
+// UpdateAPITokenName 修改下游 API Key 的名称（按 id）。
+func (s *Store) UpdateAPITokenName(id uint, name string) error {
+	if strings.TrimSpace(name) == "" {
+		return fmt.Errorf("name is required")
+	}
+	_, err := s.db.Exec(`UPDATE api_tokens SET name = ? WHERE id = ?`, strings.TrimSpace(name), id)
 	return err
 }
 
