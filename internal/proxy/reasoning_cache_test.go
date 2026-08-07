@@ -81,7 +81,7 @@ func TestReasoningCache_UpdateKeepsOrder(t *testing.T) {
 func TestInjectReasoningContent_Hit(t *testing.T) {
 	c := NewReasoningCache(10)
 	c.Put("call_abc", "thinking about the weather")
-	body := []byte(`{"model":"m","messages":[{"role":"user","content":"hi"},{"role":"assistant","content":null,"tool_calls":[{"id":"call_abc","type":"function","function":{"name":"get_weather","arguments":"{}"}}]}]}`)
+	body := []byte(`{"model":"m","messages":[{"role":"user","content":"hi"},{"role":"assistant","content":null,"tool_calls":[{"id":"call_abc","type":"function","function":{"name":"get_weather","arguments":"{}"}}]},{"role":"tool","tool_call_id":"call_abc","content":"sunny"}]}`)
 	nb, changed := injectReasoningContent(body, c)
 	if !changed {
 		t.Fatalf("should inject reasoning_content")
@@ -133,11 +133,15 @@ func TestInjectReasoningContent_AlreadyHas(t *testing.T) {
 func TestInjectReasoningContent_MultiToolCall(t *testing.T) {
 	c := NewReasoningCache(10)
 	c.Put("call_2", "multi reasoning")
-	// 两个 tool_call，第二个命中 → 注入同一份 reasoning
-	body := []byte(`{"model":"m","messages":[{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"f1","arguments":"{}"}},{"id":"call_2","type":"function","function":{"name":"f2","arguments":"{}"}}]}]}`)
+	// 两个 tool_call 均已执行完（有对应 tool_result），第二个命中 → 注入同一份 reasoning
+	body := []byte(`{"model":"m","messages":[
+		{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"f1","arguments":"{}"}},{"id":"call_2","type":"function","function":{"name":"f2","arguments":"{}"}}]},
+		{"role":"tool","tool_call_id":"call_1","content":"r1"},
+		{"role":"tool","tool_call_id":"call_2","content":"r2"}
+	]}`)
 	nb, changed := injectReasoningContent(body, c)
 	if !changed {
-		t.Fatalf("should inject when any tool_call_id hits")
+		t.Fatalf("should inject when tool_calls have matching tool_results and any id hits")
 	}
 	if got := gjson.GetBytes(nb, "messages.0.reasoning_content").String(); got != "multi reasoning" {
 		t.Fatalf("reasoning_content = %q, want multi reasoning", got)
@@ -145,6 +149,30 @@ func TestInjectReasoningContent_MultiToolCall(t *testing.T) {
 	// 两个 tool_call 保持原样
 	if got := gjson.GetBytes(nb, "messages.0.tool_calls.#").Int(); got != 2 {
 		t.Fatalf("tool_calls count = %d, want 2", got)
+	}
+}
+
+func TestInjectReasoningContent_NewToolCall_NoInject(t *testing.T) {
+	c := NewReasoningCache(10)
+	c.Put("call_new", "reasoning for new call")
+	// 新发起的 tool_call（无对应 tool_result）：注入 reasoning_content 会让上游认为
+	// 这是历史 context 导致消息链断裂（tool_call 找不到 tool_result）→ 400。必须跳过。
+	body := []byte(`{"model":"m","messages":[{"role":"assistant","content":null,"tool_calls":[{"id":"call_new","type":"function","function":{"name":"f","arguments":"{}"}}]}]}`)
+	if nb, changed := injectReasoningContent(body, c); changed || string(nb) != string(body) {
+		t.Fatalf("new tool_call without tool_result must not inject")
+	}
+}
+
+func TestInjectReasoningContent_PartialResult_NoInject(t *testing.T) {
+	c := NewReasoningCache(10)
+	c.Put("call_2", "reasoning")
+	// 两个 tool_call，只有 call_1 有 tool_result（call_2 是新发起）→ 保守不注入
+	body := []byte(`{"model":"m","messages":[
+		{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"f1","arguments":"{}"}},{"id":"call_2","type":"function","function":{"name":"f2","arguments":"{}"}}]},
+		{"role":"tool","tool_call_id":"call_1","content":"r1"}
+	]}`)
+	if nb, changed := injectReasoningContent(body, c); changed || string(nb) != string(body) {
+		t.Fatalf("partially-resolved tool_calls must not inject (conservative)")
 	}
 }
 

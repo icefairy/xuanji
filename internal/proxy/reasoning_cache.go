@@ -82,11 +82,72 @@ func (c *ReasoningCache) Len() int {
 	return len(c.items)
 }
 
+// collectToolResultIDs 从 messages 中收集所有 tool 消息（role=tool）的 tool_call_id。
+// 这些 id 代表"已经执行完、有结果"的工具调用。
+func collectToolResultIDs(msgs []gjson.Result) map[string]bool {
+	result := make(map[string]bool)
+	for _, m := range msgs {
+		if m.Get("role").String() != "tool" {
+			continue
+		}
+		if id := m.Get("tool_call_id").String(); id != "" {
+			result[id] = true
+		}
+	}
+	return result
+}
+
+// collectAssistantToolCallIDs 从 messages 中收集所有 assistant 消息的 tool_calls[].id。
+func collectAssistantToolCallIDs(msgs []gjson.Result) map[string]bool {
+	result := make(map[string]bool)
+	for _, m := range msgs {
+		if m.Get("role").String() != "assistant" {
+			continue
+		}
+		tcs := m.Get("tool_calls")
+		if !tcs.IsArray() {
+			continue
+		}
+		for _, tc := range tcs.Array() {
+			if id := tc.Get("id").String(); id != "" {
+				result[id] = true
+			}
+		}
+	}
+	return result
+}
+
+// shouldInjectReasoning 判断是否安全地为某条 assistant 消息注入 reasoning_content。
+// 安全条件：该消息的所有 tool_call_id 在当前 messages 中都有对应的 tool_result。
+// 原因：如果存在"新"的 tool_call（无对应 tool_result），注入 reasoning_content 会让上游
+// 认为这是历史 context，导致消息链断裂（tool_call 找不到对应 tool_result）→ 400。
+// 当某条消息同时包含"新"和"旧"的 tool_call 时，保守起见不注入（避免部分注入导致不一致）。
+func shouldInjectReasoning(tcIDs []string, toolResultIDs map[string]bool) bool {
+	if len(tcIDs) == 0 {
+		return false
+	}
+	for _, id := range tcIDs {
+		if id == "" {
+			continue
+		}
+		if !toolResultIDs[id] {
+			// 存在没有对应 tool_result 的 tool_call → 可能是"新"调用 → 不注入
+			return false
+		}
+	}
+	return true
+}
+
 // injectReasoningContent 在转发请求前为 messages 中丢失 reasoning_content 的
 // assistant 消息补回缓存值：找到 role=assistant 且含 tool_calls 但无
 // reasoning_content 字段的消息，用 tool_calls[].id 查缓存，命中则注入该字段。
 // 只补 reasoning_content，不碰 role/content/tool_calls 等字段（零破坏）；
 // 未命中跳过——尽力而为，不因缺缓存而失败。返回修改后的 body 与是否发生修改。
+//
+// 安全约束（避免上游 400）：
+//   - 只在 tool_call_id 有对应 tool_result 时注入（说明是"已完成的旧调用"）
+//   - 存在"新"的 tool_call（无 tool_result）时跳过注入，防止消息链断裂
+//   - 这样 Hermes L3 折叠后孤立的 assistant+tool_calls 消息不会被误注入
 func injectReasoningContent(body []byte, cache *ReasoningCache) ([]byte, bool) {
 	if cache == nil {
 		return body, false
@@ -96,6 +157,11 @@ func injectReasoningContent(body []byte, cache *ReasoningCache) ([]byte, bool) {
 		return body, false
 	}
 	arr := msgs.Array()
+
+	// 收集所有 tool 消息的 tool_call_id（已完成的工具调用）
+	toolResultIDs := collectToolResultIDs(arr)
+	_ = collectAssistantToolCallIDs(arr) // 保留函数以备扩展（当前仅用于记录）
+
 	nb := body
 	changed := false
 	for i := range arr {
@@ -111,9 +177,19 @@ func injectReasoningContent(body []byte, cache *ReasoningCache) ([]byte, bool) {
 		if !tcs.IsArray() || len(tcs.Array()) == 0 {
 			continue
 		}
-		// 多 tool_call 时任一 id 命中即注入同一份 reasoning（共享思考内容）
+		// 收集该消息的所有 tool_call_id
+		var tcIDs []string
 		for _, tc := range tcs.Array() {
-			id := tc.Get("id").String()
+			if id := tc.Get("id").String(); id != "" {
+				tcIDs = append(tcIDs, id)
+			}
+		}
+		// 安全检查：只有所有 tool_call_id 都有对应 tool_result 时才注入
+		if !shouldInjectReasoning(tcIDs, toolResultIDs) {
+			continue
+		}
+		// 任一 id 命中即注入同一份 reasoning（共享思考内容）
+		for _, id := range tcIDs {
 			if id == "" {
 				continue
 			}
@@ -121,7 +197,7 @@ func injectReasoningContent(body []byte, cache *ReasoningCache) ([]byte, bool) {
 				var err error
 				nb, err = sjson.SetBytes(nb, fmt.Sprintf("messages.%d.reasoning_content", i), rc)
 				if err != nil {
-					continue // 单条失败不影响其余消息
+					continue
 				}
 				changed = true
 				break

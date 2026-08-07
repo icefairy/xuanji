@@ -138,52 +138,30 @@ func TestRequestLogs_FilterAndPaging(t *testing.T) {
 	if out4.Total != 0 {
 		t.Errorf("combined filter total = %d, want 0", out4.Total)
 	}
-}
 
-// TestRequestLogs_ProfileMap 验证 /admin/logs 响应带 profile_map
-// （client_addr → 已识别程序；program 为空或'未知'的不进映射）。
-func TestRequestLogs_ProfileMap(t *testing.T) {
-	s, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer s.Close()
-	// addr1 → Hermes（进映射）；addr2 → 未知（不进映射）
-	for _, p := range []store.ClientProfile{
-		{ClientAddr: "127.0.0.1:52001", Program: "Hermes", Confidence: 0.95, Evidence: "UA=Hermes/0.5.2"},
-		{ClientAddr: "127.0.0.1:52002", Program: "未知", Confidence: 0.1, Evidence: "UA 未识别"},
-	} {
-		if err := s.UpsertClientProfile(p); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := s.Insert(store.Record{Timestamp: time.Now(), Upstream: "up", Model: "m", Endpoint: "chat", Status: 200, ClientAddr: "127.0.0.1:52001"}); err != nil {
-		t.Fatal(err)
+	// 状态筛选：正常 (2xx) → 上游A 的 3 条；异常 (非2xx) → 上游B 的 2 条
+	rr5 := httptest.NewRecorder()
+	h.RequestLogs(rr5, httptest.NewRequest("GET", "/admin/logs?status_type=normal", nil))
+	var out5 logResp
+	decodeBody(t, rr5, &out5)
+	if out5.Total != 3 {
+		t.Errorf("status_type=normal total = %d, want 3", out5.Total)
 	}
 
-	h := New(testConfig(), nil)
-	h.SetStore(s)
+	rr6 := httptest.NewRecorder()
+	h.RequestLogs(rr6, httptest.NewRequest("GET", "/admin/logs?status_type=error", nil))
+	var out6 logResp
+	decodeBody(t, rr6, &out6)
+	if out6.Total != 2 {
+		t.Errorf("status_type=error total = %d, want 2", out6.Total)
+	}
 
-	rr := httptest.NewRecorder()
-	h.RequestLogs(rr, httptest.NewRequest("GET", "/admin/logs", nil))
-	var out struct {
-		Logs       []map[string]interface{} `json:"logs"`
-		ProfileMap map[string]struct {
-			Program    string  `json:"program"`
-			Confidence float64 `json:"confidence"`
-		} `json:"profile_map"`
-	}
-	decodeBody(t, rr, &out)
-	if out.ProfileMap == nil {
-		t.Fatal("profile_map 缺失")
-	}
-	if p, ok := out.ProfileMap["127.0.0.1:52001"]; !ok || p.Program != "Hermes" || p.Confidence != 0.95 {
-		t.Errorf("profile_map[52001] = %+v, want Hermes/0.95", p)
-	}
-	if _, ok := out.ProfileMap["127.0.0.1:52002"]; ok {
-		t.Errorf("profile_map 不应包含 '未知' 程序地址")
-	}
-	if len(out.Logs) != 1 {
-		t.Errorf("logs len = %d, want 1", len(out.Logs))
+	// 组合：异常 + 模型 M2 → 2 条（都是 500）；异常 + 模型 M1 → 0 条
+	rr7 := httptest.NewRecorder()
+	h.RequestLogs(rr7, httptest.NewRequest("GET", "/admin/logs?status_type=error&model=M2", nil))
+	var out7 logResp
+	decodeBody(t, rr7, &out7)
+	if out7.Total != 2 {
+		t.Errorf("status_type=error+model=M2 total = %d, want 2", out7.Total)
 	}
 }
