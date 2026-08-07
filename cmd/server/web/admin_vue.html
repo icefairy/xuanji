@@ -332,6 +332,7 @@
         border-color: #409eff;
       }
     </style>
+    <script src="/web/echarts.min.js"></script>
   </head>
   <body>
     <div id="app" v-cloak>
@@ -981,13 +982,9 @@
             margin-bottom: 16px;
           "
         >
-          <canvas
-            id="dailyChart"
-            style="width: 100%; height: 260px; display: block"
-          ></canvas>
+          <div id="dailyChart" style="width: 100%; height: 260px"></div>
           <div style="color: #909399; font-size: 12px; margin-top: 8px">
-            折线：每日 Token
-            总用量，悬停数据点可看具体值（当前简化版不显示悬浮提示，可直接看下方表格）
+            折线：每日 Token 总用量，悬停数据点可看具体值
           </div>
         </div>
         <div style="margin: 16px 0 8px; color: #909399; font-size: 13px">
@@ -1003,10 +1000,7 @@
             margin-bottom: 16px;
           "
         >
-          <canvas
-            id="dailyCostChart"
-            style="width: 100%; height: 260px; display: block"
-          ></canvas>
+          <div id="dailyCostChart" style="width: 100%; height: 260px"></div>
           <div style="color: #909399; font-size: 12px; margin-top: 8px">
             折线：每日费用，悬停数据点可看具体值
           </div>
@@ -1130,12 +1124,10 @@
                   </div>
                   <div v-else style="display: flex; gap: 16px; flex-wrap: wrap">
                     <div style="flex: 1; min-width: 300px; text-align: center">
-                      <canvas
+                      <div
                         :id="'pie-' + s.name.replace(/[^a-zA-Z0-9\u4e00-\u9fff]/g, '_')"
-                        :width="pieWidth"
-                        :height="pieHeight"
-                        style="display: inline-block; max-width: 100%"
-                      ></canvas>
+                        style="display: inline-block; width: 100%; max-width: 340px; height: 260px"
+                      ></div>
                       <div
                         style="color: #909399; font-size: 12px; margin-top: 4px"
                       >
@@ -1143,12 +1135,10 @@
                       </div>
                     </div>
                     <div style="flex: 1; min-width: 300px; text-align: center">
-                      <canvas
+                      <div
                         :id="'piecost-' + s.name.replace(/[^a-zA-Z0-9\u4e00-\u9fff]/g, '_')"
-                        :width="pieWidth"
-                        :height="pieHeight"
-                        style="display: inline-block; max-width: 100%"
-                      ></canvas>
+                        style="display: inline-block; width: 100%; max-width: 340px; height: 260px"
+                      ></div>
                       <div
                         style="color: #909399; font-size: 12px; margin-top: 4px"
                       >
@@ -2851,31 +2841,21 @@
               };
               xhr.send();
             },
-            // 绘制模型分布饼图（canvas）
+            // 绘制模型分布饼图（ECharts 环形饼图）
             drawModelPie: function () {
               var self = this;
               var apiKey = self.expandedAPIKey;
               if (!apiKey) return;
               var data = self.apiKeyModels[apiKey];
               if (!data || !data.length) return;
-              var canvas = document.getElementById(
+              if (!window.echarts) return; // echarts 未加载成功则放弃绘制（防御）
+              var el = document.getElementById(
                 "pie-" + apiKey.replace(/[^a-zA-Z0-9\u4e00-\u9fff]/g, "_"),
               );
-              if (!canvas) return;
-              var ctx = canvas.getContext("2d");
-              var dpr = window.devicePixelRatio || 1;
-              var W = self.pieWidth,
-                H = self.pieHeight;
-              canvas.width = W * dpr;
-              canvas.height = H * dpr;
-              ctx.scale(dpr, dpr);
-              ctx.clearRect(0, 0, W, H);
-              var total = 0;
-              for (var i = 0; i < data.length; i++) total += data[i].count;
-              if (total <= 0) return;
-              var cx = W / 2 - 60,
-                cy = H / 2,
-                R = 70;
+              if (!el) return;
+              // tab 用 v-if 切换会销毁 DOM，旧实例随之失效；重新 init 前先 dispose
+              var inst = echarts.getInstanceByDom(el);
+              if (inst) inst.dispose();
               var colors = [
                 "#3366cc",
                 "#dc3912",
@@ -2893,45 +2873,45 @@
                 "#911eb4",
                 "#a6d854",
               ];
-              var start = -Math.PI / 2;
-              for (var i = 0; i < data.length; i++) {
-                var p = data[i].count / total;
-                var ang = start + p * 2 * Math.PI;
-                ctx.beginPath();
-                ctx.moveTo(cx, cy);
-                ctx.arc(cx, cy, R, start, ang);
-                ctx.closePath();
-                ctx.fillStyle = colors[i % colors.length];
-                ctx.fill();
-                if (p >= 0.04) {
-                  var mid = start + p * Math.PI;
-                  var tx = cx + Math.cos(mid) * (R + 22),
-                    ty = cy + Math.sin(mid) * (R + 22);
-                  ctx.fillStyle = "#333";
-                  ctx.font = "11px sans-serif";
-                  ctx.textBaseline = "middle";
-                  var label =
-                    data[i].model.length > 20
-                      ? data[i].model.substring(0, 18) + ".."
-                      : data[i].model;
-                  ctx.fillText(label + " " + Math.round(p * 100) + "%", tx, ty);
-                }
-                start = ang;
-              }
-              var lx = W - 90,
-                ly = 24;
-              ctx.font = "11px sans-serif";
-              for (var i = 0; i < data.length; i++) {
-                ctx.fillStyle = colors[i % colors.length];
-                ctx.fillRect(lx, ly - 4, 8, 8);
-                ctx.fillStyle = "#555";
-                var legendLabel =
-                  data[i].model.length > 28
-                    ? data[i].model.substring(0, 26) + ".."
-                    : data[i].model;
-                ctx.fillText(legendLabel, lx + 12, ly + 1);
-                ly += 16;
-              }
+              var chart = echarts.init(el);
+              chart.setOption({
+                color: colors,
+                tooltip: {
+                  trigger: "item",
+                  formatter: "{b}: {c} 次 ({d}%)",
+                },
+                legend: {
+                  type: "scroll",
+                  orient: "vertical",
+                  right: 0,
+                  top: 20,
+                  bottom: 20,
+                },
+                series: [
+                  {
+                    name: "请求分布",
+                    type: "pie",
+                    radius: ["35%", "65%"],
+                    center: ["42%", "50%"],
+                    avoidLabelOverlap: true,
+                    itemStyle: { borderColor: "#fff", borderWidth: 1 },
+                    label: {
+                      formatter: function (params) {
+                        var name =
+                          params.name.length > 12
+                            ? params.name.substring(0, 10) + ".."
+                            : params.name;
+                        return name + "\n" + params.percent + "%";
+                      },
+                      fontSize: 10,
+                    },
+                    labelLine: { length: 10, length2: 8 },
+                    data: data.map(function (d) {
+                      return { name: d.model, value: d.count };
+                    }),
+                  },
+                ],
+              });
             },
             // 按上游名查找费用
             costByUpstream: function (name) {
@@ -2968,139 +2948,97 @@
               }
               this.costStats.by_day = byDay;
             },
-            // 绘制按天费用折线图（纯 canvas 手绘，零依赖）
+            // 绘制按天费用折线图（ECharts 交互式折线图）
             drawDailyCostChart: function () {
               var self = this;
-              var canvas = document.getElementById("dailyCostChart");
-              if (!canvas) return;
+              if (!window.echarts) return; // echarts 未加载成功则放弃绘制（防御）
+              var el = document.getElementById("dailyCostChart");
+              if (!el) return;
+              // tab 用 v-if 切换会销毁 DOM，旧实例随之失效；重新 init 前先 dispose
+              var inst = echarts.getInstanceByDom(el);
+              if (inst) inst.dispose();
               var data = self.costStats.by_day || [];
+              var chart = echarts.init(el);
               if (!data.length) {
-                var ctx = canvas.getContext("2d");
-                var dpr = window.devicePixelRatio || 1;
-                var cssW = canvas.parentElement
-                  ? canvas.parentElement.clientWidth - 24
-                  : 800;
-                var cssH = 260;
-                canvas.style.width = cssW + "px";
-                canvas.style.height = cssH + "px";
-                canvas.width = cssW * dpr;
-                canvas.height = cssH * dpr;
-                ctx.scale(dpr, dpr);
-                ctx.fillStyle = "#909399";
-                ctx.font = "14px sans-serif";
-                ctx.textAlign = "center";
-                ctx.fillText("暂无按天费用数据", cssW / 2, cssH / 2);
+                chart.setOption({
+                  graphic: {
+                    type: "text",
+                    left: "center",
+                    top: "middle",
+                    style: {
+                      text: "暂无按天费用数据",
+                      fill: "#909399",
+                      fontSize: 14,
+                    },
+                  },
+                });
                 return;
               }
-              var dpr = window.devicePixelRatio || 1;
-              var cssW = canvas.parentElement
-                ? canvas.parentElement.clientWidth - 24
-                : canvas.clientWidth;
-              if (cssW <= 0) cssW = 800;
-              var cssH = 260;
-              canvas.style.width = cssW + "px";
-              canvas.style.height = cssH + "px";
-              canvas.width = cssW * dpr;
-              canvas.height = cssH * dpr;
-              var ctx = canvas.getContext("2d");
-              ctx.scale(dpr, dpr);
-              var pad = { top: 28, right: 16, bottom: 32, left: 64 };
-              var w = cssW - pad.left - pad.right;
-              var h = cssH - pad.top - pad.bottom;
-              var n = data.length;
-              var maxC = 0.001;
-              data.forEach(function (d) {
-                if (d.cost > maxC) maxC = d.cost;
-              });
-              var niceMax = 1;
-              if (maxC > 0) {
-                var mag = Math.pow(10, Math.floor(Math.log10(maxC)));
-                var norm = maxC / mag;
-                if (norm <= 1) niceMax = 1 * mag;
-                else if (norm <= 2) niceMax = 2 * mag;
-                else if (norm <= 5) niceMax = 5 * mag;
-                else niceMax = 10 * mag;
-              }
-              ctx.font = "11px sans-serif";
-              ctx.strokeStyle = "#f0f0f0";
-              ctx.fillStyle = "#909399";
-              var yTicks = 4;
-              for (var i = 0; i <= yTicks; i++) {
-                var y = pad.top + h - (h * i) / yTicks;
-                ctx.beginPath();
-                ctx.moveTo(pad.left, y);
-                ctx.lineTo(pad.left + w, y);
-                ctx.stroke();
-                var val = (niceMax * i) / yTicks;
-                ctx.textAlign = "right";
-                ctx.textBaseline = "middle";
-                ctx.fillText(self.fmtMoneyInt(val), pad.left - 6, y + 4);
-              }
-              var maxLabels = Math.max(2, Math.floor(w / 70));
-              var step = Math.ceil(n / maxLabels);
-              ctx.textAlign = "center";
-              ctx.textBaseline = "top";
-              data.forEach(function (d, i) {
-                if (i % step !== 0 && i !== n - 1) return;
-                var x = pad.left + w * (n === 1 ? 0.5 : i / (n - 1));
-                var label = d.date ? d.date.substring(5) : "";
-                ctx.fillText(label, x, pad.top + h + 8);
-              });
-              var x = function (i) {
-                return pad.left + w * (n === 1 ? 0.5 : i / (n - 1));
-              };
-              var y = function (v) {
-                return pad.top + h - (h * v) / niceMax;
-              };
-              var grad = ctx.createLinearGradient(0, pad.top, 0, pad.top + h);
-              grad.addColorStop(0, "rgba(250, 140, 22, 0.18)");
-              grad.addColorStop(1, "rgba(250, 140, 22, 0.01)");
-              ctx.beginPath();
-              data.forEach(function (d, i) {
-                if (i === 0) ctx.moveTo(x(i), y(d.cost));
-                else ctx.lineTo(x(i), y(d.cost));
-              });
-              ctx.strokeStyle = "#fa8c16";
-              ctx.lineWidth = 2;
-              ctx.lineJoin = "round";
-              ctx.stroke();
-              ctx.lineTo(x(n - 1), pad.top + h);
-              ctx.lineTo(x(0), pad.top + h);
-              ctx.closePath();
-              ctx.fillStyle = grad;
-              ctx.fill();
-              data.forEach(function (d, i) {
-                var px = x(i),
-                  py = y(d.cost);
-                ctx.beginPath();
-                ctx.arc(px, py, 3, 0, Math.PI * 2);
-                ctx.fillStyle = "#fa8c16";
-                ctx.fill();
-                ctx.strokeStyle = "#fff";
-                ctx.lineWidth = 1.5;
-                ctx.stroke();
+              chart.setOption({
+                grid: { top: 28, right: 24, bottom: 32, left: 64 },
+                tooltip: {
+                  trigger: "axis",
+                  valueFormatter: function (v) {
+                    return self.fmtMoney(v);
+                  },
+                },
+                xAxis: {
+                  type: "category",
+                  boundaryGap: false,
+                  data: data.map(function (d) {
+                    return d.date || "";
+                  }),
+                  axisLabel: { color: "#909399", fontSize: 11 },
+                  axisLine: { lineStyle: { color: "#dcdfe6" } },
+                },
+                yAxis: {
+                  type: "value",
+                  axisLabel: {
+                    color: "#909399",
+                    fontSize: 11,
+                    formatter: function (v) {
+                      return self.fmtMoneyInt(v);
+                    },
+                  },
+                  splitLine: { lineStyle: { color: "#f0f0f0" } },
+                },
+                series: [
+                  {
+                    name: "费用(元)",
+                    type: "line",
+                    data: data.map(function (d) {
+                      return d.cost;
+                    }),
+                    symbol: "circle",
+                    symbolSize: 5,
+                    itemStyle: { color: "#fa8c16" },
+                    lineStyle: { color: "#fa8c16", width: 2 },
+                    areaStyle: {
+                      color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+                        { offset: 0, color: "rgba(250, 140, 22, 0.18)" },
+                        { offset: 1, color: "rgba(250, 140, 22, 0.01)" },
+                      ]),
+                    },
+                  },
+                ],
               });
             },
-            // 绘制指定 API Key 的费用饼图（canvas）
+            // 绘制指定 API Key 的费用饼图（ECharts 环形饼图）
             drawKeyCostPie: function () {
               var self = this;
               var apiKey = self.expandedAPIKey;
               if (!apiKey) return;
               var countData = self.apiKeyModels[apiKey];
               if (!countData || !countData.length) return;
-              var canvas = document.getElementById(
+              if (!window.echarts) return; // echarts 未加载成功则放弃绘制（防御）
+              var el = document.getElementById(
                 "piecost-" + apiKey.replace(/[^a-zA-Z0-9\u4e00-\u9fff]/g, "_"),
               );
-              if (!canvas) return;
-              var ctx = canvas.getContext("2d");
-              var dpr = window.devicePixelRatio || 1;
-              var W = self.pieWidth,
-                H = self.pieHeight;
-              canvas.width = W * dpr;
-              canvas.height = H * dpr;
-              ctx.scale(dpr, dpr);
-              ctx.clearRect(0, 0, W, H);
-              // 用该 API Key 的总费用按请求数比例估算各模型费用
+              if (!el) return;
+              // tab 用 v-if 切换会销毁 DOM，旧实例随之失效；重新 init 前先 dispose
+              var inst = echarts.getInstanceByDom(el);
+              if (inst) inst.dispose();
+              // 用该 API Key 的总费用按请求数比例估算各模型费用（算法与原 canvas 版一致）
               var totalKeyCost = 0;
               var keyArr = self.costStats.by_api_key || [];
               for (var i = 0; i < keyArr.length; i++) {
@@ -3112,16 +3050,22 @@
               var totalReqs = 0;
               for (var i = 0; i < countData.length; i++)
                 totalReqs += countData[i].count;
+              var chart = echarts.init(el);
               if (totalReqs <= 0 || totalKeyCost <= 0) {
-                ctx.fillStyle = "#909399";
-                ctx.font = "12px sans-serif";
-                ctx.textAlign = "center";
-                ctx.fillText("暂无费用数据", W / 2, H / 2);
+                chart.setOption({
+                  graphic: {
+                    type: "text",
+                    left: "center",
+                    top: "middle",
+                    style: {
+                      text: "暂无费用数据",
+                      fill: "#909399",
+                      fontSize: 12,
+                    },
+                  },
+                });
                 return;
               }
-              var cx = W / 2 - 60,
-                cy = H / 2,
-                R = 70;
               var colors = [
                 "#3366cc",
                 "#dc3912",
@@ -3139,50 +3083,51 @@
                 "#911eb4",
                 "#a6d854",
               ];
-              var start = -Math.PI / 2;
-              for (var i = 0; i < countData.length; i++) {
-                var p = countData[i].count / totalReqs;
-                var ang = start + p * 2 * Math.PI;
-                ctx.beginPath();
-                ctx.moveTo(cx, cy);
-                ctx.arc(cx, cy, R, start, ang);
-                ctx.closePath();
-                ctx.fillStyle = colors[i % colors.length];
-                ctx.fill();
-                if (p >= 0.04) {
-                  var mid = start + p * Math.PI;
-                  var tx = cx + Math.cos(mid) * (R + 22),
-                    ty = cy + Math.sin(mid) * (R + 22);
-                  ctx.fillStyle = "#333";
-                  ctx.font = "11px sans-serif";
-                  ctx.textBaseline = "middle";
-                  var label =
-                    countData[i].model.length > 20
-                      ? countData[i].model.substring(0, 18) + ".."
-                      : countData[i].model;
-                  ctx.fillText(label + " " + Math.round(p * 100) + "%", tx, ty);
-                }
-                start = ang;
-              }
-              var lx = W - 90,
-                ly = 24;
-              ctx.font = "11px sans-serif";
-              for (var i = 0; i < countData.length; i++) {
-                ctx.fillStyle = colors[i % colors.length];
-                ctx.fillRect(lx, ly - 4, 8, 8);
-                ctx.fillStyle = "#555";
-                var legendLabel =
-                  countData[i].model.length > 28
-                    ? countData[i].model.substring(0, 26) + ".."
-                    : countData[i].model;
-                var estCost = (totalKeyCost * countData[i].count) / totalReqs;
-                ctx.fillText(
-                  legendLabel + " " + self.fmtMoney(estCost),
-                  lx + 12,
-                  ly + 1,
-                );
-                ly += 16;
-              }
+              chart.setOption({
+                color: colors,
+                tooltip: {
+                  trigger: "item",
+                  formatter: function (params) {
+                    var v = params.value;
+                    var s = v >= 0.01 ? v.toFixed(2) : v.toFixed(4);
+                    return params.name + ": ¥" + s + " (" + params.percent + "%)";
+                  },
+                },
+                legend: {
+                  type: "scroll",
+                  orient: "vertical",
+                  right: 0,
+                  top: 20,
+                  bottom: 20,
+                },
+                series: [
+                  {
+                    name: "费用分布",
+                    type: "pie",
+                    radius: ["35%", "65%"],
+                    center: ["42%", "50%"],
+                    avoidLabelOverlap: true,
+                    itemStyle: { borderColor: "#fff", borderWidth: 1 },
+                    label: {
+                      formatter: function (params) {
+                        var name =
+                          params.name.length > 12
+                            ? params.name.substring(0, 10) + ".."
+                            : params.name;
+                        return name + "\n" + params.percent + "%";
+                      },
+                      fontSize: 10,
+                    },
+                    labelLine: { length: 10, length2: 8 },
+                    data: countData.map(function (d) {
+                      return {
+                        name: d.model,
+                        value: (totalKeyCost * d.count) / totalReqs,
+                      };
+                    }),
+                  },
+                ],
+              });
             },
             toggleUpstream: function (u) {
               var self = this;
@@ -3782,116 +3727,65 @@
                   self.loadBackups();
                 });
             },
-            // 绘制按天 Token 用量折线图（纯 canvas 手绘，零依赖）
+            // 绘制按天 Token 用量折线图（ECharts 交互式折线图）
             drawDailyChart: function () {
               var self = this;
-              var canvas = document.getElementById("dailyChart");
-              if (!canvas) return;
+              if (!window.echarts) return; // echarts 未加载成功则放弃绘制（防御）
+              var el = document.getElementById("dailyChart");
+              if (!el) return;
               var data = self.dailyStats || [];
               if (!data.length) return;
-              // 适配高清屏
-              var dpr = window.devicePixelRatio || 1;
-              var cssW = canvas.parentElement
-                ? canvas.parentElement.clientWidth - 24
-                : canvas.clientWidth;
-              if (cssW <= 0) cssW = 800;
-              var cssH = 260;
-              canvas.style.width = cssW + "px";
-              canvas.style.height = cssH + "px";
-              canvas.width = cssW * dpr;
-              canvas.height = cssH * dpr;
-              var ctx = canvas.getContext("2d");
-              ctx.scale(dpr, dpr);
-
-              var pad = { top: 28, right: 16, bottom: 32, left: 64 };
-              var w = cssW - pad.left - pad.right;
-              var h = cssH - pad.top - pad.bottom;
-              var n = data.length;
-              var maxT = 1;
-              data.forEach(function (d) {
-                if (d.tokens > maxT) maxT = d.tokens;
-              });
-              // 最大值向上取整到好看的刻度（1/2/5 进制）
-              var niceMax = 1;
-              var mag = Math.pow(10, Math.floor(Math.log10(maxT)));
-              var norm = maxT / mag;
-              if (norm <= 1) niceMax = 1 * mag;
-              else if (norm <= 2) niceMax = 2 * mag;
-              else if (norm <= 5) niceMax = 5 * mag;
-              else niceMax = 10 * mag;
-
-              // 背景网格 + Y 轴刻度
-              ctx.font = "11px sans-serif";
-              ctx.strokeStyle = "#f0f0f0";
-              ctx.fillStyle = "#909399";
-              var yTicks = 4;
-              for (var i = 0; i <= yTicks; i++) {
-                var y = pad.top + h - (h * i) / yTicks;
-                ctx.beginPath();
-                ctx.moveTo(pad.left, y);
-                ctx.lineTo(pad.left + w, y);
-                ctx.stroke();
-                var val = (niceMax * i) / yTicks;
-                ctx.fillText(
-                  self.fmtTokens(Math.round(val)),
-                  pad.left - 6,
-                  y + 4,
-                );
-                ctx.textAlign = "right";
-                ctx.textBaseline = "middle";
-              }
-
-              // X 轴刻度（日期标签，太多时抽样）
-              var maxLabels = Math.max(2, Math.floor(w / 70));
-              var step = Math.ceil(n / maxLabels);
-              ctx.textAlign = "center";
-              ctx.textBaseline = "top";
-              data.forEach(function (d, i) {
-                if (i % step !== 0 && i !== n - 1) return;
-                var x = pad.left + w * (n === 1 ? 0.5 : i / (n - 1));
-                var label = d.date ? d.date.substring(5) : ""; // MM-DD
-                ctx.fillText(label, x, pad.top + h + 8);
-              });
-
-              // 折线（Token 用量）+ 渐变填充
-              var x = function (i) {
-                return pad.left + w * (n === 1 ? 0.5 : i / (n - 1));
-              };
-              var y = function (v) {
-                return pad.top + h - (h * v) / niceMax;
-              };
-
-              var grad = ctx.createLinearGradient(0, pad.top, 0, pad.top + h);
-              grad.addColorStop(0, "rgba(114, 46, 209, 0.18)");
-              grad.addColorStop(1, "rgba(114, 46, 209, 0.01)");
-
-              ctx.beginPath();
-              data.forEach(function (d, i) {
-                if (i === 0) ctx.moveTo(x(i), y(d.tokens));
-                else ctx.lineTo(x(i), y(d.tokens));
-              });
-              ctx.strokeStyle = "#722ed1";
-              ctx.lineWidth = 2;
-              ctx.lineJoin = "round";
-              ctx.stroke();
-              // 面积填充
-              ctx.lineTo(x(n - 1), pad.top + h);
-              ctx.lineTo(x(0), pad.top + h);
-              ctx.closePath();
-              ctx.fillStyle = grad;
-              ctx.fill();
-
-              // 数据点
-              data.forEach(function (d, i) {
-                var px = x(i),
-                  py = y(d.tokens);
-                ctx.beginPath();
-                ctx.arc(px, py, 3, 0, Math.PI * 2);
-                ctx.fillStyle = "#722ed1";
-                ctx.fill();
-                ctx.strokeStyle = "#fff";
-                ctx.lineWidth = 1.5;
-                ctx.stroke();
+              // tab 用 v-if 切换会销毁 DOM，旧实例随之失效；重新 init 前先 dispose
+              var inst = echarts.getInstanceByDom(el);
+              if (inst) inst.dispose();
+              var chart = echarts.init(el);
+              chart.setOption({
+                grid: { top: 28, right: 24, bottom: 32, left: 64 },
+                tooltip: {
+                  trigger: "axis",
+                  valueFormatter: function (v) {
+                    return self.fmtTokens(v);
+                  },
+                },
+                xAxis: {
+                  type: "category",
+                  boundaryGap: false,
+                  data: data.map(function (d) {
+                    return d.date || "";
+                  }),
+                  axisLabel: { color: "#909399", fontSize: 11 },
+                  axisLine: { lineStyle: { color: "#dcdfe6" } },
+                },
+                yAxis: {
+                  type: "value",
+                  axisLabel: {
+                    color: "#909399",
+                    fontSize: 11,
+                    formatter: function (v) {
+                      return self.fmtTokens(v);
+                    },
+                  },
+                  splitLine: { lineStyle: { color: "#f0f0f0" } },
+                },
+                series: [
+                  {
+                    name: "Token 用量",
+                    type: "line",
+                    data: data.map(function (d) {
+                      return d.tokens;
+                    }),
+                    symbol: "circle",
+                    symbolSize: 5,
+                    itemStyle: { color: "#722ed1" },
+                    lineStyle: { color: "#722ed1", width: 2 },
+                    areaStyle: {
+                      color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+                        { offset: 0, color: "rgba(114, 46, 209, 0.18)" },
+                        { offset: 1, color: "rgba(114, 46, 209, 0.01)" },
+                      ]),
+                    },
+                  },
+                ],
               });
             },
             ruleStrategyLabel: function (s) {
