@@ -1234,6 +1234,16 @@ func (s *Store) UpdateAPITokenName(id uint, name string) error {
 	return err
 }
 
+// RenameLogAPIKey 同步 request_log 中历史记录的名称快照（旧名 → 新名）。
+// 请求日志写入时存的是当时 api_tokens.name 的快照，改名后需同步以保持显示一致。
+func (s *Store) RenameLogAPIKey(oldName, newName string) error {
+	if oldName == "" || newName == "" {
+		return nil
+	}
+	_, err := s.db.Exec(`UPDATE request_log SET api_key = ? WHERE api_key = ?`, newName, oldName)
+	return err
+}
+
 // APITokenExists 检查 key 是否已存在且启用（避免重复 + 鉴权用）。
 func (s *Store) APITokenExists(key string) bool {
 	var n int
