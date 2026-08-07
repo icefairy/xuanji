@@ -785,7 +785,13 @@
                 <template v-else-if="col.key === 'upstream'">{{ l.upstream }}</template>
                 <template v-else-if="col.key === 'client'">
                   <span
-                    v-if="logProfileMap[l.client_addr]"
+                    v-if="l.user_agent"
+                    class="badge badge-green"
+                    :title="'User-Agent: ' + l.user_agent + ' | 地址 ' + (l.client_addr||'')"
+                    >{{ l.user_agent.length > 28 ? l.user_agent.substring(0, 26) + '..' : l.user_agent }}</span
+                  >
+                  <span
+                    v-else-if="logProfileMap[l.client_addr]"
                     class="badge badge-blue"
                     :title="'原始地址 ' + (l.client_addr||'') + ' (' + logProfileMap[l.client_addr].program + ', 置信度 ' + fmtNum(logProfileMap[l.client_addr].confidence*100,0) + '%)'"
                     >{{ logProfileMap[l.client_addr].program }}</span
