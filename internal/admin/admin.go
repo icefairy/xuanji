@@ -1452,6 +1452,33 @@ func (h *Handler) SetAPIKeyEnabled(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]string{"status": "ok"})
 }
 
+// RenameAPIKey 修改下游 API Key 的名称（PUT /admin/api-keys/{id}/name）。
+// 请求体：{"name":"新名称"}。
+func (h *Handler) RenameAPIKey(w http.ResponseWriter, r *http.Request) {
+	if h.store == nil {
+		writeJSON(w, map[string]string{"error": "store not available"})
+		return
+	}
+	idStr := r.PathValue("id")
+	id, err := strconv.ParseUint(idStr, 10, 32)
+	if err != nil {
+		writeJSON(w, map[string]string{"error": "invalid id"})
+		return
+	}
+	var req struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, map[string]string{"error": "invalid request: " + err.Error()})
+		return
+	}
+	if err := h.store.UpdateAPITokenName(uint(id), req.Name); err != nil {
+		writeJSON(w, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, map[string]string{"status": "ok"})
+}
+
 // Login 管理端用户名密码登录（POST /admin/login）。
 // 验证 bcrypt 密码后签发 JWT，有效期 24h。
 func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
