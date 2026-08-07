@@ -653,6 +653,9 @@ func (h *Handler) latencyRank(name string) int64 {
 func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byte, up *config.Upstream, model string, stream bool, last bool) (handled, retryable bool, err error, promptTokens, completionTokens, promptCacheHitTokens, promptCacheMissTokens int64) {
 	start := time.Now()
 	var status int
+	// 流式转发期间客户端提前断开（streamCopy 写响应失败）：日志状态记为 499，
+	// 避免"中断"被误记为 200 污染统计（客户端实际收到 200 头后断流）。
+	var streamInterrupted bool
 	upstreamModel := h.pickAvailableModel(up, model)
 	defer func() {
 		if h.recorder == nil || !handled {
@@ -660,6 +663,9 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 		}
 		if sr, ok := w.(*statusRecorder); ok {
 			status = sr.status
+		}
+		if streamInterrupted && status >= 200 && status < 400 {
+			status = 499
 		}
 		cost := 0.0
 		if status >= 200 && status < 400 && (promptTokens > 0 || completionTokens > 0) {
@@ -782,7 +788,7 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 		if h.fastFail != nil {
 			h.fastFail.MarkSuccess(up.Name, upstreamModel)
 		}
-		h.streamCopy(w, resp, &promptTokens, &completionTokens, &promptCacheHitTokens, &promptCacheMissTokens)
+		streamInterrupted = h.streamCopy(w, resp, &promptTokens, &completionTokens, &promptCacheHitTokens, &promptCacheMissTokens)
 		return true, false, nil, promptTokens, completionTokens, promptCacheHitTokens, promptCacheMissTokens
 	case resp.StatusCode >= 400:
 		// 读响应体用于关键词匹配
@@ -966,7 +972,9 @@ func extractMessages(body []byte) []map[string]string {
 // streamCopy 将上游 SSE 响应边收边发地透传给客户端，同时解析 usage chunk 收集 token 统计
 // 与前缀缓存命中/未命中 token 数（DeepSeek 等上游在 usage 里带 prompt_cache_hit/miss_tokens）。
 // 处理 "usage":null 的中间 chunk（Exists() 对 null 也返回 true，需 IsObject() 过滤）。
-func (h *Handler) streamCopy(w http.ResponseWriter, resp *http.Response, promptTokens, completionTokens, promptCacheHit, promptCacheMiss *int64) {
+// 返回 interrupted：客户端在流结束前断开（写响应失败），调用方应把日志状态记为 499
+//（Nginx 语义 client closed request），避免把"中断"误记为 200 污染统计。
+func (h *Handler) streamCopy(w http.ResponseWriter, resp *http.Response, promptTokens, completionTokens, promptCacheHit, promptCacheMiss *int64) (interrupted bool) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -981,7 +989,7 @@ func (h *Handler) streamCopy(w http.ResponseWriter, resp *http.Response, promptT
 	for scanner.Scan() {
 		line := scanner.Text()
 		if _, werr := w.Write([]byte(line + "\n")); werr != nil {
-			return
+			return true
 		}
 		if f, ok := w.(http.Flusher); ok {
 			f.Flush()
@@ -1026,6 +1034,7 @@ func (h *Handler) streamCopy(w http.ResponseWriter, resp *http.Response, promptT
 	if cacheEnabled && reasoningBuf.Len() > 0 && len(toolCallIDs) > 0 {
 		h.reasoning.PutAll(toolCallIDs, reasoningBuf.String())
 	}
+	return false
 }
 
 // writeUpstreamError 把上游的 4xx/5xx 响应映射为 OpenAI 标准错误格式。
