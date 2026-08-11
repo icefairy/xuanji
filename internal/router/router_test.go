@@ -114,6 +114,54 @@ func TestRoute_AllUpstreamsInvalidContinues(t *testing.T) {
 	}
 }
 
+func TestFindRule_VisionFields(t *testing.T) {
+	cfg := testConfig()
+	cfg.Routing.Rules = []config.Rule{
+		{Model: "deepseek-v4-flash", Upstreams: []string{"silicon"}, Strategy: "primary_backup", VisionFallback: "flash"},
+		{Model: "flash", Upstreams: []string{"silicon"}, Strategy: "primary_backup", Vision: true},
+	}
+	r := New(cfg)
+
+	rule := r.FindRule("deepseek-v4-flash")
+	if rule == nil {
+		t.Fatal("FindRule(deepseek-v4-flash) = nil")
+	}
+	if rule.Vision || rule.VisionFallback != "flash" {
+		t.Errorf("rule = vision:%v fallback:%q, want false/'flash'", rule.Vision, rule.VisionFallback)
+	}
+	if rule2 := r.FindRule("flash"); rule2 == nil || !rule2.Vision {
+		t.Errorf("FindRule(flash) = %+v, want vision=true", rule2)
+	}
+	if r.FindRule("no-such-model") != nil {
+		t.Error("FindRule(no-such-model) should be nil")
+	}
+}
+
+// FindRule 与 Route 匹配口径一致：上游全部无效的规则跳过，继续匹配下一条。
+func TestFindRule_SkipsAllInvalidUpstreams(t *testing.T) {
+	cfg := testConfig()
+	cfg.Routing.Rules = []config.Rule{
+		{Model: "m", Upstreams: []string{"missing"}, Strategy: "primary_backup", VisionFallback: "flash"},
+		{Model: "m", Upstreams: []string{"silicon"}, Strategy: "primary_backup", Vision: true},
+	}
+	rule := New(cfg).FindRule("m")
+	if rule == nil || !rule.Vision {
+		t.Errorf("FindRule(m) = %+v, want the second (valid) vision rule", rule)
+	}
+}
+
+// FindRule 支持通配符匹配（与 Route 一致）。
+func TestFindRule_WildcardMatch(t *testing.T) {
+	cfg := testConfig()
+	cfg.Routing.Rules = []config.Rule{
+		{Model: "deepseek-*", Upstreams: []string{"silicon"}, Strategy: "primary_backup", VisionFallback: "flash"},
+	}
+	rule := New(cfg).FindRule("deepseek-v4-flash")
+	if rule == nil || rule.VisionFallback != "flash" {
+		t.Errorf("FindRule(deepseek-v4-flash) = %+v, want wildcard rule with fallback 'flash'", rule)
+	}
+}
+
 func TestMapModel_Applied(t *testing.T) {
 	r := New(testConfig())
 	silicon := r.upstreams["silicon"]

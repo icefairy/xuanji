@@ -190,6 +190,12 @@ type Rule struct {
 	Model     string   `yaml:"model"`
 	Upstreams []string `yaml:"upstreams"`
 	Strategy  string   `yaml:"strategy"`
+	// Vision 是否支持多模态（默认 false=不支持）。请求带图且命中本规则时，
+	// 若 VisionFallback 非空则把 model 改写为兜底模型重新路由。
+	Vision bool `yaml:"vision"`
+	// VisionFallback 多模态兜底转发的聚合模型名（如 "flash"），
+	// 由对应上游的 model_mapping 映射到上游真实模型名；空=不兜底。
+	VisionFallback string `yaml:"vision_fallback"`
 }
 
 // DefaultPort 是 server.port 未配置时的默认监听端口。
@@ -509,8 +515,10 @@ func LoadFromDB(s *store.Store) (*Config, error) {
 	}
 	for _, r := range rules {
 		rule := Rule{
-			Model:    r.Model,
-			Strategy: r.Strategy,
+			Model:          r.Model,
+			Strategy:       r.Strategy,
+			Vision:         r.Vision == 1,
+			VisionFallback: r.VisionFallback,
 		}
 		if r.Upstreams != "" {
 			json.Unmarshal([]byte(r.Upstreams), &rule.Upstreams)

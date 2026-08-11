@@ -341,10 +341,13 @@
         <div class="login-box">
           <h2>⚙️ 璇玑网关</h2>
           <p class="login-sub">管理端登录</p>
+          <form @submit.prevent="doLogin">
           <div class="form-group">
             <label>用户名</label
             ><input
               v-model="loginUsername"
+              name="username"
+              autocomplete="username"
               placeholder="admin"
               @keyup.enter="doLogin"
             />
@@ -353,6 +356,8 @@
             <label>密码</label
             ><input
               v-model="loginPassword"
+              name="password"
+              autocomplete="current-password"
               type="password"
               placeholder="密码"
               @keyup.enter="doLogin"
@@ -367,11 +372,13 @@
           <button
             class="btn btn-primary"
             style="width: 100%; padding: 8px"
+            type="button"
             @click="doLogin"
             :disabled="loginLoading"
           >
             {{ loginLoading ? '登录中...' : '登 录' }}
           </button>
+          </form>
         </div>
       </div>
 
@@ -580,6 +587,7 @@
             <tr>
               <th>模型</th>
               <th>上游列表</th>
+              <th>多模态</th>
               <th>操作</th>
             </tr>
           </thead>
@@ -595,6 +603,19 @@
                   :title="ruleUpstreamTitle(r, ui)"
                   >{{ u }}</span
                 >
+              </td>
+              <td style="font-size: 12px">
+                <span v-if="r.vision" class="badge" style="background:#e1f3d8;color:#67c23a">支持</span>
+                <template v-else>
+                  <span
+                    v-if="r.vision_fallback"
+                    class="badge"
+                    style="background:#fdf6ec;color:#e6a23c"
+                    :title="'带图请求兑底转发到 ' + r.vision_fallback"
+                    >兑底→{{ r.vision_fallback }}</span
+                  >
+                  <span v-else class="badge" style="background:#f4f4f5;color:#909399">不支持</span>
+                </template>
               </td>
               <td class="ops">
                 <button class="btn" @click="openEditRule(r)">编辑</button>
@@ -652,7 +673,6 @@
       <div
         class="modal"
         v-if="showEffortDialog"
-        @click.self="showEffortDialog=false"
       >
         <div class="modal-content">
           <h3>{{ effortIsEdit ? '编辑配置' : '添加配置' }}</h3>
@@ -761,6 +781,22 @@
             <option v-for="m in logFilters.models" :value="m">{{ m }}</option>
           </select>
           <select
+            v-model="logEndpointFilter"
+            @change="logPage=1;loadLogs()"
+            style="
+              padding: 4px 8px;
+              border: 1px solid #dcdfe6;
+              border-radius: 4px;
+              font-size: 13px;
+              background: #fff;
+            "
+          >
+            <option value="">全部端点</option>
+            <option v-for="e in logFilters.endpoints" :value="e">
+              {{ e }}
+            </option>
+          </select>
+          <select
             v-model="logStatusFilter"
             @change="logPage=1;loadLogs()"
             style="
@@ -807,6 +843,9 @@
                   <span v-else :title="l.client_addr || ''">{{ l.client_addr || '-' }}</span>
                 </template>
                 <template v-else-if="col.key === 'model'">{{ l.model }}</template>
+                <template v-else-if="col.key === 'endpoint'">
+                  <span class="badge" :title="'端点 ' + (l.endpoint||'')">{{ l.endpoint || '-' }}</span>
+                </template>
                 <template v-else-if="col.key === 'status'">
                   <span
                     class="badge"
@@ -861,7 +900,6 @@
         <div
           class="modal"
           v-if="showLogColsDialog"
-          @click.self="showLogColsDialog=false"
         >
           <div class="modal-content" style="max-width: 360px">
             <h3>列设置</h3>
@@ -1677,7 +1715,7 @@
       </div>
 
       <!-- 添加上游 -->
-      <div class="modal" v-if="showAddDialog" @click.self="showAddDialog=false">
+      <div class="modal" v-if="showAddDialog">
         <div class="modal-content">
           <h3>添加上游</h3>
           <div class="form-group">
@@ -1724,7 +1762,6 @@
       <div
         class="modal"
         v-if="showEditDialog"
-        @click.self="showEditDialog=false"
       >
         <div class="modal-content" style="max-width: 640px">
           <h3>编辑上游</h3>
@@ -1811,7 +1848,6 @@
       <div
         class="modal"
         v-if="showCloneDialog"
-        @click.self="showCloneDialog=false"
       >
         <div class="modal-content">
           <h3>克隆上游</h3>
@@ -1839,7 +1875,6 @@
       <div
         class="modal"
         v-if="showRuleDialog"
-        @click.self="showRuleDialog=false"
       >
         <div class="modal-content">
           <h3>{{ ruleIsEdit ? '编辑规则' : '添加规则' }}</h3>
@@ -1915,6 +1950,27 @@
               同权重优惠时段优先 → 失败自动切换同层下一个，同层全挂升级计费类型
             </div>
           </div>
+          <div class="form-group">
+            <label
+              style="display: flex; align-items: center; gap: 6px; cursor: pointer; font-weight: normal"
+            >
+              <input type="checkbox" v-model="ruleForm.vision" style="cursor: pointer" />
+              支持多模态（模型可接收图片）
+            </label>
+            <div style="margin-top: 2px; font-size: 12px; color: #909399">
+              不勾选时：客户端请求带图片会自动转发到下面的兑底模型
+            </div>
+          </div>
+          <div class="form-group">
+            <label>多模态兑底模型（聚合模型名）</label
+            ><input
+              v-model="ruleForm.vision_fallback"
+              placeholder="如 flash（需存在对应路由规则，由 model_mapping 映射到上游真实名）"
+            />
+            <div style="margin-top: 2px; font-size: 12px; color: #909399">
+              留空 = 不支持多模态也不兑底（带图请求按原模型转发）；填写后带图请求自动改写 model 为兑底模型重新路由
+            </div>
+          </div>
           <div class="modal-footer">
             <button class="btn" @click="showRuleDialog=false">取消</button
             ><button class="btn btn-primary" @click="doSaveRule">确定</button>
@@ -1926,7 +1982,6 @@
       <div
         class="modal"
         v-if="showTestDialog"
-        @click.self="showTestDialog=false"
       >
         <div class="modal-content" style="max-width: 600px">
           <h3>测试上游</h3>
@@ -1984,7 +2039,6 @@
       <div
         class="modal"
         v-if="showAddKeyDialog"
-        @click.self="showAddKeyDialog=false"
       >
         <div class="modal-content" style="max-width: 440px">
           <h3>创建下游 API Key</h3>
@@ -2014,7 +2068,6 @@
       <div
         class="modal"
         v-if="showDiscountDialog"
-        @click.self="showDiscountDialog=false"
       >
         <div class="modal-content" style="max-width: 520px">
           <h3>{{ discountForm.id ? '编辑优惠时段' : '添加优惠时段' }}</h3>
@@ -2081,7 +2134,6 @@
       <div
         class="modal"
         v-if="showPriceDialog"
-        @click.self="showPriceDialog=false"
       >
         <div class="modal-content" style="max-width: 520px">
           <h3>{{ priceForm.id ? '编辑模型价格' : '添加模型价格' }}</h3>
@@ -2122,7 +2174,6 @@
       <div
         class="modal"
         v-if="showConfigDialog"
-        @click.self="showConfigDialog=false"
       >
         <div class="modal-content" style="max-width: 440px">
           <h3>编辑配置</h3>
@@ -2144,7 +2195,7 @@
       </div>
 
       <!-- 修改密码 -->
-      <div class="modal" v-if="showPwdDialog" @click.self="showPwdDialog=false">
+      <div class="modal" v-if="showPwdDialog">
         <div class="modal-content" style="max-width: 440px">
           <h3>修改密码</h3>
           <div class="form-group">
@@ -2259,7 +2310,7 @@
             effortForm: { model: "", recommended: "", forced: "" },
             showRuleDialog: false,
             ruleIsEdit: false,
-            ruleForm: { model: "", strategy: "", upstreams: "" },
+            ruleForm: { model: "", strategy: "", upstreams: "", vision: false, vision_fallback: "" },
             ruleSelectedUpstreams: [],
             ruleUpstreamOptions: [],
             logs: [],
@@ -2269,6 +2320,7 @@
               { key: "api_key", label: "API Key" },
               { key: "upstream", label: "上游" },
               { key: "client", label: "客户端" },
+              { key: "endpoint", label: "端点" },
               { key: "model", label: "模型" },
               { key: "status", label: "状态" },
               { key: "duration_ms", label: "耗时(ms)" },
@@ -2284,6 +2336,7 @@
               "api_key",
               "upstream",
               "client",
+              "endpoint",
               "model",
               "status",
               "duration_ms",
@@ -2329,6 +2382,10 @@
                 path: "POST /v1/chat/completions",
                 desc: "聊天补全（OpenAI 兼容）",
               },
+              {
+                path: "POST /v1/completions",
+                desc: "文本补全（老版兼容接口，仅文本补全）",
+              },
               { path: "POST /v1/embeddings", desc: "文本嵌入（OpenAI 兼容）" },
               { path: "POST /v1/rerank", desc: "重排（OpenAI 兼容）" },
               {
@@ -2354,8 +2411,9 @@
             logPageSize: 50,
             logUpstreamFilter: "",
             logModelFilter: "",
+            logEndpointFilter: "",
             logStatusFilter: "",
-            logFilters: { upstreams: [], models: [] },
+            logFilters: { upstreams: [], models: [], endpoints: [] },
             metricsRange: "7d",
             showAddDialog: false,
             addForm: {
@@ -3325,6 +3383,8 @@
                 q += "&upstream=" + encodeURIComponent(self.logUpstreamFilter);
               if (self.logModelFilter)
                 q += "&model=" + encodeURIComponent(self.logModelFilter);
+              if (self.logEndpointFilter)
+                q += "&endpoint=" + encodeURIComponent(self.logEndpointFilter);
               if (self.logStatusFilter)
                 q += "&status_type=" + encodeURIComponent(self.logStatusFilter);
               self
@@ -3333,7 +3393,7 @@
                   var d = r.data || {};
                   self.logs = d.logs || [];
                   self.logTotal = d.total || 0;
-                  self.logFilters = d.filters || { upstreams: [], models: [] };
+                  self.logFilters = d.filters || { upstreams: [], models: [], endpoints: [] };
                   // 筛选后页码可能越界，回退到最后一页
                   var maxPage = Math.max(
                     1,
@@ -3586,7 +3646,13 @@
               return map[s] || s;
             },
             openAddRule: function () {
-              this.ruleForm = { model: "", strategy: "", upstreams: "" };
+              this.ruleForm = {
+                model: "",
+                strategy: "",
+                upstreams: "",
+                vision: false,
+                vision_fallback: "",
+              };
               this.ruleIsEdit = false;
               this.ruleSelectedUpstreams = [];
               this.ensureRuleUpstreamOptions();
@@ -3597,6 +3663,8 @@
                 model: row.model,
                 strategy: row.strategy || "",
                 upstreams: "",
+                vision: !!row.vision,
+                vision_fallback: row.vision_fallback || "",
               };
               this.ruleIsEdit = true;
               // 已选 = 该规则当前的上游列表（顺序无关，保存时后端自动排序）
@@ -3662,6 +3730,8 @@
                 model: model,
                 strategy: f.strategy,
                 upstreams: JSON.stringify(ups),
+                vision: f.vision ? 1 : 0,
+                vision_fallback: (f.vision_fallback || "").trim(),
               };
               var url = "/admin/rules";
               var method = "POST";
