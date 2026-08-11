@@ -16,6 +16,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -220,6 +222,19 @@ func main() {
 		_ = srv.Shutdown(ctx)
 	}()
 
+	// 每周自动备份：启动后立即做一次（确保服务重启也有备份），之后每 7 天一次。
+	// 备份为 gzip 压缩快照，自动保留最近 10 个（store.CreateBackup 由 admin 层轮转）。
+	if storeInst != nil {
+		go func() {
+			backupOnce(storeInst)
+			ticker := time.NewTicker(7 * 24 * time.Hour)
+			defer ticker.Stop()
+			for range ticker.C {
+				backupOnce(storeInst)
+			}
+		}()
+	}
+
 	slog.Info("xuanji gateway listening",
 		"addr", addr,
 		"upstreams", len(cfg.Upstreams),
@@ -230,6 +245,33 @@ func main() {
 		os.Exit(1)
 	}
 	hc.Close()
+}
+
+// backupOnce 执行一次自动备份并轮转保留最近 10 个，失败只记日志不影响主流程。
+func backupOnce(storeInst *store.Store) {
+	name, err := storeInst.CreateBackup()
+	if err != nil {
+		slog.Error("auto backup failed", "error", err)
+		return
+	}
+	// 轮转保留最近 10 个
+	entries, _ := os.ReadDir(storeInst.BackupDir())
+	var gz []string
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".gz") {
+			gz = append(gz, e.Name())
+		}
+	}
+	removed := 0
+	for len(gz) > 10 {
+		sort.Strings(gz)
+		old := gz[0]
+		if os.Remove(filepath.Join(storeInst.BackupDir(), old)) == nil {
+			removed++
+		}
+		gz = gz[1:]
+	}
+	slog.Info("auto backup done", "name", name, "pruned", removed)
 }
 
 // buildServeMux 构造 HTTP 路由 mux。
@@ -316,10 +358,12 @@ func buildServeMux(cfg *config.Config, rt *router.Router, hc *health.Checker, re
 	mux.HandleFunc("GET /admin/metrics/keys/{name}/models", adminAuth(admHandler.MetricsByAPIKeyModels))
 	mux.HandleFunc("GET /admin/config/retry", adminAuth(admHandler.GetRetryConfig))
 	mux.HandleFunc("GET /admin/logs", adminAuth(admHandler.RequestLogs))
+	mux.HandleFunc("POST /admin/logs/recalc-cost", adminAuth(admHandler.RecalcCost))
 	mux.HandleFunc("GET /admin/api-keys", adminAuth(admHandler.APIKeys))
 	mux.HandleFunc("POST /admin/api-keys", adminAuth(admHandler.AddAPIKey))
 	mux.HandleFunc("DELETE /admin/api-keys/{key}", adminAuth(admHandler.DeleteAPIKey))
 	mux.HandleFunc("PUT /admin/api-keys/{id}/toggle", adminAuth(admHandler.SetAPIKeyEnabled))
+	mux.HandleFunc("PUT /admin/api-keys/{id}/name", adminAuth(admHandler.RenameAPIKey))
 
 	// CRUD 端点
 	mux.HandleFunc("POST /admin/upstreams", adminAuth(admHandler.CreateUpstream))
@@ -363,6 +407,19 @@ func buildServeMux(cfg *config.Config, rt *router.Router, hc *health.Checker, re
 	mux.HandleFunc("PUT /admin/discounts/{id}", adminAuth(admHandler.UpdateDiscount))
 	mux.HandleFunc("DELETE /admin/discounts/{id}", adminAuth(admHandler.DeleteDiscount))
 
+	// 模型单价（计费）
+	mux.HandleFunc("GET /admin/prices", adminAuth(admHandler.Prices))
+	mux.HandleFunc("POST /admin/prices", adminAuth(admHandler.AddPrice))
+	mux.HandleFunc("PUT /admin/prices/{model}", adminAuth(admHandler.UpdatePrice))
+	mux.HandleFunc("DELETE /admin/prices/{model}", adminAuth(admHandler.DeletePrice))
+	// 费用统计（总金额/上游/apikey/模型 四维）
+	mux.HandleFunc("GET /admin/metrics/cost", adminAuth(admHandler.MetricsCost))
+
+	// 数据库备份（手动 + 列表 + 删除）
+	mux.HandleFunc("GET /admin/backups", adminAuth(admHandler.Backups))
+	mux.HandleFunc("POST /admin/backups", adminAuth(admHandler.CreateBackup))
+	mux.HandleFunc("DELETE /admin/backups/{name}", adminAuth(admHandler.DeleteBackup))
+
 	olHandler := ollama.New(rt, hc)
 	olHandler.SetTimeout(time.Duration(cfg.Retry.UpstreamTimeout) * time.Second)
 	pxHandler := proxy.New(cfg, rt, hc)
@@ -395,6 +452,11 @@ func buildServeMux(cfg *config.Config, rt *router.Router, hc *health.Checker, re
 		olHandler.SetKeyName(keyNameFn)
 		pxHandler.SetKeyName(keyNameFn)
 	}
+	// 模型单价查询：按上游真实模型名定价（默认价兜底在 store.PriceFor 内部）
+	pxHandler.SetPriceFor(storeInst.PriceFor)
+	// 计费初始化：所有模型默认按 deepseek-v4-flash 定价
+	// （输入缓存命中 0.02 元/M，输入缓存未命中 1 元/M，输出 2 元/M）
+	storeInst.EnsureDefaultPrice()
 	// ⚠ 2026-08-02 用户拍板：对外只暴露 OpenAI 协议 + Anthropic 协议，
 	// 不提供 Ollama 原生入口（/api/chat /api/generate /api/embed）。
 	// ollama 类型上游仍支持——通过 /v1/* OpenAI 入口自动转换（dispatchOpenAI/dispatchEmbeddings）。
@@ -402,6 +464,8 @@ func buildServeMux(cfg *config.Config, rt *router.Router, hc *health.Checker, re
 	// OpenAI 兼容入口：按路由结果分发（ollama 上游走转换，其余走 proxy）
 	mux.HandleFunc("GET /v1/models", apiKeys.Middleware(admHandler.Models))
 	mux.HandleFunc("POST /v1/chat/completions", apiKeys.Middleware(dispatchOpenAI(rt, olHandler, pxHandler)))
+	// 老版 OpenAI 兼容接口（text 补全）：直接走 proxy 转换转发，ollama 上游兼容暂不考虑
+	mux.HandleFunc("POST /v1/completions", apiKeys.Middleware(pxHandler.Completions))
 	mux.HandleFunc("POST /v1/embeddings", apiKeys.Middleware(dispatchEmbeddings(rt, olHandler, pxHandler)))
 	mux.HandleFunc("POST /v1/rerank", apiKeys.Middleware(pxHandler.Rerank))
 	antHandler := anthropic.New(rt, hc)

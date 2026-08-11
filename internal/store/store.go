@@ -2,9 +2,15 @@
 package store
 
 import (
+	"compress/gzip"
 	"database/sql"
 	"encoding/json"
+	"fmt"
+	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -13,38 +19,45 @@ import (
 
 // Record 是一次转发请求的指标记录。
 type Record struct {
-	Timestamp        time.Time
-	Upstream         string // 实际转发到的上游名
-	Model            string // 客户端请求的模型名
-	Endpoint         string // chat / images / audio / embed / claude / generate
-	Status           int    // HTTP 状态码
-	DurationMS       int64  // 转发耗时毫秒
-	PromptTokens         int64  // 输入 token 数
-	CompletionTokens     int64  // 输出 token 数
-	Tokens               int64  // 总 token 数 = PromptTokens + CompletionTokens
-	APIKey               string // 下游 API Key 名称（api_tokens.name，用于按 Key 统计）
-	PromptCacheHitTokens  int64  // 上游前缀缓存命中 token 数（DeepSeek prompt_cache_hit_tokens）
-	PromptCacheMissTokens int64  // 上游前缀缓存未命中 token 数（DeepSeek prompt_cache_miss_tokens）
+	Timestamp             time.Time
+	Upstream              string  // 实际转发到的上游名
+	Model                 string  // 客户端请求的模型名
+	UpstreamModel         string  // 上游真实模型名（计费用；为空则回退用 Model）
+	Cost                  float64 // 本次请求费用（元），0 表示未计价
+	Endpoint              string  // chat / images / audio / embed / claude / generate
+	Status                int     // HTTP 状态码
+	DurationMS            int64   // 转发耗时毫秒
+	PromptTokens          int64   // 输入 token 数
+	CompletionTokens      int64   // 输出 token 数
+	Tokens                int64   // 总 token 数 = PromptTokens + CompletionTokens
+	APIKey                string  // 下游 API Key 名称（api_tokens.name，用于按 Key 统计）
+	ClientAddr            string  // 客户端地址 "IP:port"（r.RemoteAddr 原样），用于区分调用程序
+	UserAgent             string  // 客户端 User-Agent（r.UserAgent()，写入时截断 200 字符）
+	PromptCacheHitTokens  int64   // 上游前缀缓存命中 token 数（DeepSeek prompt_cache_hit_tokens）
+	PromptCacheMissTokens int64   // 上游前缀缓存未命中 token 数（DeepSeek prompt_cache_miss_tokens）
 }
 
 // UpstreamRow 是 upstreams 表的行映射。
 type UpstreamRow struct {
-	ID           uint   `json:"id"`
-	Name         string `json:"name"`
-	Type         string `json:"type"`
-	BaseURL      string `json:"base_url"`
-	APIKey       string `json:"api_key"`
-	Tier         string `json:"tier"`
-	Priority     int    `json:"priority"`
-	Weight       int    `json:"weight"`
-	Models       string `json:"models"`
-	ModelMapping string `json:"model_mapping"`
-	Enabled      int    `json:"enabled"` // 1=启用 0=禁用（禁用的不参与转发路由）
+	ID            uint   `json:"id"`
+	Name          string `json:"name"`
+	Type          string `json:"type"`
+	BaseURL       string `json:"base_url"`
+	APIKey        string `json:"api_key"`
+	Tier          string `json:"tier"`
+	Priority      int    `json:"priority"`
+	Weight        int    `json:"weight"`
+	Models        string `json:"models"`
+	ModelMapping  string `json:"model_mapping"`
+	Enabled       int    `json:"enabled"` // 1=启用 0=禁用（禁用的不参与转发路由）
+	BillingExempt int    `json:"billing_exempt"` // 1=不参与计费（统计费用记 0，路由不受影响）
 	// EnabledPtr 区分 JSON body 中 enabled 字段"未传"(nil) 与"显式传 0/1"。
 	// UpdateUpstream 用它避免未传时误禁用上游。
 	EnabledPtr *int `json:"-"`
-	CreatedAt    string `json:"created_at"`
-	UpdatedAt    string `json:"updated_at"`
+	// BillingExemptPtr 区分 JSON body 中 billing_exempt 字段"未传"(nil) 与"显式传 0/1"。
+	BillingExemptPtr *int  `json:"-"`
+	CreatedAt        string `json:"created_at"`
+	UpdatedAt        string `json:"updated_at"`
 }
 
 // RoutingRuleRow 是 routing_rules 表的行映射。
@@ -53,8 +66,13 @@ type RoutingRuleRow struct {
 	Model     string `json:"model"`
 	Strategy  string `json:"strategy"`
 	Upstreams string `json:"upstreams"` // JSON 数组
-	CreatedAt string `json:"created_at"`
-	UpdatedAt string `json:"updated_at"`
+	// Vision 是否支持多模态（1=支持，0=不支持）。不支持的规则命中带图请求时，
+	// 若配置了 VisionFallback 则把 model 改写为兜底聚合模型名重新路由。
+	Vision int64 `json:"vision"`
+	// VisionFallback 多模态兜底转发的聚合模型名（如 "flash"），由 model_mapping 映射到上游真实名。
+	VisionFallback string `json:"vision_fallback"`
+	CreatedAt      string `json:"created_at"`
+	UpdatedAt      string `json:"updated_at"`
 }
 
 // ConfigRow 是 config 表的行映射（key-value 存储）。
@@ -66,10 +84,10 @@ type ConfigRow struct {
 // APIToken 是下游 API Key（api_tokens 表）的行映射。
 type APIToken struct {
 	ID        uint   `json:"id"`
-	Name      string `json:"name"`      // 用途备注，如 "Claude Code" / "Hermes"
-	Key       string `json:"key"`       // 下游调用时用的 Bearer token
-	Enabled   bool   `json:"enabled"`   // 是否启用
-	Remark    string `json:"remark"`    // 备注
+	Name      string `json:"name"`    // 用途备注，如 "Claude Code" / "Hermes"
+	Key       string `json:"key"`     // 下游调用时用的 Bearer token
+	Enabled   bool   `json:"enabled"` // 是否启用
+	Remark    string `json:"remark"`  // 备注
 	CreatedAt string `json:"created_at"`
 }
 
@@ -94,9 +112,39 @@ type Discount struct {
 	CreatedAt    string  `json:"created_at"`
 }
 
+// ModelPrice 是模型单价（model_prices 表）的行映射。单位：元/百万 token。
+// model = '*' 表示默认价（所有未单独定价的模型都用它）。
+type ModelPrice struct {
+	ID         uint    `json:"id"`
+	Model      string  `json:"model"`       // 上游真实模型名；'*' = 默认
+	PriceInput float64 `json:"price_input"` // 输入（缓存未命中）元/百万token
+	PriceCache float64 `json:"price_cache"` // 输入（缓存命中）元/百万token
+	PriceOut   float64 `json:"price_out"`   // 输出 元/百万token
+	Note       string  `json:"note"`
+	CreatedAt  string  `json:"created_at"`
+	UpdatedAt  string  `json:"updated_at"`
+}
+
+// CostRow 是费用统计的聚合行。
+type CostRow struct {
+	Name     string  `json:"name"`     // 上游名 / api_key 名 / 模型名
+	Cost     float64 `json:"cost"`     // 费用（元）
+	Requests int     `json:"requests"` // 请求数
+	Tokens   int64   `json:"tokens"`   // 总 token 数
+}
+
 // Store 封装 SQLite 连接与表结构。
 type Store struct {
-	db *sql.DB
+	db   *sql.DB
+	path string
+}
+
+// DBPath 返回数据库文件路径。
+func (s *Store) DBPath() string { return s.path }
+
+// BackupDir 返回备份目录（数据库同目录 backups/）。
+func (s *Store) BackupDir() string {
+	return filepath.Join(filepath.Dir(s.path), "backups")
 }
 
 // Open 打开（或创建）SQLite 数据库文件，启用 WAL，建表。
@@ -130,12 +178,59 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
-	s := &Store{db: db}
+	s := &Store{db: db, path: path}
 	if err := s.init(); err != nil {
 		db.Close()
 		return nil, err
 	}
 	return s, nil
+}
+
+// CreateBackup 用 SQLite 在线快照（VACUUM INTO）备份数据库，再 gzip 压缩。
+// VACUUM INTO 是官方推荐的在线一致性备份方式，不会阻塞正在进行的读写。
+// 返回备份文件名（backups/<db>.<ts>.gz）。
+func (s *Store) CreateBackup() (string, error) {
+	dir := s.BackupDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	ts := time.Now().Format("20060102_150405")
+	base := filepath.Base(s.path)
+	rawPath := filepath.Join(dir, fmt.Sprintf("%s.%s.tmp", base, ts))
+	gzPath := filepath.Join(dir, fmt.Sprintf("%s.%s.gz", base, ts))
+
+	// 在线快照到临时文件
+	if _, err := s.db.Exec(fmt.Sprintf(`VACUUM INTO '%s'`, rawPath)); err != nil {
+		os.Remove(rawPath)
+		return "", fmt.Errorf("vacuum: %w", err)
+	}
+	// gzip 压缩
+	if err := gzipFile(rawPath, gzPath); err != nil {
+		os.Remove(rawPath)
+		return "", fmt.Errorf("gzip: %w", err)
+	}
+	os.Remove(rawPath)
+	return filepath.Base(gzPath), nil
+}
+
+// gzipFile 将 src 压缩为 dst（gzip，保留原文件）。
+func gzipFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	gz := gzip.NewWriter(out)
+	if _, err := io.Copy(gz, in); err != nil {
+		gz.Close()
+		return err
+	}
+	return gz.Close()
 }
 
 // init 建表并创建查询索引。
@@ -149,7 +244,8 @@ func (s *Store) init() error {
 		endpoint    TEXT    NOT NULL,
 		status      INTEGER NOT NULL,
 		duration_ms INTEGER NOT NULL,
-		tokens      INTEGER NOT NULL DEFAULT 0
+		tokens      INTEGER NOT NULL DEFAULT 0,
+		client_addr TEXT    NOT NULL DEFAULT ''
 	);
 	CREATE INDEX IF NOT EXISTS idx_request_log_ts ON request_log(ts);
 	CREATE INDEX IF NOT EXISTS idx_request_log_upstream ON request_log(upstream);
@@ -181,12 +277,14 @@ func (s *Store) init() error {
 	);
 
 	CREATE TABLE IF NOT EXISTS routing_rules (
-		id         INTEGER PRIMARY KEY AUTOINCREMENT,
-		model      TEXT    NOT NULL UNIQUE,
-		strategy   TEXT    NOT NULL DEFAULT '',
-		upstreams  TEXT    NOT NULL DEFAULT '[]',
-		created_at TEXT    NOT NULL DEFAULT (datetime('now')),
-		updated_at TEXT    NOT NULL DEFAULT (datetime('now'))
+		id              INTEGER PRIMARY KEY AUTOINCREMENT,
+		model           TEXT    NOT NULL UNIQUE,
+		strategy        TEXT    NOT NULL DEFAULT '',
+		upstreams       TEXT    NOT NULL DEFAULT '[]',
+		vision          INTEGER NOT NULL DEFAULT 0,   -- 是否支持多模态（1=支持 0=不支持），默认纯文本模型
+		vision_fallback TEXT    NOT NULL DEFAULT '',  -- 多模态兜底聚合模型名（如 "flash"），空=不兜底
+		created_at      TEXT    NOT NULL DEFAULT (datetime('now')),
+		updated_at      TEXT    NOT NULL DEFAULT (datetime('now'))
 	);
 
 	CREATE TABLE IF NOT EXISTS config (
@@ -229,6 +327,29 @@ func (s *Store) init() error {
 		note          TEXT    NOT NULL DEFAULT '',
 		created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
 	);
+
+	CREATE TABLE IF NOT EXISTS model_prices (
+		id             INTEGER PRIMARY KEY AUTOINCREMENT,
+		model          TEXT    NOT NULL UNIQUE,   -- 上游真实模型名；'*' = 默认价
+		price_input    REAL    NOT NULL DEFAULT 1.0,   -- 输入（缓存未命中）元/百万token
+		price_output   REAL    NOT NULL DEFAULT 2.0,   -- 输出 元/百万token
+		price_cache    REAL    NOT NULL DEFAULT 0.02,  -- 输入（缓存命中）元/百万token
+		note           TEXT    NOT NULL DEFAULT '',
+		created_at     TEXT    NOT NULL DEFAULT (datetime('now')),
+		updated_at     TEXT    NOT NULL DEFAULT (datetime('now'))
+	);
+
+	-- 客户端程序分析结果（按 client_addr 唯一，标识 IP:port 对应的调用程序）。
+	-- 由分析服务定时/手动触发：聚合 request_log 去重 client_addr，按 User-Agent →
+	-- 端口查进程识别，结果经应用层 API upsert 到此表，前端"客户端分析"页展示。
+	CREATE TABLE IF NOT EXISTS client_profiles (
+		id          INTEGER PRIMARY KEY AUTOINCREMENT,
+		client_addr TEXT    NOT NULL UNIQUE,    -- IP:port
+		program     TEXT    NOT NULL DEFAULT '',   -- 识别出的程序名
+		confidence  REAL    NOT NULL DEFAULT 0,    -- 置信度 0-1
+		evidence    TEXT    NOT NULL DEFAULT '',   -- 分析依据（UA、端口、行为特征等）
+		updated_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+	);
 	`
 	if _, err := s.db.Exec(schema); err != nil {
 		return err
@@ -237,16 +358,57 @@ func (s *Store) init() error {
 	for _, col := range []string{"prompt_tokens", "completion_tokens"} {
 		s.db.Exec("ALTER TABLE request_log ADD COLUMN " + col + " INTEGER NOT NULL DEFAULT 0")
 	}
-	// 迁移：新增前缀缓存命中统计列（DeepSeek prompt_cache_hit/miss_tokens）
+	// 迁移：新增 prefix 缓存命中统计列（DeepSeek prompt_cache_hit/miss_tokens）
 	for _, col := range []string{"prompt_cache_hit_tokens", "prompt_cache_miss_tokens"} {
 		s.db.Exec("ALTER TABLE request_log ADD COLUMN " + col + " INTEGER NOT NULL DEFAULT 0")
 	}
 	// 迁移：request_log 加 api_key 列（按下游 Key 统计）
 	s.db.Exec("ALTER TABLE request_log ADD COLUMN api_key TEXT NOT NULL DEFAULT ''")
 	s.db.Exec("CREATE INDEX IF NOT EXISTS idx_request_log_apikey ON request_log(api_key)")
+	// 迁移：request_log 加上游真实模型名列（计费按上游真实名查价）
+	s.db.Exec("ALTER TABLE request_log ADD COLUMN upstream_model TEXT NOT NULL DEFAULT ''")
+	// 迁移：request_log 加 cost 列（本次请求费用，元）
+	s.db.Exec("ALTER TABLE request_log ADD COLUMN cost REAL NOT NULL DEFAULT 0")
+	// 迁移：request_log 加 client_addr 列（客户端地址 "IP:port"，按调用程序分析）
+	s.db.Exec("ALTER TABLE request_log ADD COLUMN client_addr TEXT NOT NULL DEFAULT ''")
+	// 迁移：request_log 加 user_agent 列（客户端 User-Agent，程序识别最强信号）。
+	// 用 PRAGMA table_info 判断列是否存在，保证旧库（无此列）与新建库都幂等可启动。
+	ensureColumn(s.db, "request_log", "user_agent", "user_agent TEXT NOT NULL DEFAULT ''")
 	// 迁移：upstreams 加 enabled 列（禁用/启用）
-	s.db.Exec("ALTER TABLE upstreams ADD COLUMN enabled INTEGER NOT NULL DEFAULT 1")
+	ensureColumn(s.db, "upstreams", "enabled", "enabled INTEGER NOT NULL DEFAULT 1")
+	// 迁移：upstreams 加 billing_exempt 列（不参与计费：统计模块费用记 0，路由不受影响）
+	ensureColumn(s.db, "upstreams", "billing_exempt", "billing_exempt INTEGER NOT NULL DEFAULT 0")
+	// 迁移：routing_rules 加 vision / vision_fallback 列（多模态兜底，老库自动补列）
+	ensureColumn(s.db, "routing_rules", "vision", "vision INTEGER NOT NULL DEFAULT 0")
+	ensureColumn(s.db, "routing_rules", "vision_fallback", "vision_fallback TEXT NOT NULL DEFAULT ''")
 	return nil
+}
+
+// ensureColumn 幂等添加列：先查 PRAGMA table_info 判断列是否已存在，已存在则跳过。
+// SQLite 的 ALTER TABLE ADD COLUMN 对已存在列会报 duplicate column name，
+// 不能只依赖忽略错误——旧库与新库结构不同，显式判断最稳妥。
+// table 参数只传内部常量（如 "request_log"），不接用户输入。
+func ensureColumn(db *sql.DB, table, column, ddl string) {
+	// pragma_table_info 是表值函数形式，支持绑定参数（PRAGMA table_info(?) 不支持）
+	rows, err := db.Query(`SELECT name FROM pragma_table_info(?)`, table)
+	if err != nil {
+		slog.Warn("ensureColumn: table_info failed", "table", table, "error", err)
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			slog.Warn("ensureColumn: scan failed", "table", table, "error", err)
+			return
+		}
+		if name == column {
+			return // 列已存在，跳过
+		}
+	}
+	if _, err := db.Exec("ALTER TABLE " + table + " ADD COLUMN " + ddl); err != nil {
+		slog.Warn("ensureColumn: alter failed", "table", table, "column", column, "error", err)
+	}
 }
 
 // Close 关闭数据库连接。
@@ -260,11 +422,11 @@ func (s *Store) DB() *sql.DB { return s.db }
 // Insert 单条插入一条请求记录。
 func (s *Store) Insert(rec Record) error {
 	_, err := s.db.Exec(
-		`INSERT INTO request_log (ts, upstream, model, endpoint, status, duration_ms, tokens, prompt_tokens, completion_tokens, api_key, prompt_cache_hit_tokens, prompt_cache_miss_tokens)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO request_log (ts, upstream, model, endpoint, status, duration_ms, tokens, prompt_tokens, completion_tokens, api_key, client_addr, user_agent, prompt_cache_hit_tokens, prompt_cache_miss_tokens)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		rec.Timestamp.UTC().Format(time.RFC3339), rec.Upstream, rec.Model, rec.Endpoint,
 		rec.Status, rec.DurationMS, rec.Tokens, rec.PromptTokens, rec.CompletionTokens, rec.APIKey,
-		rec.PromptCacheHitTokens, rec.PromptCacheMissTokens,
+		rec.ClientAddr, rec.UserAgent, rec.PromptCacheHitTokens, rec.PromptCacheMissTokens,
 	)
 	return err
 }
@@ -313,7 +475,7 @@ type APIKeyRow struct {
 }
 
 // MetricsByAPIKey 返回按下游 API Key 聚合的统计（用于"哪些程序用得多"）。
-// since 为空串时统计全部。按请求数降序。
+// MetricsByAPIKey 按下游 API Key 聚合请求量指标（按 token 降序）。
 func (s *Store) MetricsByAPIKey(since string) []APIKeyRow {
 	q := `SELECT COALESCE(NULLIF(api_key, ''), (SELECT name FROM api_tokens WHERE enabled=1 ORDER BY id LIMIT 1), '(未标识)') as name,
 	              COUNT(*) as requests,
@@ -343,6 +505,202 @@ func (s *Store) MetricsByAPIKey(since string) []APIKeyRow {
 	return out
 }
 
+// PriceFor 返回指定（上游真实）模型名的单价。没单独定价时回退到默认价（'*'）。
+// 返回四个值：输入价、缓存命中输入价、输出价、是否找到。
+func (s *Store) PriceFor(model string) (input, cache, out float64, ok bool) {
+	if model != "" {
+		row := s.db.QueryRow(`SELECT price_input, price_cache, price_output FROM model_prices WHERE model = ?`, model)
+		if err := row.Scan(&input, &cache, &out); err == nil {
+			return input, cache, out, true
+		}
+	}
+	row := s.db.QueryRow(`SELECT price_input, price_cache, price_output FROM model_prices WHERE model = '*'`)
+	if err := row.Scan(&input, &cache, &out); err == nil {
+		return input, cache, out, true
+	}
+	return 0, 0, 0, false
+}
+
+// ListPrices 返回全部模型单价（默认价 '*' 排第一）。
+func (s *Store) ListPrices() []ModelPrice {
+	rows, err := s.db.Query(`SELECT id, model, price_input, price_cache, price_output, note, created_at, updated_at FROM model_prices ORDER BY (model='*') DESC, model ASC`)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var out []ModelPrice
+	for rows.Next() {
+		var r ModelPrice
+		if err := rows.Scan(&r.ID, &r.Model, &r.PriceInput, &r.PriceCache, &r.PriceOut, &r.Note, &r.CreatedAt, &r.UpdatedAt); err != nil {
+			continue
+		}
+		out = append(out, r)
+	}
+	return out
+}
+
+// RecalcCost 重新计算历史请求费用：对缓存字段全 0（上游没返回缓存统计）
+// 且有输入 token 的请求，按「未命中价全额」口径重算 cost（与 calcCost 修复后
+// 的逻辑一致：无缓存统计时输入按未命中价计费）。
+// 返回更新条数。事务内执行，失败自动回滚。
+func (s *Store) RecalcCost() (int64, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback()
+
+	rows, err := tx.Query(`SELECT id, model, upstream_model, prompt_tokens, completion_tokens, cost
+		FROM request_log
+		WHERE prompt_cache_hit_tokens <= 0 AND prompt_cache_miss_tokens <= 0 AND prompt_tokens > 0`)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+
+	type row struct {
+		id             int64
+		model          string
+		upstreamModel  string
+		promptTokens   int64
+		completionToks  int64
+		oldCost        float64
+	}
+	var targets []row
+	for rows.Next() {
+		var r row
+		if err := rows.Scan(&r.id, &r.model, &r.upstreamModel, &r.promptTokens, &r.completionToks, &r.oldCost); err != nil {
+			continue
+		}
+		targets = append(targets, r)
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+
+	const perMillion = 1e6
+	updated := int64(0)
+	for _, r := range targets {
+		// 与 proxy.calcCost 口径一致：优先上游真实模型名，其次客户端模型名，最后默认价
+		input, _, out, ok := s.PriceFor(r.upstreamModel)
+		if !ok {
+			input, _, out, ok = s.PriceFor(r.model)
+		}
+		if !ok || (input <= 0 && out <= 0) {
+			continue // 无价格表，跳过（保持原值）
+		}
+		newCost := float64(r.promptTokens)/perMillion*input + float64(r.completionToks)/perMillion*out
+		if _, err := tx.Exec(`UPDATE request_log SET cost = ? WHERE id = ?`, newCost, r.id); err != nil {
+			return 0, err
+		}
+		updated++
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return updated, nil
+}
+
+// UpsertPrice 新增或更新模型单价（按 model 唯一）。
+func (s *Store) UpsertPrice(p ModelPrice) error {
+	_, err := s.db.Exec(`INSERT INTO model_prices (model, price_input, price_cache, price_output, note)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(model) DO UPDATE SET
+			price_input = excluded.price_input,
+			price_cache = excluded.price_cache,
+			price_output = excluded.price_output,
+			note = excluded.note,
+			updated_at = datetime('now')`,
+		p.Model, p.PriceInput, p.PriceCache, p.PriceOut, p.Note)
+	return err
+}
+
+// DeletePrice 删除模型单价。
+func (s *Store) DeletePrice(model string) error {
+	_, err := s.db.Exec(`DELETE FROM model_prices WHERE model = ?`, model)
+	return err
+}
+
+// EnsureDefaultPrice 确保默认价存在（'*'）。默认按 deepseek-v4-flash 定价：
+// 输入缓存命中 0.02 元/百万token，输入缓存未命中 1 元/百万token，输出 2 元/百万token。
+func (s *Store) EnsureDefaultPrice() {
+	_, err := s.db.Exec(`INSERT OR IGNORE INTO model_prices (model, price_input, price_cache, price_output, note)
+		VALUES ('*', 1.0, 0.02, 2.0, '默认价：按 deepseek-v4-flash 定价')`)
+	if err != nil {
+		slog.Error("ensure default price", "error", err)
+	}
+}
+
+// TotalCost 返回指定时间段内总费用（元）。
+// billing_exempt=1 的上游（标记为不参与计费）在统计中费用记 0，但请求日志照常记录。
+func (s *Store) TotalCost(since, until string) (float64, int) {
+	q := `SELECT COALESCE(SUM(CASE WHEN u.billing_exempt = 1 THEN 0 ELSE rl.cost END), 0), COUNT(*)
+	       FROM request_log rl LEFT JOIN upstreams u ON u.name = rl.upstream WHERE rl.cost > 0`
+	var args []any
+	if since != "" {
+		q += ` AND rl.ts >= ?`
+		args = append(args, since)
+	}
+	if until != "" {
+		q += ` AND rl.ts <= ?`
+		args = append(args, until)
+	}
+	var cost float64
+	var cnt int
+	if err := s.db.QueryRow(q, args...).Scan(&cost, &cnt); err != nil {
+		return 0, 0
+	}
+	return cost, cnt
+}
+
+// CostByUpstream 按上游聚合费用。
+func (s *Store) CostByUpstream(since, until string) []CostRow {
+	return s.costGroupBy(`upstream`, since, until)
+}
+
+// CostByAPIKey 按下游 API Key 聚合费用（含总 token）。
+func (s *Store) CostByAPIKey(since, until string) []CostRow {
+	return s.costGroupBy(`api_key`, since, until)
+}
+
+// CostByModel 按上游真实模型名聚合费用（费用饼图的二级拆分）。
+func (s *Store) CostByModel(since, until string) []CostRow {
+	return s.costGroupBy(`upstream_model`, since, until)
+}
+
+// costGroupBy 通用费用聚合。
+// billing_exempt=1 的上游（不参与计费）在统计中费用记 0，但请求日志照常记录。
+func (s *Store) costGroupBy(col, since, until string) []CostRow {
+	q := `SELECT COALESCE(NULLIF(rl.` + col + `, ''), '(未知)'),
+	              COALESCE(SUM(CASE WHEN u.billing_exempt = 1 THEN 0 ELSE rl.cost END), 0),
+	              COUNT(*), COALESCE(SUM(rl.tokens), 0)
+	       FROM request_log rl LEFT JOIN upstreams u ON u.name = rl.upstream WHERE rl.cost > 0`
+	var args []any
+	if since != "" {
+		q += ` AND rl.ts >= ?`
+		args = append(args, since)
+	}
+	if until != "" {
+		q += ` AND rl.ts <= ?`
+		args = append(args, until)
+	}
+	q += ` GROUP BY rl.` + col + ` ORDER BY SUM(CASE WHEN u.billing_exempt = 1 THEN 0 ELSE rl.cost END) DESC`
+	rows, err := s.db.Query(q, args...)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	var out []CostRow
+	for rows.Next() {
+		var r CostRow
+		if err := rows.Scan(&r.Name, &r.Cost, &r.Requests, &r.Tokens); err != nil {
+			continue
+		}
+		out = append(out, r)
+	}
+	return out
+}
+
 // InsertBatch 在单个事务内批量插入多条记录。
 func (s *Store) InsertBatch(recs []Record) error {
 	if len(recs) == 0 {
@@ -355,8 +713,8 @@ func (s *Store) InsertBatch(recs []Record) error {
 	defer tx.Rollback()
 
 	stmt, err := tx.Prepare(
-		`INSERT INTO request_log (ts, upstream, model, endpoint, status, duration_ms, tokens, prompt_tokens, completion_tokens, api_key, prompt_cache_hit_tokens, prompt_cache_miss_tokens)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO request_log (ts, upstream, model, upstream_model, cost, endpoint, status, duration_ms, tokens, prompt_tokens, completion_tokens, api_key, client_addr, user_agent, prompt_cache_hit_tokens, prompt_cache_miss_tokens)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 	)
 	if err != nil {
 		return err
@@ -365,9 +723,10 @@ func (s *Store) InsertBatch(recs []Record) error {
 
 	for _, rec := range recs {
 		if _, err := stmt.Exec(
-			rec.Timestamp.UTC().Format(time.RFC3339), rec.Upstream, rec.Model, rec.Endpoint,
+			rec.Timestamp.UTC().Format(time.RFC3339), rec.Upstream, rec.Model, rec.UpstreamModel, rec.Cost,
+			rec.Endpoint,
 			rec.Status, rec.DurationMS, rec.Tokens, rec.PromptTokens, rec.CompletionTokens, rec.APIKey,
-			rec.PromptCacheHitTokens, rec.PromptCacheMissTokens,
+			rec.ClientAddr, rec.UserAgent, rec.PromptCacheHitTokens, rec.PromptCacheMissTokens,
 		); err != nil {
 			return err
 		}
@@ -454,7 +813,11 @@ func (r *Recorder) loop(batchSize int, batchPeriod time.Duration) {
 }
 
 // Record 非阻塞记录一条指标：channel 满时丢弃（记录量超限不拖垮网关）。
+// user_agent 在此统一截断 200 字符，避免超长 UA（如完整浏览器 UA 字符串）撑爆 request_log。
 func (r *Recorder) Record(rec Record) {
+	if len(rec.UserAgent) > 200 {
+		rec.UserAgent = rec.UserAgent[:200]
+	}
 	select {
 	case r.ch <- rec:
 	default:
@@ -479,7 +842,7 @@ func (r *Recorder) Close() {
 
 // ListUpstreams 返回所有上游。
 func (s *Store) ListUpstreams() ([]UpstreamRow, error) {
-	rows, err := s.db.Query(`SELECT id, name, type, base_url, api_key, tier, priority, weight, models, model_mapping, enabled, created_at, updated_at FROM upstreams ORDER BY id`)
+	rows, err := s.db.Query(`SELECT id, name, type, base_url, api_key, tier, priority, weight, models, model_mapping, enabled, billing_exempt, created_at, updated_at FROM upstreams ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -488,7 +851,7 @@ func (s *Store) ListUpstreams() ([]UpstreamRow, error) {
 	var out []UpstreamRow
 	for rows.Next() {
 		var u UpstreamRow
-		if err := rows.Scan(&u.ID, &u.Name, &u.Type, &u.BaseURL, &u.APIKey, &u.Tier, &u.Priority, &u.Weight, &u.Models, &u.ModelMapping, &u.Enabled, &u.CreatedAt, &u.UpdatedAt); err != nil {
+		if err := rows.Scan(&u.ID, &u.Name, &u.Type, &u.BaseURL, &u.APIKey, &u.Tier, &u.Priority, &u.Weight, &u.Models, &u.ModelMapping, &u.Enabled, &u.BillingExempt, &u.CreatedAt, &u.UpdatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, u)
@@ -499,24 +862,28 @@ func (s *Store) ListUpstreams() ([]UpstreamRow, error) {
 // GetUpstream 按名称查询上游。
 func (s *Store) GetUpstream(name string) (*UpstreamRow, error) {
 	var u UpstreamRow
-	err := s.db.QueryRow(`SELECT id, name, type, base_url, api_key, tier, priority, weight, models, model_mapping, enabled, created_at, updated_at FROM upstreams WHERE name = ?`, name).
-		Scan(&u.ID, &u.Name, &u.Type, &u.BaseURL, &u.APIKey, &u.Tier, &u.Priority, &u.Weight, &u.Models, &u.ModelMapping, &u.Enabled, &u.CreatedAt, &u.UpdatedAt)
+	err := s.db.QueryRow(`SELECT id, name, type, base_url, api_key, tier, priority, weight, models, model_mapping, enabled, billing_exempt, created_at, updated_at FROM upstreams WHERE name = ?`, name).
+		Scan(&u.ID, &u.Name, &u.Type, &u.BaseURL, &u.APIKey, &u.Tier, &u.Priority, &u.Weight, &u.Models, &u.ModelMapping, &u.Enabled, &u.BillingExempt, &u.CreatedAt, &u.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
 	return &u, nil
 }
 
-// CreateUpstream 创建上游。
 // CreateUpstream 创建上游。enabled 未传（nil）时默认启用（1）。
+// billing_exempt 未传（nil）时默认不豁免（0）。
 func (s *Store) CreateUpstream(u *UpstreamRow) error {
 	enabled := 1
 	if u.EnabledPtr != nil {
 		enabled = *u.EnabledPtr
 	}
+	billingExempt := 0
+	if u.BillingExemptPtr != nil {
+		billingExempt = *u.BillingExemptPtr
+	}
 	_, err := s.db.Exec(
-		`INSERT INTO upstreams (name, type, base_url, api_key, tier, priority, weight, models, model_mapping, enabled) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		u.Name, u.Type, u.BaseURL, u.APIKey, u.Tier, u.Priority, u.Weight, u.Models, u.ModelMapping, enabled,
+		`INSERT INTO upstreams (name, type, base_url, api_key, tier, priority, weight, models, model_mapping, enabled, billing_exempt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		u.Name, u.Type, u.BaseURL, u.APIKey, u.Tier, u.Priority, u.Weight, u.Models, u.ModelMapping, enabled, billingExempt,
 	)
 	return err
 }
@@ -524,17 +891,22 @@ func (s *Store) CreateUpstream(u *UpstreamRow) error {
 // UpdateUpstream 更新上游（按名称匹配）。
 // enabled 用指针区分"未传"（nil=保持原值）与"显式传 0/1"，
 // 避免前端编辑表单不传 enabled 时误把上游禁用。
+// billing_exempt 同样用指针区分，未传保持原值。
 func (s *Store) UpdateUpstream(name string, u *UpstreamRow) error {
-	var enabledExpr string
+	var setExpr string
 	var args []any
 	args = append(args, u.Name, u.Type, u.BaseURL, u.APIKey, u.Tier, u.Priority, u.Weight, u.Models, u.ModelMapping)
 	if u.EnabledPtr != nil {
-		enabledExpr = ", enabled=?"
+		setExpr += ", enabled=?"
 		args = append(args, *u.EnabledPtr)
+	}
+	if u.BillingExemptPtr != nil {
+		setExpr += ", billing_exempt=?"
+		args = append(args, *u.BillingExemptPtr)
 	}
 	args = append(args, name)
 	_, err := s.db.Exec(
-		`UPDATE upstreams SET name=?, type=?, base_url=?, api_key=?, tier=?, priority=?, weight=?, models=?, model_mapping=?`+enabledExpr+`, updated_at=datetime('now') WHERE name=?`,
+		`UPDATE upstreams SET name=?, type=?, base_url=?, api_key=?, tier=?, priority=?, weight=?, models=?, model_mapping=?`+setExpr+`, updated_at=datetime('now') WHERE name=?`,
 		args...,
 	)
 	return err
@@ -567,7 +939,7 @@ func (s *Store) DeleteUpstream(name string) error {
 		return err
 	}
 	type ruleRow struct {
-		id       int64
+		id        int64
 		upstreams string
 	}
 	var toUpdate []ruleRow
@@ -612,7 +984,7 @@ func mustJSON(v []string) string {
 
 // ListRoutingRules 返回所有路由规则。
 func (s *Store) ListRoutingRules() ([]RoutingRuleRow, error) {
-	rows, err := s.db.Query(`SELECT id, model, strategy, upstreams, created_at, updated_at FROM routing_rules ORDER BY id`)
+	rows, err := s.db.Query(`SELECT id, model, strategy, upstreams, vision, vision_fallback, created_at, updated_at FROM routing_rules ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -621,7 +993,7 @@ func (s *Store) ListRoutingRules() ([]RoutingRuleRow, error) {
 	var out []RoutingRuleRow
 	for rows.Next() {
 		var r RoutingRuleRow
-		if err := rows.Scan(&r.ID, &r.Model, &r.Strategy, &r.Upstreams, &r.CreatedAt, &r.UpdatedAt); err != nil {
+		if err := rows.Scan(&r.ID, &r.Model, &r.Strategy, &r.Upstreams, &r.Vision, &r.VisionFallback, &r.CreatedAt, &r.UpdatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
@@ -632,8 +1004,8 @@ func (s *Store) ListRoutingRules() ([]RoutingRuleRow, error) {
 // GetRoutingRule 按 model 查询。
 func (s *Store) GetRoutingRule(model string) (*RoutingRuleRow, error) {
 	var r RoutingRuleRow
-	err := s.db.QueryRow(`SELECT id, model, strategy, upstreams, created_at, updated_at FROM routing_rules WHERE model = ?`, model).
-		Scan(&r.ID, &r.Model, &r.Strategy, &r.Upstreams, &r.CreatedAt, &r.UpdatedAt)
+	err := s.db.QueryRow(`SELECT id, model, strategy, upstreams, vision, vision_fallback, created_at, updated_at FROM routing_rules WHERE model = ?`, model).
+		Scan(&r.ID, &r.Model, &r.Strategy, &r.Upstreams, &r.Vision, &r.VisionFallback, &r.CreatedAt, &r.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -643,8 +1015,8 @@ func (s *Store) GetRoutingRule(model string) (*RoutingRuleRow, error) {
 // CreateRoutingRule 创建路由规则。
 func (s *Store) CreateRoutingRule(r *RoutingRuleRow) error {
 	_, err := s.db.Exec(
-		`INSERT INTO routing_rules (model, strategy, upstreams) VALUES (?, ?, ?)`,
-		r.Model, r.Strategy, r.Upstreams,
+		`INSERT INTO routing_rules (model, strategy, upstreams, vision, vision_fallback) VALUES (?, ?, ?, ?, ?)`,
+		r.Model, r.Strategy, r.Upstreams, r.Vision, r.VisionFallback,
 	)
 	return err
 }
@@ -652,8 +1024,8 @@ func (s *Store) CreateRoutingRule(r *RoutingRuleRow) error {
 // UpdateRoutingRule 更新路由规则（按 model 匹配）。
 func (s *Store) UpdateRoutingRule(model string, r *RoutingRuleRow) error {
 	_, err := s.db.Exec(
-		`UPDATE routing_rules SET model=?, strategy=?, upstreams=?, updated_at=datetime('now') WHERE model=?`,
-		r.Model, r.Strategy, r.Upstreams, model,
+		`UPDATE routing_rules SET model=?, strategy=?, upstreams=?, vision=?, vision_fallback=?, updated_at=datetime('now') WHERE model=?`,
+		r.Model, r.Strategy, r.Upstreams, r.Vision, r.VisionFallback, model,
 	)
 	return err
 }
@@ -668,12 +1040,12 @@ func (s *Store) DeleteRoutingRule(model string) error {
 
 // EffortConfigRow 是 effort_config 表的行映射。
 type EffortConfigRow struct {
-	ID           uint   `json:"id"`
-	Model        string `json:"model"`        // 模型匹配 pattern（支持 * 通配）
-	Recommended  string `json:"recommended"`  // 推荐思考等级（客户端未传时自动补）
-	Forced       string `json:"forced"`       // 强制思考等级（覆盖客户端传的）
-	CreatedAt    string `json:"created_at"`
-	UpdatedAt    string `json:"updated_at"`
+	ID          uint   `json:"id"`
+	Model       string `json:"model"`       // 模型匹配 pattern（支持 * 通配）
+	Recommended string `json:"recommended"` // 推荐思考等级（客户端未传时自动补）
+	Forced      string `json:"forced"`      // 强制思考等级（覆盖客户端传的）
+	CreatedAt   string `json:"created_at"`
+	UpdatedAt   string `json:"updated_at"`
 }
 
 // ListEffortConfig 返回所有最佳思考等级配置。
@@ -776,17 +1148,22 @@ func (s *Store) SeedDefaults() error {
 		"retry.max_retries":             "3",
 		"retry.retry_statuses":          "429,500,502,503,504",
 		"retry.retry_keywords":          "套餐用完了,余额不足,quota,rate limit",
-		"retry.fast_fail_minutes":        "5",
-		"retry.fast_fail_probe_minutes":   "5",
+		"retry.fast_fail_minutes":       "5",
+		"retry.fast_fail_probe_minutes": "5",
 		"retry.upstream_timeout":        "60",
 		// 视频透传（默认关）
 		"proxy.video_pass_through": "false",
+		// reasoning_content 回传缓存（DeepSeek thinking 模式 tool-calling 兼容，默认开）
+		"proxy.cache_reasoning_content": "true",
 		// per-key 冷却（商汤默认 1 秒）
-		"proxy.cooldown_seconds":      "1",
-		"proxy.cooldown_upstreams":    "[\"商汤\"]",
+		"proxy.cooldown_seconds":   "1",
+		"proxy.cooldown_upstreams": "[\"商汤\"]",
 		// 最佳思考等级（默认关）
 		"proxy.auto_best_effort":  "false",
 		"proxy.force_best_effort": "false",
+		// 客户端程序分析（默认关；开启后按间隔定时按 UA/端口查进程识别 client_addr 对应程序）
+		"proxy.client_analysis":          "false",
+		"proxy.client_analysis_interval": "600",
 	}
 	if count == 0 {
 		// 首次启动：全量插入
@@ -855,6 +1232,25 @@ func (s *Store) SetAPITokenEnabled(id uint, enabled bool) error {
 		v = 1
 	}
 	_, err := s.db.Exec(`UPDATE api_tokens SET enabled = ? WHERE id = ?`, v, id)
+	return err
+}
+
+// UpdateAPITokenName 修改下游 API Key 的名称（按 id）。
+func (s *Store) UpdateAPITokenName(id uint, name string) error {
+	if strings.TrimSpace(name) == "" {
+		return fmt.Errorf("name is required")
+	}
+	_, err := s.db.Exec(`UPDATE api_tokens SET name = ? WHERE id = ?`, strings.TrimSpace(name), id)
+	return err
+}
+
+// RenameLogAPIKey 同步 request_log 中历史记录的名称快照（旧名 → 新名）。
+// 请求日志写入时存的是当时 api_tokens.name 的快照，改名后需同步以保持显示一致。
+func (s *Store) RenameLogAPIKey(oldName, newName string) error {
+	if oldName == "" || newName == "" {
+		return nil
+	}
+	_, err := s.db.Exec(`UPDATE request_log SET api_key = ? WHERE api_key = ?`, newName, oldName)
 	return err
 }
 

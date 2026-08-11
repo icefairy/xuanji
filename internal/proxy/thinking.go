@@ -117,7 +117,10 @@ func applyDeepSeek(body []byte, effort string) ([]byte, bool) {
 			return body, false
 		}
 	case "xhigh", "max":
-		nb, err = sjson.SetBytes(nb, "reasoning_effort", "max")
+		// 输出 xhigh 而非 max：部分挂 DeepSeek 名但用自己 API 的上游（如商汤把
+		// deepseek-v4-flash 原样映射）枚举是 low/medium/high/xhigh/none，不认 max。
+		// DeepSeek 官方与商汤都接受 xhigh，两边都不会 400。
+		nb, err = sjson.SetBytes(nb, "reasoning_effort", "xhigh")
 		if err != nil {
 			return body, false
 		}

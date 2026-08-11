@@ -1,10 +1,12 @@
+---
 # 璇玑网关配置示例
 # 复制为 config.yaml 并填写真实上游信息。
 #
 # 字段说明：
 #   server.port                监听端口，默认 8787
 #   server.api_keys            允许访问网关的 API key 列表（逗号分隔），支持 ${VAR} 占位符
-#                              为空 = 不鉴权（开发模式）；配置后 /v1/* 需 Authorization: Bearer <key>
+#                              为空 = 不鉴权（开发模式）；配置后 /v1/* 需
+#                              Authorization: Bearer <key>
 #   upstreams[].name           上游唯一名称，供 routing.rules 引用
 #   upstreams[].type           openai | openai-compatible | anthropic（默认 openai）
 #   upstreams[].base_url       上游 OpenAI 兼容端点地址，末尾含 /v1
@@ -16,11 +18,14 @@
 #   upstreams[].models         该上游可服务的模型列表
 #   upstreams[].health_check   健康检查（path/interval/timeout）
 #   upstreams[].quota          配额余量分流（rolling/weekly/monthly）
-#   routing.default_strategy   默认分流策略 quota | latency | primary_backup | weighted
+#   routing.default_strategy   默认分流策略 quota | latency | primary_backup |
+#                              weighted
 #   routing.rules[].model      模型匹配，支持 * 通配
 #   routing.rules[].upstreams  命中的上游组（按 name 引用）
 #   routing.rules[].strategy   该规则的策略，缺省继承 default_strategy
 #   storage.sqlite_path        SQLite 持久化文件路径；留空则不记录请求指标
+#   proxy.client_analysis            客户端程序分析开关（默认 false）
+#   proxy.client_analysis_interval   分析间隔秒数（默认 600 = 10 分钟；可选 60 = 1 分钟）
 server:
   port: 8787
   # api_keys: ${XUANJI_API_KEYS}   # 多个 key 用逗号分隔；留空则不鉴权
@@ -35,9 +40,9 @@ upstreams:
     weight: 100
     models:
       - qwen3.6:35b
-      - dall-e-3        # 文生图
-      - tts-1            # 语音合成
-      - whisper-1        # 语音转文字
+      - dall-e-3 # 文生图
+      - tts-1 # 语音合成
+      - whisper-1 # 语音转文字
     health_check:
       path: /models
       interval: 30s
@@ -67,6 +72,18 @@ routing:
     - model: "gpt-5"
       upstreams: [opencode-go]
       strategy: quota
+    # 多模态兑底示例：deepseek-v4-flash 不支持图片，带图请求自动改写 model 为 flash 重新路由
+    # - model: "deepseek-v4-flash"
+    #   upstreams: [deepseek]
+    #   strategy: primary_backup
+    #   vision: false          # 是否支持多模态（默认 false）
+    #   vision_fallback: flash # 带图请求兑底转发的聚合模型名（空=不兑底），由 model_mapping 映射到上游真实名
 
 storage:
-  sqlite_path: data/xuanji.db   # SQLite 持久化文件；留空则不记录请求指标
+  sqlite_path: data/xuanji.db # SQLite 持久化文件；留空则不记录请求指标
+
+
+# 转发层可选行为开关（全部可选，缺省用默认值；也可以在管理后台"系统设置"中修改，
+# 修改后存数据库 config 表并热重载生效，优先级高于本文件）：
+#   proxy.client_analysis           客户端程序分析：识别每个 client_addr 对应的调用程序（默认 false）
+#   proxy.client_analysis_interval  分析间隔秒数（60=1分钟 / 600=10分钟，默认 600）

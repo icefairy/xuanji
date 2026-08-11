@@ -68,14 +68,14 @@ func TestRequestLogs_FilterAndPaging(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	// 3 条 上游A/M1，2 条 上游B/M2
+	// 3 条 上游A/M1，2 条 上游B/M2（其中 1 条 endpoint=completions，模拟老接口调用）
 	for i := 0; i < 3; i++ {
-		if err := s.Insert(store.Record{Timestamp: time.Now(), Upstream: "上游A", Model: "M1", Status: 200, DurationMS: 1, Tokens: 10}); err != nil {
+		if err := s.Insert(store.Record{Timestamp: time.Now(), Upstream: "上游A", Model: "M1", Status: 200, DurationMS: 1, Tokens: 10, Endpoint: "chat"}); err != nil {
 			t.Fatal(err)
 		}
 	}
 	for i := 0; i < 2; i++ {
-		if err := s.Insert(store.Record{Timestamp: time.Now(), Upstream: "上游B", Model: "M2", Status: 500, DurationMS: 2, Tokens: 20}); err != nil {
+		if err := s.Insert(store.Record{Timestamp: time.Now(), Upstream: "上游B", Model: "M2", Status: 500, DurationMS: 2, Tokens: 20, Endpoint: "completions"}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -91,6 +91,7 @@ func TestRequestLogs_FilterAndPaging(t *testing.T) {
 		Filters struct {
 			Upstreams []string `json:"upstreams"`
 			Models    []string `json:"models"`
+			Endpoints []string `json:"endpoints"`
 		} `json:"filters"`
 	}
 
@@ -105,8 +106,8 @@ func TestRequestLogs_FilterAndPaging(t *testing.T) {
 	if len(out.Logs) != 2 {
 		t.Errorf("logs len = %d, want 2 (limit)", len(out.Logs))
 	}
-	if len(out.Filters.Upstreams) != 2 || len(out.Filters.Models) != 2 {
-		t.Errorf("filters = %+v, want 2 upstreams + 2 models", out.Filters)
+	if len(out.Filters.Upstreams) != 2 || len(out.Filters.Models) != 2 || len(out.Filters.Endpoints) != 2 {
+		t.Errorf("filters = %+v, want 2 upstreams + 2 models + 2 endpoints", out.Filters)
 	}
 	if ts := out.Logs[0].Ts; len(ts) != 19 {
 		t.Errorf("ts = %q, want 19 chars (YYYY-MM-DD HH:MM:SS)", ts)
@@ -137,5 +138,40 @@ func TestRequestLogs_FilterAndPaging(t *testing.T) {
 	decodeBody(t, rr4, &out4)
 	if out4.Total != 0 {
 		t.Errorf("combined filter total = %d, want 0", out4.Total)
+	}
+
+	// 状态筛选：正常 (2xx) → 上游A 的 3 条；异常 (非2xx) → 上游B 的 2 条
+	rr5 := httptest.NewRecorder()
+	h.RequestLogs(rr5, httptest.NewRequest("GET", "/admin/logs?status_type=normal", nil))
+	var out5 logResp
+	decodeBody(t, rr5, &out5)
+	if out5.Total != 3 {
+		t.Errorf("status_type=normal total = %d, want 3", out5.Total)
+	}
+
+	rr6 := httptest.NewRecorder()
+	h.RequestLogs(rr6, httptest.NewRequest("GET", "/admin/logs?status_type=error", nil))
+	var out6 logResp
+	decodeBody(t, rr6, &out6)
+	if out6.Total != 2 {
+		t.Errorf("status_type=error total = %d, want 2", out6.Total)
+	}
+
+	// 端点筛选：endpoint=completions → 上游B 的 2 条
+	rr8 := httptest.NewRecorder()
+	h.RequestLogs(rr8, httptest.NewRequest("GET", "/admin/logs?endpoint=completions", nil))
+	var out8 logResp
+	decodeBody(t, rr8, &out8)
+	if out8.Total != 2 {
+		t.Errorf("filter endpoint=completions total = %d, want 2", out8.Total)
+	}
+
+	// 端点 + 状态组合：endpoint=completions + 异常 → 2 条（都是 500）
+	rr9 := httptest.NewRecorder()
+	h.RequestLogs(rr9, httptest.NewRequest("GET", "/admin/logs?endpoint=completions&status_type=error", nil))
+	var out9 logResp
+	decodeBody(t, rr9, &out9)
+	if out9.Total != 2 {
+		t.Errorf("filter endpoint=completions+error total = %d, want 2", out9.Total)
 	}
 }

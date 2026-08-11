@@ -32,10 +32,10 @@ type Handler struct {
 	cfg    *config.Config
 	hc     *health.Checker
 	start  time.Time
-	store  *store.Store     // nil 时 metrics 端点返回空数据
-	reload func() error     // 热重载回调，nil 时不可用
+	store  *store.Store         // nil 时 metrics 端点返回空数据
+	reload func() error         // 热重载回调，nil 时不可用
 	ff     *proxy.FastFailCache // 快速失败缓存；nil 时不显示 fast_fail 状态
-	auth   *auth.APIKeys    // 下游 key 鉴权缓存；nil 时无需刷新
+	auth   *auth.APIKeys        // 下游 key 鉴权缓存；nil 时无需刷新
 }
 
 // SetAuth 注入下游 key 鉴权器（api_tokens CRUD 后刷新内存缓存）。
@@ -115,20 +115,21 @@ func (h *Handler) Status(w http.ResponseWriter, _ *http.Request) {
 // upstreamResponse 是 GET /admin/upstreams 的单个元素。
 // 绝不包含 api_key 字段（安全）。
 type upstreamResponse struct {
-	Name         string   `json:"name"`
-	Type         string   `json:"type"`
-	BaseURL      string   `json:"base_url"`
-	APIKey       string   `json:"api_key"`
-	Tier         string   `json:"tier"`
-	Priority     int      `json:"priority"`
-	Weight       int      `json:"weight"`
-	Enabled      bool     `json:"enabled"` // 1=启用 0=禁用（禁用的不参与转发）
-	FastFail     bool     `json:"fast_fail"` // 快速失败黑名单中（后台探测可自动恢复）
-	State        string   `json:"state"`
-	LatencyMS    int64    `json:"latency_ms"`
-	Models       []string `json:"models"`
-	ModelCount   int      `json:"model_count"`
-	ModelMapping string   `json:"model_mapping"` // JSON 对象字符串
+	Name          string   `json:"name"`
+	Type          string   `json:"type"`
+	BaseURL       string   `json:"base_url"`
+	APIKey        string   `json:"api_key"`
+	Tier          string   `json:"tier"`
+	Priority      int      `json:"priority"`
+	Weight        int      `json:"weight"`
+	Enabled       bool     `json:"enabled"`        // 1=启用 0=禁用（禁用的不参与转发）
+	BillingExempt bool     `json:"billing_exempt"` // true=不参与计费（统计费用记 0，路由不受影响）
+	FastFail      bool     `json:"fast_fail"`      // 快速失败黑名单中（后台探测可自动恢复）
+	State         string   `json:"state"`
+	LatencyMS     int64    `json:"latency_ms"`
+	Models        []string `json:"models"`
+	ModelCount    int      `json:"model_count"`
+	ModelMapping  string   `json:"model_mapping"` // JSON 对象字符串
 }
 
 // fastFailState 返回上游是否处于快速失败黑名单（渠道级判断，不区分模型）。
@@ -144,22 +145,23 @@ func (h *Handler) Upstreams(w http.ResponseWriter, _ *http.Request) {
 			resp := make([]upstreamResponse, 0, len(rows))
 			for _, u := range rows {
 				models := parseStringSlice(u.Models)
-				resp = append(resp, upstreamResponse{
-					Name:         u.Name,
-					Type:         u.Type,
-					BaseURL:      u.BaseURL,
-					APIKey:       u.APIKey,
-					Tier:         u.Tier,
-					Priority:     u.Priority,
-					Weight:       u.Weight,
-					Enabled:      u.Enabled == 1,
-					FastFail:     h.fastFailState(u.Name),
-					State:        string(h.hc.Status(u.Name)),
-					LatencyMS:    h.hc.Latency(u.Name).Milliseconds(),
-					Models:       models,
-					ModelCount:   len(models),
-					ModelMapping: u.ModelMapping,
-				})
+								resp = append(resp, upstreamResponse{
+													Name:          u.Name,
+													Type:          u.Type,
+													BaseURL:       u.BaseURL,
+													APIKey:        u.APIKey,
+													Tier:          u.Tier,
+													Priority:      u.Priority,
+													Weight:        u.Weight,
+													Enabled:       u.Enabled == 1,
+													BillingExempt: u.BillingExempt == 1,
+													FastFail:      h.fastFailState(u.Name),
+													State:         string(h.hc.Status(u.Name)),
+													LatencyMS:     h.hc.Latency(u.Name).Milliseconds(),
+													Models:        models,
+													ModelCount:    len(models),
+													ModelMapping:  u.ModelMapping,
+												})
 			}
 			writeJSON(w, resp)
 			return
@@ -202,6 +204,10 @@ type ruleResponse struct {
 	// HealthState 与 Upstreams 一一对应：上游健康检查状态（healthy/degraded/dead/unknown）。
 	// 路由与统计状态不一致时，以此为准展示真实状态。
 	HealthState []string `json:"health_state"`
+	// Vision 该规则是否支持多模态（true=支持；请求带图时不做兑底）。
+	Vision bool `json:"vision"`
+	// VisionFallback 多模态兑底转发的聚合模型名（如 "flash"）；空=不兑底。
+	VisionFallback string `json:"vision_fallback"`
 }
 
 // upstreamEnabled 返回上游是否启用；未找到时返回 false（视为异常）。
@@ -339,12 +345,14 @@ func (h *Handler) Rules(w http.ResponseWriter, _ *http.Request) {
 				hs := h.ruleHealthState(upstreams)
 				upstreams, ff, en, hs = sortRuleUpstreams(upstreams, ff, en, hs, h)
 				resp = append(resp, ruleResponse{
-					Model:     r.Model,
-					Strategy:  strategy,
-					Upstreams: upstreams,
-					FastFail:  ff,
-					Enabled:   en,
-					HealthState: hs,
+					Model:          r.Model,
+					Strategy:       strategy,
+					Upstreams:      upstreams,
+					FastFail:       ff,
+					Enabled:        en,
+					HealthState:    hs,
+					Vision:         r.Vision == 1,
+					VisionFallback: r.VisionFallback,
 				})
 			}
 			writeJSON(w, resp)
@@ -363,12 +371,14 @@ func (h *Handler) Rules(w http.ResponseWriter, _ *http.Request) {
 		hs := h.ruleHealthState(rule.Upstreams)
 		upstreams, ff, en, hs := sortRuleUpstreams(rule.Upstreams, ff, en, hs, h)
 		resp = append(resp, ruleResponse{
-			Model:     rule.Model,
-			Strategy:  strategy,
-			Upstreams: upstreams,
-			FastFail:  ff,
-			Enabled:   en,
-			HealthState: hs,
+			Model:          rule.Model,
+			Strategy:       strategy,
+			Upstreams:      upstreams,
+			FastFail:       ff,
+			Enabled:        en,
+			HealthState:    hs,
+			Vision:         rule.Vision,
+			VisionFallback: rule.VisionFallback,
 		})
 	}
 	writeJSON(w, resp)
@@ -645,8 +655,8 @@ func (h *Handler) MetricsByAPIKey(w http.ResponseWriter, r *http.Request) {
 
 // APIKeyModelUsage 是单个 API Key 的模型使用分布。
 type APIKeyModelUsage struct {
-	Model  string `json:"model"`
-	Count  int64  `json:"count"`
+	Model string `json:"model"`
+	Count int64  `json:"count"`
 }
 
 // MetricsByAPIKeyModels 返回指定 API Key 的模型使用分布（支持 ?range=...）。
@@ -828,6 +838,9 @@ func (h *Handler) UpdateConfig(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]string{"error": "invalid request"})
 		return
 	}
+	// 只读保护：proxy.cooldown_* 属于运行期内部机制，不允许通过配置修改。
+	// 前端已置灰，这里做后端兜底拦截，防止 API 直调绕过。
+	// 注意：2026-08-06 用户要求改为可编辑，此拦截已移除。
 	for k, v := range req {
 		if err := h.store.SetConfig(k, v); err != nil {
 			writeJSON(w, map[string]string{"error": err.Error()})
@@ -861,6 +874,12 @@ func (h *Handler) CreateUpstream(w http.ResponseWriter, r *http.Request) {
 			var e int
 			if json.Unmarshal(v, &e) == nil {
 				req.EnabledPtr = &e
+			}
+		}
+		if v, ok := raw["billing_exempt"]; ok {
+			var b int
+			if json.Unmarshal(v, &b) == nil {
+				req.BillingExemptPtr = &b
 			}
 		}
 	}
@@ -899,6 +918,13 @@ func (h *Handler) UpdateUpstream(w http.ResponseWriter, r *http.Request) {
 			var e int
 			if json.Unmarshal(v, &e) == nil {
 				req.EnabledPtr = &e
+			}
+		}
+		// billing_exempt 同样：显式传入（含 false/0）才允许改，未传保持原值。
+		if v, ok := raw["billing_exempt"]; ok {
+			var b int
+			if json.Unmarshal(v, &b) == nil {
+				req.BillingExemptPtr = &b
 			}
 		}
 	}
@@ -1126,8 +1152,9 @@ func fmtCST(ts string) string {
 	return t.In(time.FixedZone("CST", 8*3600)).Format("2006-01-02 15:04:05")
 }
 
-// RequestLogs 返回最近请求日志（GET /admin/logs?limit=50&offset=0&upstream=xx&model=yy）。
-// 支持按上游/模型筛选与分页；响应含 total 和筛选选项（日志中出现过的上游/模型）。
+// RequestLogs 返回最近请求日志（GET /admin/logs?limit=50&offset=0&upstream=xx&model=yy&endpoint=zz）。
+// 支持按上游/模型/端点筛选与分页；响应含 total、筛选选项
+// （客户端程序识别功能已删除，不再有 profile_map——请求日志以 api_key 区分调用方）。
 func (h *Handler) RequestLogs(w http.ResponseWriter, r *http.Request) {
 	if h.store == nil {
 		writeJSON(w, map[string]interface{}{"total": 0, "limit": 50, "offset": 0, "logs": []map[string]interface{}{}})
@@ -1156,6 +1183,17 @@ func (h *Handler) RequestLogs(w http.ResponseWriter, r *http.Request) {
 		where += " AND model = ?"
 		args = append(args, m)
 	}
+	// 端点筛选：识别还在调用老版接口（如 /v1/completions → endpoint=completions）的程序
+	if ep := r.URL.Query().Get("endpoint"); ep != "" {
+		where += " AND endpoint = ?"
+		args = append(args, ep)
+	}
+	// 状态筛选：normal=2xx 正常，error=非 2xx（4xx/5xx/499 等异常）
+	if st := r.URL.Query().Get("status_type"); st == "normal" {
+		where += " AND status >= 200 AND status < 300"
+	} else if st == "error" {
+		where += " AND (status < 200 OR status >= 300)"
+	}
 	if where != "" {
 		where = " WHERE " + strings.TrimPrefix(where, " AND ")
 	}
@@ -1171,8 +1209,8 @@ func (h *Handler) RequestLogs(w http.ResponseWriter, r *http.Request) {
 	queryArgs := append([]interface{}{}, args...)
 	queryArgs = append(queryArgs, limit, offset)
 	rows, err := h.store.DB().Query(`
-		SELECT ts, upstream, model, endpoint, status, duration_ms, prompt_tokens, completion_tokens, tokens, prompt_cache_hit_tokens, prompt_cache_miss_tokens, api_key
-		FROM request_log`+where+` ORDER BY id DESC LIMIT ? OFFSET ?`, queryArgs...)
+				SELECT ts, upstream, model, endpoint, status, duration_ms, prompt_tokens, completion_tokens, tokens, prompt_cache_hit_tokens, prompt_cache_miss_tokens, api_key, cost, upstream_model, client_addr, user_agent
+				FROM request_log`+where+` ORDER BY id DESC LIMIT ? OFFSET ?`, queryArgs...)
 	if err != nil {
 		writeJSON(w, map[string]interface{}{"total": total, "limit": limit, "offset": offset, "logs": []map[string]interface{}{}})
 		return
@@ -1181,9 +1219,10 @@ func (h *Handler) RequestLogs(w http.ResponseWriter, r *http.Request) {
 
 	var out []map[string]interface{}
 	for rows.Next() {
-		var ts, upstream, model, endpoint, apiKey string
+		var ts, upstream, model, endpoint, apiKey, upstreamModel, clientAddr, userAgent string
 		var status, durationMs, promptTokens, completionTokens, tokens, cacheHitTokens, cacheMissTokens int64
-		if err := rows.Scan(&ts, &upstream, &model, &endpoint, &status, &durationMs, &promptTokens, &completionTokens, &tokens, &cacheHitTokens, &cacheMissTokens, &apiKey); err != nil {
+		var cost float64
+		if err := rows.Scan(&ts, &upstream, &model, &endpoint, &status, &durationMs, &promptTokens, &completionTokens, &tokens, &cacheHitTokens, &cacheMissTokens, &apiKey, &cost, &upstreamModel, &clientAddr, &userAgent); err != nil {
 			continue
 		}
 		out = append(out, map[string]interface{}{
@@ -1199,12 +1238,17 @@ func (h *Handler) RequestLogs(w http.ResponseWriter, r *http.Request) {
 			"prompt_cache_hit_tokens":  cacheHitTokens,
 			"prompt_cache_miss_tokens": cacheMissTokens,
 			"api_key":                  apiKey,
+			"cost":                     cost,
+			"upstream_model":           upstreamModel,
+			"client_addr":              clientAddr,
+			"user_agent":               userAgent,
 		})
 	}
 
-	// 筛选选项：日志中出现过的上游与模型（distinct）
+	// 筛选选项：日志中出现过的上游、模型与端点（distinct）
 	upstreams := []string{}
 	models := []string{}
+	endpoints := []string{}
 	if rows2, err := h.store.DB().Query("SELECT DISTINCT upstream FROM request_log ORDER BY upstream"); err == nil {
 		for rows2.Next() {
 			var v string
@@ -1223,14 +1267,39 @@ func (h *Handler) RequestLogs(w http.ResponseWriter, r *http.Request) {
 		}
 		rows3.Close()
 	}
+	if rows4, err := h.store.DB().Query("SELECT DISTINCT endpoint FROM request_log ORDER BY endpoint"); err == nil {
+		for rows4.Next() {
+			var v string
+			if rows4.Scan(&v) == nil && v != "" {
+				endpoints = append(endpoints, v)
+			}
+		}
+		rows4.Close()
+	}
 
 	writeJSON(w, map[string]interface{}{
-		"total":   total,
-		"limit":   limit,
-		"offset":  offset,
-		"logs":    out,
-		"filters": map[string]interface{}{"upstreams": upstreams, "models": models},
+		"total":  total,
+		"limit":  limit,
+		"offset": offset,
+		"logs":   out,
+		"filters": map[string]interface{}{"upstreams": upstreams, "models": models, "endpoints": endpoints},
 	})
+}
+
+// RecalcCost 重算历史请求费用（POST /admin/logs/recalc-cost）。
+// 对缓存字段全 0 且有输入 token 的历史请求，按「未命中价全额」口径重算 cost
+// （修复 calcCost 之前无缓存统计时输入白嫖的问题）。返回更新条数。
+func (h *Handler) RecalcCost(w http.ResponseWriter, _ *http.Request) {
+	if h.store == nil {
+		writeJSON(w, map[string]string{"error": "store not available"})
+		return
+	}
+	updated, err := h.store.RecalcCost()
+	if err != nil {
+		writeJSON(w, map[string]interface{}{"error": err.Error()})
+		return
+	}
+	writeJSON(w, map[string]interface{}{"updated": updated})
 }
 
 // CloneUpstream 克隆上游：读取原上游配置，改名称和 API key 后创建（POST /admin/upstreams/{name}/clone）。
@@ -1262,8 +1331,9 @@ func (h *Handler) CloneUpstream(w http.ResponseWriter, r *http.Request) {
 	if req.APIKey != "" {
 		clone.APIKey = req.APIKey
 	}
-	// 保留原上游的启用状态（克隆语义）
+	// 保留原上游的启用状态与计费豁免状态（克隆语义）
 	clone.EnabledPtr = &clone.Enabled
+	clone.BillingExemptPtr = &clone.BillingExempt
 	if err := h.store.CreateUpstream(&clone); err != nil {
 		writeJSON(w, map[string]string{"error": err.Error()})
 		return
@@ -1395,6 +1465,52 @@ func (h *Handler) SetAPIKeyEnabled(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]string{"status": "ok"})
 }
 
+// RenameAPIKey 修改下游 API Key 的名称（PUT /admin/api-keys/{id}/name）。
+// 请求体：{"name":"新名称"}。改名后同步刷新鉴权缓存，并把 request_log 中
+// 该 key 的历史记录名称快照一并更新（保持请求日志显示一致）。
+func (h *Handler) RenameAPIKey(w http.ResponseWriter, r *http.Request) {
+	if h.store == nil {
+		writeJSON(w, map[string]string{"error": "store not available"})
+		return
+	}
+	idStr := r.PathValue("id")
+	id, err := strconv.ParseUint(idStr, 10, 32)
+	if err != nil {
+		writeJSON(w, map[string]string{"error": "invalid id"})
+		return
+	}
+	var req struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, map[string]string{"error": "invalid request: " + err.Error()})
+		return
+	}
+	// 先取旧名（用于同步历史 request_log 快照）
+	oldName := ""
+	if tokens, err := h.store.ListAPITokens(); err == nil {
+		for _, t := range tokens {
+			if t.ID == uint(id) {
+				oldName = t.Name
+				break
+			}
+		}
+	}
+	if err := h.store.UpdateAPITokenName(uint(id), req.Name); err != nil {
+		writeJSON(w, map[string]string{"error": err.Error()})
+		return
+	}
+	// 同步历史 request_log 名称快照（旧名 → 新名）
+	if oldName != "" && oldName != req.Name {
+		if err := h.store.RenameLogAPIKey(oldName, strings.TrimSpace(req.Name)); err != nil {
+			writeJSON(w, map[string]string{"error": err.Error()})
+			return
+		}
+	}
+	h.refreshAuth()
+	writeJSON(w, map[string]string{"status": "ok"})
+}
+
 // Login 管理端用户名密码登录（POST /admin/login）。
 // 验证 bcrypt 密码后签发 JWT，有效期 24h。
 func (h *Handler) Login(w http.ResponseWriter, r *http.Request) {
@@ -1506,14 +1622,14 @@ func (h *Handler) upstreamByName(name string) *config.Upstream {
 				u := &rows[i]
 				if u.Name == name {
 					return &config.Upstream{
-						Name:        u.Name,
-						Type:        u.Type,
-						BaseURL:     u.BaseURL,
-						APIKey:      u.APIKey,
-						Tier:        u.Tier,
-						Priority:    u.Priority,
-						Weight:      u.Weight,
-						Models:      parseStringSlice(u.Models),
+						Name:         u.Name,
+						Type:         u.Type,
+						BaseURL:      u.BaseURL,
+						APIKey:       u.APIKey,
+						Tier:         u.Tier,
+						Priority:     u.Priority,
+						Weight:       u.Weight,
+						Models:       parseStringSlice(u.Models),
 						ModelMapping: parseStringMap(u.ModelMapping),
 					}
 				}
@@ -1691,6 +1807,115 @@ func (h *Handler) DeleteDiscount(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]string{"status": "ok"})
 }
 
+// Prices 列出所有模型单价（GET /admin/prices）。
+func (h *Handler) Prices(w http.ResponseWriter, _ *http.Request) {
+	if h.store == nil {
+		writeJSON(w, []store.ModelPrice{})
+		return
+	}
+	writeJSON(w, h.store.ListPrices())
+}
+
+// AddPrice 新增/更新模型单价（POST /admin/prices，按 model upsert）。
+func (h *Handler) AddPrice(w http.ResponseWriter, r *http.Request) {
+	if h.store == nil {
+		writeJSON(w, map[string]string{"error": "store not available"})
+		return
+	}
+	var p store.ModelPrice
+	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+		writeJSON(w, map[string]string{"error": "invalid request: " + err.Error()})
+		return
+	}
+	p.Model = strings.TrimSpace(p.Model)
+	if p.Model == "" {
+		writeJSON(w, map[string]string{"error": "模型名必填（* 表示默认价）"})
+		return
+	}
+	if p.PriceInput < 0 || p.PriceCache < 0 || p.PriceOut < 0 {
+		writeJSON(w, map[string]string{"error": "价格不能为负数"})
+		return
+	}
+	if err := h.store.UpsertPrice(p); err != nil {
+		writeJSON(w, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, p)
+}
+
+// UpdatePrice 更新模型单价（PUT /admin/prices/{model}）。
+func (h *Handler) UpdatePrice(w http.ResponseWriter, r *http.Request) {
+	if h.store == nil {
+		writeJSON(w, map[string]string{"error": "store not available"})
+		return
+	}
+	model := r.PathValue("model")
+	if model == "" {
+		writeJSON(w, map[string]string{"error": "model required"})
+		return
+	}
+	var p store.ModelPrice
+	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+		writeJSON(w, map[string]string{"error": "invalid request: " + err.Error()})
+		return
+	}
+	if p.PriceInput < 0 || p.PriceCache < 0 || p.PriceOut < 0 {
+		writeJSON(w, map[string]string{"error": "价格不能为负数"})
+		return
+	}
+	p.Model = model
+	if err := h.store.UpsertPrice(p); err != nil {
+		writeJSON(w, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, p)
+}
+
+// DeletePrice 删除模型单价（DELETE /admin/prices/{model}）。默认价（*）不可删。
+func (h *Handler) DeletePrice(w http.ResponseWriter, r *http.Request) {
+	if h.store == nil {
+		writeJSON(w, map[string]string{"error": "store not available"})
+		return
+	}
+	model := r.PathValue("model")
+	if model == "*" {
+		writeJSON(w, map[string]string{"error": "默认价不可删除"})
+		return
+	}
+	if err := h.store.DeletePrice(model); err != nil {
+		writeJSON(w, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, map[string]string{"status": "ok"})
+}
+
+// costMetricsResponse 是 GET /admin/metrics/cost 的响应。
+type costMetricsResponse struct {
+	TotalCost  float64         `json:"total_cost"` // 时间段内总费用（元）
+	ByUpstream []store.CostRow `json:"by_upstream"`
+	ByAPIKey   []store.CostRow `json:"by_api_key"`
+	ByModel    []store.CostRow `json:"by_model"`
+}
+
+// MetricsCost 返回费用统计（GET /admin/metrics/cost，支持 ?range=today|3d|7d|30d|all）。
+func (h *Handler) MetricsCost(w http.ResponseWriter, r *http.Request) {
+	if h.store == nil {
+		writeJSON(w, costMetricsResponse{})
+		return
+	}
+	since := metricsSince(r)
+	until := ""
+	if since != "" {
+		until = time.Now().UTC().Format(time.RFC3339)
+	}
+	var resp costMetricsResponse
+	resp.TotalCost, _ = h.store.TotalCost(since, until)
+	resp.ByUpstream = h.store.CostByUpstream(since, until)
+	resp.ByAPIKey = h.store.CostByAPIKey(since, until)
+	resp.ByModel = h.store.CostByModel(since, until)
+	writeJSON(w, resp)
+}
+
 // TestUpstream 直接使用上游自己的 API Key 测试（POST /admin/upstreams/{name}/test）。
 // 绕过网关路由，直连该上游的 /v1/chat/completions，验证 key 与模型可用性。
 func (h *Handler) TestUpstream(w http.ResponseWriter, r *http.Request) {
@@ -1703,14 +1928,18 @@ func (h *Handler) TestUpstream(w http.ResponseWriter, r *http.Request) {
 
 	var req struct {
 		Model     string `json:"model"`
+		Content   string `json:"content"`
 		MaxTokens int    `json:"max_tokens"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&req)
 	if req.Model == "" {
 		req.Model = "deepseek-v4-flash"
 	}
+	if req.Content == "" {
+		req.Content = "你好，请用一句话回复"
+	}
 	if req.MaxTokens <= 0 {
-		req.MaxTokens = 50
+		req.MaxTokens = 512
 	}
 
 	// 应用 model_mapping：把客户端简单名还原为上游真实模型名
@@ -1723,8 +1952,8 @@ func (h *Handler) TestUpstream(w http.ResponseWriter, r *http.Request) {
 
 	// 构造直连请求体（用还原后的真实模型名）
 	body := map[string]any{
-		"model":     realModel,
-		"messages":  []map[string]string{{"role": "user", "content": "你好，请用一句话回复"}},
+		"model":      realModel,
+		"messages":   []map[string]string{{"role": "user", "content": req.Content}},
 		"max_tokens": req.MaxTokens,
 	}
 	payload, _ := json.Marshal(body)

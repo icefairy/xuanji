@@ -69,6 +69,14 @@ type Proxy struct {
 	// VideoPassThrough 开启后，允许 content 中的 video_url 透传给上游（多模态视频，默认 false）。
 	// 关闭时请求含 video_url 直接返回 400——视频流量大，需显式开启。
 	VideoPassThrough bool `yaml:"video_pass_through"`
+	// CacheReasoningContent 开启后，缓存上游响应中 assistant 消息的 reasoning_content
+	// （按 tool_call_id），并在后续请求中为丢失该字段的 assistant 消息自动补回
+	// （DeepSeek thinking 模式 tool-calling 要求 reasoning_content 原样回传，否则上游
+	// 400；默认 true）。关闭时缓存不写、注入不执行，body 原样透传。
+	CacheReasoningContent bool `yaml:"cache_reasoning_content"`
+	// NormalizeDeveloperRole 开启后，转发前把 messages 中的 role=developer 归一化为 role=system（默认 true）。
+	// 部分上游（商汤/基元律动等）不认 OpenAI 新角色 developer，只认 system/user/assistant/tool。
+	NormalizeDeveloperRole bool `yaml:"normalize_developer_role"`
 	// CooldownUpstreams 是需要 per-key 冷却的上游名称前缀列表。
 	// 同一上游每次成功响应后，暂停 CooldownSeconds 秒不再被分配新请求，
 	// 防止同一 API key 被并发打爆触发 429。
@@ -78,6 +86,12 @@ type Proxy struct {
 	CooldownSeconds int `yaml:"cooldown_seconds"`
 	// EffortConfigs 是最佳思考等级配置（模型 pattern → 推荐/强制等级）。
 	EffortConfigs []EffortConfig `yaml:"effort_configs"`
+	// ClientAnalysis 开启后，定期分析 client_addr 对应的调用程序（默认 false）。
+	// 聚合最近 N 分钟去重的 client_addr，按 User-Agent → 端口查进程识别程序名，
+	// 结果存 client_profiles 表。
+	ClientAnalysis bool `yaml:"client_analysis"`
+	// ClientAnalysisInterval 分析间隔秒数（默认 600，即 10 分钟）。
+	ClientAnalysisInterval int `yaml:"client_analysis_interval"`
 }
 
 // EffortConfig 描述单个模型的最佳思考等级配置。
@@ -136,13 +150,15 @@ func (u *Upstream) IsAnthropic() bool {
 	return strings.EqualFold(u.Type, "anthropic")
 }
 
-// TierWeight 返回上游的成本层级权重，用于路由排序：free(0) < subscription(1) < payg(2)。
+// TierWeight 返回上游的成本层级权重，用于路由排序：subscription(0) < free(1) < payg(2)。
+// 包月（订阅）优先——用户付费的官方服务质量最高，先用完包月额度；
+// 免费次之；按量付费最不优先（按量花钱，能省则省）。
 // 未配置 tier 视为 payg（按量计费，最不优先，安全默认）。
 func (u *Upstream) TierWeight() int {
 	switch u.Tier {
-	case "free":
-		return 0
 	case "subscription":
+		return 0
+	case "free":
 		return 1
 	default:
 		return 2
@@ -174,6 +190,12 @@ type Rule struct {
 	Model     string   `yaml:"model"`
 	Upstreams []string `yaml:"upstreams"`
 	Strategy  string   `yaml:"strategy"`
+	// Vision 是否支持多模态（默认 false=不支持）。请求带图且命中本规则时，
+	// 若 VisionFallback 非空则把 model 改写为兜底模型重新路由。
+	Vision bool `yaml:"vision"`
+	// VisionFallback 多模态兜底转发的聚合模型名（如 "flash"），
+	// 由对应上游的 model_mapping 映射到上游真实模型名；空=不兜底。
+	VisionFallback string `yaml:"vision_fallback"`
 }
 
 // DefaultPort 是 server.port 未配置时的默认监听端口。
@@ -387,6 +409,20 @@ func LoadFromDB(s *store.Store) (*Config, error) {
 	if v, ok := all["proxy.video_pass_through"]; ok {
 		cfg.Proxy.VideoPassThrough = strings.TrimSpace(v) == "true" || strings.TrimSpace(v) == "1"
 	}
+	if v, ok := all["proxy.cache_reasoning_content"]; ok {
+		cfg.Proxy.CacheReasoningContent = strings.TrimSpace(v) == "true" || strings.TrimSpace(v) == "1"
+	}
+	if v, ok := all["proxy.normalize_developer_role"]; ok {
+		cfg.Proxy.NormalizeDeveloperRole = strings.TrimSpace(v) == "true" || strings.TrimSpace(v) == "1"
+	}
+	if v, ok := all["proxy.client_analysis"]; ok {
+		cfg.Proxy.ClientAnalysis = strings.TrimSpace(v) == "true" || strings.TrimSpace(v) == "1"
+	}
+	if v, ok := all["proxy.client_analysis_interval"]; ok {
+		if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && n >= 60 {
+			cfg.Proxy.ClientAnalysisInterval = n
+		}
+	}
 	if v, ok := all["proxy.cooldown_seconds"]; ok {
 		if s, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && s > 0 {
 			cfg.Proxy.CooldownSeconds = s
@@ -432,6 +468,20 @@ func LoadFromDB(s *store.Store) (*Config, error) {
 	if cfg.Retry.UpstreamTimeout <= 0 {
 		cfg.Retry.UpstreamTimeout = 60
 	}
+	// developer 角色兼容默认开启：config 表里没有该 key（含旧库升级）时补默认 true；
+	// 显式存了 "false" 则上面解析区已覆盖为 false，这里不再动。
+	if _, ok := all["proxy.normalize_developer_role"]; !ok {
+		cfg.Proxy.NormalizeDeveloperRole = true
+	}
+	// reasoning_content 回传缓存默认开启：config 表里没有该 key（含旧库升级）时补默认 true
+	// （DeepSeek thinking 模式多轮 tool-calling 要求回传，默认开启兜底上游 400）。
+	if _, ok := all["proxy.cache_reasoning_content"]; !ok {
+		cfg.Proxy.CacheReasoningContent = true
+	}
+	// 客户端分析间隔默认 600 秒（10 分钟）；分析开关默认关闭（false）。
+	if cfg.Proxy.ClientAnalysisInterval <= 0 {
+		cfg.Proxy.ClientAnalysisInterval = 600
+	}
 
 	// 加载上游
 	upstreams, err := s.ListUpstreams()
@@ -465,8 +515,10 @@ func LoadFromDB(s *store.Store) (*Config, error) {
 	}
 	for _, r := range rules {
 		rule := Rule{
-			Model:    r.Model,
-			Strategy: r.Strategy,
+			Model:          r.Model,
+			Strategy:       r.Strategy,
+			Vision:         r.Vision == 1,
+			VisionFallback: r.VisionFallback,
 		}
 		if r.Upstreams != "" {
 			json.Unmarshal([]byte(r.Upstreams), &rule.Upstreams)
@@ -493,6 +545,7 @@ func LoadFromDB(s *store.Store) (*Config, error) {
 // ParseModelsString 解析模型列表字符串，兼容两种存储格式：
 //  1. JSON 数组：["model1","model2"]
 //  2. 逗号分隔：model1, model2
+//
 // 逗号分隔为主推格式（前端编辑框统一逗号风格）；兼容历史 JSON 数据。
 func ParseModelsString(s string) []string {
 	s = strings.TrimSpace(s)

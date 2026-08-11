@@ -70,6 +70,49 @@ func TestStreamCopy_InjectIncludeUsage(t *testing.T) {
 	}
 }
 
+// TestStreamCopy_ForcedIncludeUsage_WithClientStreamOptions 验证客户端已带 stream_options
+// （含 include_usage=false 或额外字段）时，网关仍强制注入 include_usage=true 并保留
+// 客户端原有 stream_options 字段，上游才能返回 usage chunk 用于计费。
+func TestStreamCopy_ForcedIncludeUsage_WithClientStreamOptions(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "client sends empty stream_options",
+			body: `{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"hi"}],"stream":true,"stream_options":{}}`,
+		},
+		{
+			name: "client sends include_usage=false",
+			body: `{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"hi"}],"stream":true,"stream_options":{"include_usage":false}}`,
+		},
+		{
+			name: "client sends extra stream_options fields",
+			body: `{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"hi"}],"stream":true,"stream_options":{"unknown_cost":"x"}}`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotBody string
+			upstream, h := newTestHandler(t, func(w http.ResponseWriter, r *http.Request) {
+				buf := make([]byte, r.ContentLength)
+				_, _ = r.Body.Read(buf)
+				gotBody = string(buf)
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.WriteHeader(http.StatusOK)
+				w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n"))
+			})
+			defer upstream.Close()
+
+			doChat(t, h, tc.body)
+
+			if !strings.Contains(gotBody, `"include_usage":true`) {
+				t.Errorf("upstream should receive include_usage=true, got: %s", gotBody)
+			}
+		})
+	}
+}
+
 // TestStreamCopy_NoUsageKeepsZero 验证上游不返回 usage chunk 时保持 0（不误报）。
 func TestStreamCopy_NoUsageKeepsZero(t *testing.T) {
 	h := &Handler{log: slog.New(slog.NewTextHandler(io.Discard, nil))}

@@ -34,8 +34,8 @@ type Handler struct {
 	health   *health.Checker
 	client   *http.Client
 	log      *slog.Logger
-	recorder *store.Recorder // 指标记录器；nil 时跳过记录
-	timeout  time.Duration   // 上游请求超时；默认 60s，可用 SetTimeout 覆盖
+	recorder *store.Recorder              // 指标记录器；nil 时跳过记录
+	timeout  time.Duration                // 上游请求超时；默认 60s，可用 SetTimeout 覆盖
 	keyName  func(r *http.Request) string // 下游 API Key 展示名（统计用）；nil 时记录空
 }
 
@@ -65,11 +65,11 @@ func New(rt *router.Router, hc *health.Checker) *Handler {
 		DialContext: (&net.Dialer{Timeout: upstreamTimeout}).DialContext,
 	}
 	return &Handler{
-		router: rt,
-		health: hc,
+		router:  rt,
+		health:  hc,
 		timeout: upstreamTimeout,
-		client: &http.Client{Transport: transport},
-		log:    slog.Default(),
+		client:  &http.Client{Transport: transport},
+		log:     slog.Default(),
 	}
 }
 
@@ -172,6 +172,8 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, claudeReq 
 			DurationMS: time.Since(start).Milliseconds(),
 			Tokens:     0,
 			APIKey:     h.recordAPIKey(r),
+			ClientAddr: r.RemoteAddr, // 客户端地址 "IP:port"，用于区分调用程序
+			UserAgent:  r.UserAgent(), // 客户端 UA，程序识别最强信号
 		})
 	}()
 	// 模型映射（model_mapping 只改 model 字段）

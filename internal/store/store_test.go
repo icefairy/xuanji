@@ -202,8 +202,8 @@ func TestSeedDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetAllConfig: %v", err)
 	}
-	if len(all) != 12 {
-		t.Errorf("defaults count = %d, want 12 (%v)", len(all), all)
+	if len(all) != 15 {
+		t.Errorf("defaults count = %d, want 15 (%v)", len(all), all)
 	}
 	if all["server.port"] != "8787" {
 		t.Errorf("server.port = %q, want 8787", all["server.port"])
@@ -232,6 +232,17 @@ func TestSeedDefaults(t *testing.T) {
 	}
 	if all["proxy.auto_best_effort"] != "false" {
 		t.Errorf("proxy.auto_best_effort = %q, want false", all["proxy.auto_best_effort"])
+	}
+	// reasoning_content 回传缓存（DeepSeek thinking 模式 tool-calling 兼容，默认开）
+	if all["proxy.cache_reasoning_content"] != "true" {
+		t.Errorf("proxy.cache_reasoning_content = %q, want true", all["proxy.cache_reasoning_content"])
+	}
+	// 客户端程序分析（默认关，间隔默认 600 秒/10 分钟）
+	if all["proxy.client_analysis"] != "false" {
+		t.Errorf("proxy.client_analysis = %q, want false", all["proxy.client_analysis"])
+	}
+	if all["proxy.client_analysis_interval"] != "600" {
+		t.Errorf("proxy.client_analysis_interval = %q, want 600", all["proxy.client_analysis_interval"])
 	}
 
 	// 已有数据时不覆盖
@@ -307,5 +318,113 @@ func TestDeleteUpstream_CleansRuleReferences(t *testing.T) {
 	// 删除不存在的上游不应报错（幂等）
 	if err := s.DeleteUpstream("no-such-upstream"); err != nil {
 		t.Errorf("DeleteUpstream(nonexistent) = %v, want nil", err)
+	}
+}
+
+// TestClientProfiles 验证 client_profiles 表的 upsert/列表与去重 addr 聚合。
+
+// columnNames 返回表的列名列表。
+func columnNames(t *testing.T, s *Store, table string) []string {
+	t.Helper()
+	rows, err := s.db.Query(`SELECT name FROM pragma_table_info(?)`, table)
+	if err != nil {
+		t.Fatalf("table_info(%s): %v", table, err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		out = append(out, name)
+	}
+	return out
+}
+
+// contains 判断切片是否含目标字符串。
+func contains(list []string, target string) bool {
+	for _, s := range list {
+		if s == target {
+			return true
+		}
+	}
+	return false
+}
+
+// TestOpen_OldDBAddsVisionColumns 老库（routing_rules 无 vision / vision_fallback 列）
+// 打开后应自动补列（幂等迁移），且 CRUD 正常读写新字段。
+func TestOpen_OldDBAddsVisionColumns(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "old.db")
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open raw: %v", err)
+	}
+	// 用旧版建表语句模拟老库（无 vision 列）
+	if _, err := raw.Exec(`CREATE TABLE routing_rules (
+		id         INTEGER PRIMARY KEY AUTOINCREMENT,
+		model      TEXT    NOT NULL UNIQUE,
+		strategy   TEXT    NOT NULL DEFAULT '',
+		upstreams  TEXT    NOT NULL DEFAULT '[]',
+		created_at TEXT    NOT NULL DEFAULT (datetime('now')),
+		updated_at TEXT    NOT NULL DEFAULT (datetime('now'))
+	);`); err != nil {
+		t.Fatalf("create old table: %v", err)
+	}
+	if _, err := raw.Exec(`INSERT INTO routing_rules (model, strategy, upstreams) VALUES ('old-model', 'primary_backup', '["up"]')`); err != nil {
+		t.Fatalf("insert old row: %v", err)
+	}
+	raw.Close()
+
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open old db: %v", err)
+	}
+	defer s.Close()
+
+	// 新列已自动补上
+	cols := columnNames(t, s, "routing_rules")
+	if !contains(cols, "vision") || !contains(cols, "vision_fallback") {
+		t.Fatalf("migration missing columns, got %v", cols)
+	}
+
+	// 旧数据读取正常，新字段为默认值
+	r, err := s.GetRoutingRule("old-model")
+	if err != nil {
+		t.Fatalf("GetRoutingRule(old-model): %v", err)
+	}
+	if r.Vision != 0 || r.VisionFallback != "" {
+		t.Errorf("old row defaults = vision:%d fallback:%q, want 0/''", r.Vision, r.VisionFallback)
+	}
+
+	// 新建含新字段的规则可写入读回
+	if err := s.CreateRoutingRule(&RoutingRuleRow{Model: "new-model", Strategy: "primary_backup", Upstreams: `["up"]`, Vision: 1, VisionFallback: "flash"}); err != nil {
+		t.Fatalf("CreateRoutingRule: %v", err)
+	}
+	r2, err := s.GetRoutingRule("new-model")
+	if err != nil {
+		t.Fatalf("GetRoutingRule(new-model): %v", err)
+	}
+	if r2.Vision != 1 || r2.VisionFallback != "flash" {
+		t.Errorf("new row = vision:%d fallback:%q, want 1/'flash'", r2.Vision, r2.VisionFallback)
+	}
+
+	// 更新也生效
+	if err := s.UpdateRoutingRule("new-model", &RoutingRuleRow{Model: "new-model", Strategy: "latency", Upstreams: `["up2"]`, Vision: 0, VisionFallback: ""}); err != nil {
+		t.Fatalf("UpdateRoutingRule: %v", err)
+	}
+	r3, _ := s.GetRoutingRule("new-model")
+	if r3.Vision != 0 || r3.VisionFallback != "" {
+		t.Errorf("updated row = vision:%d fallback:%q, want 0/''", r3.Vision, r3.VisionFallback)
+	}
+
+	// ListRoutingRules 也带出新字段
+	all, err := s.ListRoutingRules()
+	if err != nil {
+		t.Fatalf("ListRoutingRules: %v", err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("rules count = %d, want 2", len(all))
 	}
 }
