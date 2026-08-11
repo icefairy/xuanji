@@ -464,6 +464,8 @@ func buildServeMux(cfg *config.Config, rt *router.Router, hc *health.Checker, re
 	// OpenAI 兼容入口：按路由结果分发（ollama 上游走转换，其余走 proxy）
 	mux.HandleFunc("GET /v1/models", apiKeys.Middleware(admHandler.Models))
 	mux.HandleFunc("POST /v1/chat/completions", apiKeys.Middleware(dispatchOpenAI(rt, olHandler, pxHandler)))
+	// 老版 OpenAI 兼容接口（text 补全）：直接走 proxy 转换转发，ollama 上游兼容暂不考虑
+	mux.HandleFunc("POST /v1/completions", apiKeys.Middleware(pxHandler.Completions))
 	mux.HandleFunc("POST /v1/embeddings", apiKeys.Middleware(dispatchEmbeddings(rt, olHandler, pxHandler)))
 	mux.HandleFunc("POST /v1/rerank", apiKeys.Middleware(pxHandler.Rerank))
 	antHandler := anthropic.New(rt, hc)

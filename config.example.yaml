@@ -72,6 +72,12 @@ routing:
     - model: "gpt-5"
       upstreams: [opencode-go]
       strategy: quota
+    # 多模态兑底示例：deepseek-v4-flash 不支持图片，带图请求自动改写 model 为 flash 重新路由
+    # - model: "deepseek-v4-flash"
+    #   upstreams: [deepseek]
+    #   strategy: primary_backup
+    #   vision: false          # 是否支持多模态（默认 false）
+    #   vision_fallback: flash # 带图请求兑底转发的聚合模型名（空=不兑底），由 model_mapping 映射到上游真实名
 
 storage:
   sqlite_path: data/xuanji.db # SQLite 持久化文件；留空则不记录请求指标

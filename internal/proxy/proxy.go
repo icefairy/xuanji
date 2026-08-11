@@ -298,6 +298,23 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 多模态兑底：请求带图像且当前命中的规则不支持多模态（vision=0）且配置了
+	// 兑底聚合模型（vision_fallback 非空）时，把 model 改写为兑底模型重新路由转发。
+	// 兑底模型名是聚合模型名（如 "flash"），由对应上游的 model_mapping 映射到真实模型名。
+	// vision=0 且无兑底、或 vision=1 的规则行为与原来完全一致（不触发兑底）。
+	if isMultimodalRequest(body) {
+		if rule := h.router.FindRule(model); rule != nil && !rule.Vision && strings.TrimSpace(rule.VisionFallback) != "" {
+			oldModel := model
+			model = rule.VisionFallback
+			h.log.Info("vision fallback", "from", oldModel, "to", model, "reason", "multimodal request")
+			upstreams, strategy, err = h.router.Route(model)
+			if err != nil {
+				writeError(rec, http.StatusNotFound, fmt.Sprintf("no upstream found for vision fallback model %q", model), "invalid_request_error", "model_not_found")
+				return
+			}
+		}
+	}
+
 	candidates := h.selectCandidates(upstreams, strategy, model)
 	retryCount := 0
 	maxRetries := h.cfg.Retry.MaxRetries
@@ -895,6 +912,32 @@ func containsVideoURL(body []byte) bool {
 		}
 		for _, part := range content.Array() {
 			if part.Get("type").String() == "video_url" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// isMultimodalRequest 判断请求是否含图像（多模态）：messages[].content 为数组且
+// 含 type=image_url 或 type=image 的 part 即视为多模态。content 为纯字符串的
+// 消息不算多模态（仅文本）。100% 自动检测，无需配置。
+func isMultimodalRequest(body []byte) bool {
+	if !gjson.ValidBytes(body) {
+		return false
+	}
+	messages := gjson.GetBytes(body, "messages")
+	if !messages.IsArray() {
+		return false
+	}
+	for _, msg := range messages.Array() {
+		content := msg.Get("content")
+		if !content.IsArray() {
+			continue // 字符串或缺失：不算多模态
+		}
+		for _, part := range content.Array() {
+			t := part.Get("type").String()
+			if t == "image_url" || t == "image" {
 				return true
 			}
 		}

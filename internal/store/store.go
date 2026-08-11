@@ -66,8 +66,13 @@ type RoutingRuleRow struct {
 	Model     string `json:"model"`
 	Strategy  string `json:"strategy"`
 	Upstreams string `json:"upstreams"` // JSON 数组
-	CreatedAt string `json:"created_at"`
-	UpdatedAt string `json:"updated_at"`
+	// Vision 是否支持多模态（1=支持，0=不支持）。不支持的规则命中带图请求时，
+	// 若配置了 VisionFallback 则把 model 改写为兜底聚合模型名重新路由。
+	Vision int64 `json:"vision"`
+	// VisionFallback 多模态兜底转发的聚合模型名（如 "flash"），由 model_mapping 映射到上游真实名。
+	VisionFallback string `json:"vision_fallback"`
+	CreatedAt      string `json:"created_at"`
+	UpdatedAt      string `json:"updated_at"`
 }
 
 // ConfigRow 是 config 表的行映射（key-value 存储）。
@@ -272,12 +277,14 @@ func (s *Store) init() error {
 	);
 
 	CREATE TABLE IF NOT EXISTS routing_rules (
-		id         INTEGER PRIMARY KEY AUTOINCREMENT,
-		model      TEXT    NOT NULL UNIQUE,
-		strategy   TEXT    NOT NULL DEFAULT '',
-		upstreams  TEXT    NOT NULL DEFAULT '[]',
-		created_at TEXT    NOT NULL DEFAULT (datetime('now')),
-		updated_at TEXT    NOT NULL DEFAULT (datetime('now'))
+		id              INTEGER PRIMARY KEY AUTOINCREMENT,
+		model           TEXT    NOT NULL UNIQUE,
+		strategy        TEXT    NOT NULL DEFAULT '',
+		upstreams       TEXT    NOT NULL DEFAULT '[]',
+		vision          INTEGER NOT NULL DEFAULT 0,   -- 是否支持多模态（1=支持 0=不支持），默认纯文本模型
+		vision_fallback TEXT    NOT NULL DEFAULT '',  -- 多模态兜底聚合模型名（如 "flash"），空=不兜底
+		created_at      TEXT    NOT NULL DEFAULT (datetime('now')),
+		updated_at      TEXT    NOT NULL DEFAULT (datetime('now'))
 	);
 
 	CREATE TABLE IF NOT EXISTS config (
@@ -371,6 +378,9 @@ func (s *Store) init() error {
 	ensureColumn(s.db, "upstreams", "enabled", "enabled INTEGER NOT NULL DEFAULT 1")
 	// 迁移：upstreams 加 billing_exempt 列（不参与计费：统计模块费用记 0，路由不受影响）
 	ensureColumn(s.db, "upstreams", "billing_exempt", "billing_exempt INTEGER NOT NULL DEFAULT 0")
+	// 迁移：routing_rules 加 vision / vision_fallback 列（多模态兜底，老库自动补列）
+	ensureColumn(s.db, "routing_rules", "vision", "vision INTEGER NOT NULL DEFAULT 0")
+	ensureColumn(s.db, "routing_rules", "vision_fallback", "vision_fallback TEXT NOT NULL DEFAULT ''")
 	return nil
 }
 
@@ -974,7 +984,7 @@ func mustJSON(v []string) string {
 
 // ListRoutingRules 返回所有路由规则。
 func (s *Store) ListRoutingRules() ([]RoutingRuleRow, error) {
-	rows, err := s.db.Query(`SELECT id, model, strategy, upstreams, created_at, updated_at FROM routing_rules ORDER BY id`)
+	rows, err := s.db.Query(`SELECT id, model, strategy, upstreams, vision, vision_fallback, created_at, updated_at FROM routing_rules ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -983,7 +993,7 @@ func (s *Store) ListRoutingRules() ([]RoutingRuleRow, error) {
 	var out []RoutingRuleRow
 	for rows.Next() {
 		var r RoutingRuleRow
-		if err := rows.Scan(&r.ID, &r.Model, &r.Strategy, &r.Upstreams, &r.CreatedAt, &r.UpdatedAt); err != nil {
+		if err := rows.Scan(&r.ID, &r.Model, &r.Strategy, &r.Upstreams, &r.Vision, &r.VisionFallback, &r.CreatedAt, &r.UpdatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, r)
@@ -994,8 +1004,8 @@ func (s *Store) ListRoutingRules() ([]RoutingRuleRow, error) {
 // GetRoutingRule 按 model 查询。
 func (s *Store) GetRoutingRule(model string) (*RoutingRuleRow, error) {
 	var r RoutingRuleRow
-	err := s.db.QueryRow(`SELECT id, model, strategy, upstreams, created_at, updated_at FROM routing_rules WHERE model = ?`, model).
-		Scan(&r.ID, &r.Model, &r.Strategy, &r.Upstreams, &r.CreatedAt, &r.UpdatedAt)
+	err := s.db.QueryRow(`SELECT id, model, strategy, upstreams, vision, vision_fallback, created_at, updated_at FROM routing_rules WHERE model = ?`, model).
+		Scan(&r.ID, &r.Model, &r.Strategy, &r.Upstreams, &r.Vision, &r.VisionFallback, &r.CreatedAt, &r.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -1005,8 +1015,8 @@ func (s *Store) GetRoutingRule(model string) (*RoutingRuleRow, error) {
 // CreateRoutingRule 创建路由规则。
 func (s *Store) CreateRoutingRule(r *RoutingRuleRow) error {
 	_, err := s.db.Exec(
-		`INSERT INTO routing_rules (model, strategy, upstreams) VALUES (?, ?, ?)`,
-		r.Model, r.Strategy, r.Upstreams,
+		`INSERT INTO routing_rules (model, strategy, upstreams, vision, vision_fallback) VALUES (?, ?, ?, ?, ?)`,
+		r.Model, r.Strategy, r.Upstreams, r.Vision, r.VisionFallback,
 	)
 	return err
 }
@@ -1014,8 +1024,8 @@ func (s *Store) CreateRoutingRule(r *RoutingRuleRow) error {
 // UpdateRoutingRule 更新路由规则（按 model 匹配）。
 func (s *Store) UpdateRoutingRule(model string, r *RoutingRuleRow) error {
 	_, err := s.db.Exec(
-		`UPDATE routing_rules SET model=?, strategy=?, upstreams=?, updated_at=datetime('now') WHERE model=?`,
-		r.Model, r.Strategy, r.Upstreams, model,
+		`UPDATE routing_rules SET model=?, strategy=?, upstreams=?, vision=?, vision_fallback=?, updated_at=datetime('now') WHERE model=?`,
+		r.Model, r.Strategy, r.Upstreams, r.Vision, r.VisionFallback, model,
 	)
 	return err
 }
