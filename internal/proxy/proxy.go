@@ -48,12 +48,14 @@ type Handler struct {
 	health    *health.Checker
 	client    *http.Client
 	log       *slog.Logger
-	recorder  *store.Recorder // 指标记录器；nil 时跳过记录
-	fastFail  *FastFailCache  // 快速失败缓存；nil 时不启用
-	tokenizer *Tokenizer      // token 计数器；nil 时跳过估算回退
-	discounts []store.Discount // 渠道优惠时段，用于同 tier 同 weight 内折扣优先排序
-	keyName   func(r *http.Request) string // 下游 API Key 展示名（统计用）；nil 时记录空
-	cooldowns sync.Map       // 上游冷却表：map[string]time.Time, key="upstream:model"，value=冷却到期时间
+	recorder  *store.Recorder                                         // 指标记录器；nil 时跳过记录
+	fastFail  *FastFailCache                                          // 快速失败缓存；nil 时不启用
+	tokenizer *Tokenizer                                              // token 计数器；nil 时跳过估算回退
+	discounts []store.Discount                                        // 渠道优惠时段，用于同 tier 同 weight 内折扣优先排序
+	keyName   func(r *http.Request) string                            // 下游 API Key 展示名（统计用）；nil 时记录空
+	priceFor  func(model string) (input, cache, out float64, ok bool) // 模型单价查询；nil 时不计费
+	cooldowns sync.Map                                                // 上游冷却表：map[string]time.Time, key="upstream:model"，value=冷却到期时间
+	reasoning *ReasoningCache                                         // reasoning_content 缓存（key=tool_call_id，thinking 模式回传用）；nil 时不启用
 }
 
 // New 创建转发 Handler，共享一个 60s 连接超时的 HTTP 客户端。
@@ -69,6 +71,7 @@ func New(cfg *config.Config, rt *router.Router, hc *health.Checker) *Handler {
 		client:    &http.Client{Transport: transport},
 		log:       slog.Default(),
 		tokenizer: NewTokenizer(),
+		reasoning: NewReasoningCache(0),
 	}
 }
 
@@ -97,6 +100,54 @@ func (h *Handler) SetTokenizer(tz *Tokenizer) {
 
 // SetFastFail 设置快速失败缓存（nil 时不启用）。
 func (h *Handler) SetFastFail(f *FastFailCache) { h.fastFail = f }
+
+// SetPriceFor 注入模型单价查询函数（nil 时不计费）。
+// 参数为上游真实模型名（计费口径：按上游真实模型名定价）。
+func (h *Handler) SetPriceFor(fn func(model string) (input, cache, out float64, ok bool)) {
+	h.priceFor = fn
+}
+
+// cacheReasoningEnabled 判断 reasoning_content 缓存功能是否启用：
+// 开关 proxy.cache_reasoning_content 默认开启（cfg 为 nil 或未配置时按开启处理），
+// 且缓存对象已初始化。关闭时缓存不写、注入不执行，body 原样透传。
+func (h *Handler) cacheReasoningEnabled() bool {
+	if h.reasoning == nil {
+		return false
+	}
+	return h.cfg == nil || h.cfg.Proxy.CacheReasoningContent
+}
+
+// calcCost 按上游真实模型名 + usage 计算本次请求费用（元）。
+// 计费口径：
+//   - 输入 token 分缓存命中/未命中两档价
+//   - 缓存命中只影响输入（prompt_cache_hit_tokens）
+//   - 输出单独一档价
+//
+// 未配置价格表（或模型无默认价）时返回 0。
+func (h *Handler) calcCost(upstreamModel, clientModel string, promptTokens, completionTokens, cacheHit, cacheMiss int64) float64 {
+	if h.priceFor == nil {
+		return 0
+	}
+	// 优先按上游真实模型名查价，其次按客户端模型名，最后默认价（store.PriceFor 内部兜底 '*'）
+	input, cache, out, ok := h.priceFor(upstreamModel)
+	if !ok {
+		input, cache, out, ok = h.priceFor(clientModel)
+	}
+	if !ok || (input <= 0 && cache <= 0 && out <= 0) {
+		return 0
+	}
+	// 无缓存统计（hit=miss=0 且输入>0）时，输入按未命中价全额计费：
+	// 上游没报缓存命中，保守按全价（未命中价）算，避免输入 token 白嫖。
+	if cacheHit <= 0 && cacheMiss <= 0 && promptTokens > 0 {
+		cacheMiss = promptTokens
+	}
+	// token 单价：元/百万token → 每 token 价格
+	const perMillion = 1e6
+	cost := float64(cacheMiss)/perMillion*input +
+		float64(cacheHit)/perMillion*cache +
+		float64(completionTokens)/perMillion*out
+	return cost
+}
 
 // SetDiscounts 注入渠道优惠时段列表（用于同 tier 同 weight 内折扣优先排序）。
 func (h *Handler) SetDiscounts(d []store.Discount) { h.discounts = d }
@@ -164,9 +215,10 @@ outer:
 // **连思考都没有**（choices[0] 存在、content 空、无 tool_calls、无 reasoning/reasoning_content、finish_reason=length）。
 // 返回 true 表示该响应不可用应切换候选；tool_calls / 正常内容 / 空 choices 不误伤。
 // ⚠ 思考字段有值 = 模型正常在思考，只是 max_tokens 短未输出正文，这是正常响应（客户端能看到思考内容），
-//   不判空、不切换候选。思考字段名因推理引擎而异，必须同时检查两种：
-//   - `reasoning_content`：DeepSeek R1/V4、Kimi、GLM、MiniMax、vLLM(Qwen3 Thinking) 等主流 OpenAI 兼容格式
-//   - `reasoning`：商汤日日新等部分厂商（2026-08 实测确认）
+//
+//	不判空、不切换候选。思考字段名因推理引擎而异，必须同时检查两种：
+//	- `reasoning_content`：DeepSeek R1/V4、Kimi、GLM、MiniMax、vLLM(Qwen3 Thinking) 等主流 OpenAI 兼容格式
+//	- `reasoning`：商汤日日新等部分厂商（2026-08 实测确认）
 func IsEmptyCompletion(data []byte) bool {
 	choices := gjson.GetBytes(data, "choices")
 	if !choices.Exists() || !choices.IsArray() || len(choices.Array()) == 0 {
@@ -244,6 +296,23 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(rec, http.StatusNotFound, fmt.Sprintf("no upstream found for model %q", model), "invalid_request_error", "model_not_found")
 		return
+	}
+
+	// 多模态兑底：请求带图像且当前命中的规则不支持多模态（vision=0）且配置了
+	// 兑底聚合模型（vision_fallback 非空）时，把 model 改写为兑底模型重新路由转发。
+	// 兑底模型名是聚合模型名（如 "flash"），由对应上游的 model_mapping 映射到真实模型名。
+	// vision=0 且无兑底、或 vision=1 的规则行为与原来完全一致（不触发兑底）。
+	if isMultimodalRequest(body) {
+		if rule := h.router.FindRule(model); rule != nil && !rule.Vision && strings.TrimSpace(rule.VisionFallback) != "" {
+			oldModel := model
+			model = rule.VisionFallback
+			h.log.Info("vision fallback", "from", oldModel, "to", model, "reason", "multimodal request")
+			upstreams, strategy, err = h.router.Route(model)
+			if err != nil {
+				writeError(rec, http.StatusNotFound, fmt.Sprintf("no upstream found for vision fallback model %q", model), "invalid_request_error", "model_not_found")
+				return
+			}
+		}
 	}
 
 	candidates := h.selectCandidates(upstreams, strategy, model)
@@ -505,8 +574,8 @@ func (h *Handler) selectCandidates(ups []*config.Upstream, strategy, model strin
 	if h.health != nil {
 		healthy := h.health.HealthyUpstreams(ups)
 		if len(healthy) == 0 {
-			// 兜底：全都不健康时也不能乱选——按 tier 升序（free→subscription→payg），
-			// 让收费渠道永远排最后。直接 ups[:1] 会返回规则顺序第一个（往往是 payg）。
+			// 兜底：全都不健康时也不能乱选——按 tier 升序（subscription→free→payg），
+			// 让按量付费渠道永远排最后。直接 ups[:1] 会返回规则顺序第一个（往往是 payg）。
 			sorted := make([]*config.Upstream, len(ups))
 			copy(sorted, ups)
 			sort.SliceStable(sorted, func(i, j int) bool {
@@ -519,7 +588,7 @@ func (h *Handler) selectCandidates(ups []*config.Upstream, strategy, model strin
 		ups = healthy
 	}
 
-	// 按 tier 分组：free(0) < subscription(1) < payg(2)
+	// 按 tier 分组：subscription(0) < free(1) < payg(2)
 	grouped := make(map[int][]*config.Upstream)
 	var tiers []int
 	for _, u := range ups {
@@ -601,6 +670,10 @@ func (h *Handler) latencyRank(name string) int64 {
 func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byte, up *config.Upstream, model string, stream bool, last bool) (handled, retryable bool, err error, promptTokens, completionTokens, promptCacheHitTokens, promptCacheMissTokens int64) {
 	start := time.Now()
 	var status int
+	// 流式转发期间客户端提前断开（streamCopy 写响应失败）：日志状态记为 499，
+	// 避免"中断"被误记为 200 污染统计（客户端实际收到 200 头后断流）。
+	var streamInterrupted bool
+	upstreamModel := h.pickAvailableModel(up, model)
 	defer func() {
 		if h.recorder == nil || !handled {
 			return
@@ -608,23 +681,33 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 		if sr, ok := w.(*statusRecorder); ok {
 			status = sr.status
 		}
+		if streamInterrupted && status >= 200 && status < 400 {
+			status = 499
+		}
+		cost := 0.0
+		if status >= 200 && status < 400 && (promptTokens > 0 || completionTokens > 0) {
+			cost = h.calcCost(upstreamModel, model, promptTokens, completionTokens, promptCacheHitTokens, promptCacheMissTokens)
+		}
 		h.recorder.Record(store.Record{
-			Timestamp:        time.Now(),
-			Upstream:         up.Name,
-			Model:            model,
-			Endpoint:         "chat",
-			Status:           status,
-			DurationMS:       time.Since(start).Milliseconds(),
-			PromptTokens:     promptTokens,
-			CompletionTokens: completionTokens,
-			Tokens:           promptTokens + completionTokens,
-			APIKey:           h.recordAPIKey(r),
+			Timestamp:             time.Now(),
+			Upstream:              up.Name,
+			Model:                 model,
+			UpstreamModel:         upstreamModel,
+			Cost:                  cost,
+			Endpoint:              "chat",
+			Status:                status,
+			DurationMS:            time.Since(start).Milliseconds(),
+			PromptTokens:          promptTokens,
+			CompletionTokens:      completionTokens,
+			Tokens:                promptTokens + completionTokens,
+			APIKey:                h.recordAPIKey(r),
+			ClientAddr:            r.RemoteAddr, // 客户端地址 "IP:port"，用于区分调用程序
+			UserAgent:             r.UserAgent(), // 客户端 UA，程序识别最强信号
 			PromptCacheHitTokens:  promptCacheHitTokens,
 			PromptCacheMissTokens: promptCacheMissTokens,
 		})
 	}()
 	reqBody := body
-	upstreamModel := h.pickAvailableModel(up, model)
 	if upstreamModel == "" {
 		// 所有真实模型都在 fastfail 冷却期（selectCandidates 全被过滤时的 fallback 场景）。
 		// 退化为 MapModel 随机选一个真实模型名继续尝试：连接失败 → connIssues 清黑名单，
@@ -640,11 +723,27 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 	// 思考深度归一化：客户端标准 reasoning_effort → 目标模型实际思考参数
 	// （DeepSeek 透传/适配档位、商汤转 output_config.effort、Kimi/GLM 转 thinking.type 等）
 	// 先按最佳思考等级配置注入/覆盖（auto=补推荐值，force=强制覆盖），再归一化。
+	// developer 角色兼容：部分上游不认 OpenAI 新角色 developer（只认 system/user/assistant/tool），
+	// 会返回 400。默认开启，把 role=developer 归一化为 role=system；关闭时原样透传。
+	if h.cfg.Proxy.NormalizeDeveloperRole {
+		if nb, changed := normalizeDeveloperRole(reqBody); changed {
+			reqBody = nb
+		}
+	}
 	if nb, changed := applyBestEffort(reqBody, model, h.cfg); changed {
 		reqBody = nb
 	}
 	if nb, changed := normalizeThinkingEffort(reqBody, upstreamModel); changed {
 		reqBody = nb
+	}
+	// thinking 模式 reasoning_content 回传兼容：客户端 agent（pi / Claude Code 等）
+	// 消息规范化时可能丢掉历史 assistant 消息的 reasoning_content，DeepSeek thinking
+	// 模式多轮 tool-calling 要求原样回传否则上游 400。用上一轮响应缓存的
+	// tool_call_id → reasoning_content 补回。尽力而为：命中才注入，未命中原样转发。
+	if h.cacheReasoningEnabled() {
+		if nb, changed := injectReasoningContent(reqBody, h.reasoning); changed {
+			reqBody = nb
+		}
 	}
 	// 视频透传开关：默认关闭。关闭时请求含 video_url 直接 400——视频流量大，
 	// 且多数模型不支持视频，需在系统设置显式开启才放行。
@@ -654,9 +753,10 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 			"invalid_request_error", "")
 		return true, false, nil, 0, 0, 0, 0
 	}
-	// 流式请求注入 include_usage，让上游返回 usage chunk（用于 token 统计）
-	if stream && !gjson.GetBytes(reqBody, "stream_options").Exists() {
-		if nb, serr := sjson.SetBytes(reqBody, "stream_options", map[string]bool{"include_usage": true}); serr == nil {
+	// 流式请求强制注入 include_usage（无论客户端是否自带 stream_options），
+	// 让上游返回 usage chunk 用于 token 统计与计费。
+	if stream {
+		if nb, serr := sjson.SetBytes(reqBody, "stream_options.include_usage", true); serr == nil {
 			reqBody = nb
 		}
 	}
@@ -675,7 +775,7 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 			return true, false, nil, 0, 0, 0, 0
 		}
 		if h.fastFail != nil {
-			h.fastFail.MarkFailed(up.Name, upstreamModel)
+			h.fastFail.MarkFailedWithReason(up.Name, upstreamModel, "build request: "+err.Error())
 		}
 		return false, true, fmt.Errorf("build upstream request: %w", err), 0, 0, 0, 0
 	}
@@ -691,7 +791,7 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 		// 客户端断连（context.Canceled）不算上游故障，不标记 fastfail——
 		// 否则一次断连会把所有候选全拉黑 60 分钟（2026-08-02 实测：6 个上游全被误拉黑）
 		if !errors.Is(err, context.Canceled) && h.fastFail != nil {
-			h.fastFail.MarkFailed(up.Name, upstreamModel)
+			h.fastFail.MarkFailedWithReason(up.Name, upstreamModel, "request failed: "+err.Error())
 		}
 		return false, true, fmt.Errorf("upstream request failed: %w", err), 0, 0, 0, 0
 	}
@@ -705,7 +805,7 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 		if h.fastFail != nil {
 			h.fastFail.MarkSuccess(up.Name, upstreamModel)
 		}
-		h.streamCopy(w, resp, &promptTokens, &completionTokens, &promptCacheHitTokens, &promptCacheMissTokens)
+		streamInterrupted = h.streamCopy(w, resp, &promptTokens, &completionTokens, &promptCacheHitTokens, &promptCacheMissTokens)
 		return true, false, nil, promptTokens, completionTokens, promptCacheHitTokens, promptCacheMissTokens
 	case resp.StatusCode >= 400:
 		// 读响应体用于关键词匹配
@@ -728,10 +828,30 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 				}
 			}
 		}
+		// 详细错误日志：记录上游名、状态码、请求体、上游错误体（均在 shouldRetry 判断后打，可重试+不可重试都覆盖）
+		{
+			respBodyStr := string(respBody)
+			reqBodyStr := string(reqBody)
+			const maxLen = 800
+			if len(respBodyStr) > maxLen {
+				respBodyStr = respBodyStr[:maxLen] + "...(truncated)"
+			}
+			if len(reqBodyStr) > maxLen {
+				reqBodyStr = reqBodyStr[:maxLen] + "...(truncated)"
+			}
+			h.log.Warn("upstream 4xx/5xx detail",
+				"upstream", up.Name,
+				"model", model,
+				"upstream_model", upstreamModel,
+				"status", resp.StatusCode,
+				"request_body", reqBodyStr,
+				"upstream_body", respBodyStr)
+		}
 		if shouldRetry {
-			// 返回可重试
+			// 返回可重试；带原因标记 fastfail：status + 响应体摘要（截断 500 字符防刷屏）
 			if h.fastFail != nil {
-				h.fastFail.MarkFailed(up.Name, upstreamModel)
+				h.fastFail.MarkFailedWithReason(up.Name, upstreamModel,
+					fmt.Sprintf("status=%d body=%s", resp.StatusCode, truncateLogStr(string(respBody), 500)))
 			}
 			return false, true, fmt.Errorf("upstream error: %s", resp.Status), 0, 0, 0, 0
 		}
@@ -752,7 +872,7 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 		// HTTP 200 但响应无效，非最后候选时切换下一个
 		if IsEmptyCompletion(respBody) {
 			if h.fastFail != nil {
-				h.fastFail.MarkFailed(up.Name, upstreamModel)
+				h.fastFail.MarkFailedWithReason(up.Name, upstreamModel, "empty completion")
 			}
 			return false, true, fmt.Errorf("empty completion (thinking truncated?)"), 0, 0, 0, 0
 		}
@@ -761,6 +881,10 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 			promptTokens = int64(h.tokenizer.CountMessages(model, extractMessages(body)))
 			completion := gjson.GetBytes(respBody, "choices.0.message.content").String()
 			completionTokens = int64(h.tokenizer.Count(model, completion))
+		}
+		// 缓存 thinking 模式 tool_call 的 reasoning_content（供下一轮请求回传）
+		if h.cacheReasoningEnabled() {
+			cacheReasoningFromMessage(respBody, h.reasoning)
 		}
 		copyHeader(w.Header(), resp.Header)
 		w.WriteHeader(resp.StatusCode)
@@ -788,6 +912,32 @@ func containsVideoURL(body []byte) bool {
 		}
 		for _, part := range content.Array() {
 			if part.Get("type").String() == "video_url" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// isMultimodalRequest 判断请求是否含图像（多模态）：messages[].content 为数组且
+// 含 type=image_url 或 type=image 的 part 即视为多模态。content 为纯字符串的
+// 消息不算多模态（仅文本）。100% 自动检测，无需配置。
+func isMultimodalRequest(body []byte) bool {
+	if !gjson.ValidBytes(body) {
+		return false
+	}
+	messages := gjson.GetBytes(body, "messages")
+	if !messages.IsArray() {
+		return false
+	}
+	for _, msg := range messages.Array() {
+		content := msg.Get("content")
+		if !content.IsArray() {
+			continue // 字符串或缺失：不算多模态
+		}
+		for _, part := range content.Array() {
+			t := part.Get("type").String()
+			if t == "image_url" || t == "image" {
 				return true
 			}
 		}
@@ -865,17 +1015,24 @@ func extractMessages(body []byte) []map[string]string {
 // streamCopy 将上游 SSE 响应边收边发地透传给客户端，同时解析 usage chunk 收集 token 统计
 // 与前缀缓存命中/未命中 token 数（DeepSeek 等上游在 usage 里带 prompt_cache_hit/miss_tokens）。
 // 处理 "usage":null 的中间 chunk（Exists() 对 null 也返回 true，需 IsObject() 过滤）。
-func (h *Handler) streamCopy(w http.ResponseWriter, resp *http.Response, promptTokens, completionTokens, promptCacheHit, promptCacheMiss *int64) {
+// 返回 interrupted：客户端在流结束前断开（写响应失败），调用方应把日志状态记为 499
+//（Nginx 语义 client closed request），避免把"中断"误记为 200 污染统计。
+func (h *Handler) streamCopy(w http.ResponseWriter, resp *http.Response, promptTokens, completionTokens, promptCacheHit, promptCacheMiss *int64) (interrupted bool) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.WriteHeader(resp.StatusCode)
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+	// thinking 模式 reasoning_content 缓存：累积 delta 分片，关联 tool_call_id；
+	// 流结束（[DONE] 或 EOF）时写入最终完整内容（tool_calls 之后可能还有 reasoning 分片）
+	cacheEnabled := h.cacheReasoningEnabled()
+	var reasoningBuf strings.Builder
+	var toolCallIDs []string
 	for scanner.Scan() {
 		line := scanner.Text()
 		if _, werr := w.Write([]byte(line + "\n")); werr != nil {
-			return
+			return true
 		}
 		if f, ok := w.(http.Flusher); ok {
 			f.Flush()
@@ -883,7 +1040,14 @@ func (h *Handler) streamCopy(w http.ResponseWriter, resp *http.Response, promptT
 		if strings.HasPrefix(line, "data: ") {
 			data := strings.TrimPrefix(line, "data: ")
 			if data == "[DONE]" {
+				// 流正常结束：补写最终累积的 reasoning（覆盖 tool_calls 之后的增量分片）
+				if cacheEnabled && reasoningBuf.Len() > 0 && len(toolCallIDs) > 0 {
+					h.reasoning.PutAll(toolCallIDs, reasoningBuf.String())
+				}
 				continue
+			}
+			if cacheEnabled {
+				cacheReasoningDelta(data, &reasoningBuf, &toolCallIDs, h.reasoning)
 			}
 			usage := gjson.Get(data, "usage")
 			// 只有真实 usage 对象才提取；null 中间 chunk 跳过
@@ -909,6 +1073,11 @@ func (h *Handler) streamCopy(w http.ResponseWriter, resp *http.Response, promptT
 			}
 		}
 	}
+	// 流可能没有 [DONE]（客户端中断/上游异常关闭）：EOF 时同样补写最终累积的 reasoning
+	if cacheEnabled && reasoningBuf.Len() > 0 && len(toolCallIDs) > 0 {
+		h.reasoning.PutAll(toolCallIDs, reasoningBuf.String())
+	}
+	return false
 }
 
 // writeUpstreamError 把上游的 4xx/5xx 响应映射为 OpenAI 标准错误格式。
@@ -942,6 +1111,15 @@ func writeError(w http.ResponseWriter, status int, message, typ, code string) {
 		Type:    typ,
 		Code:    code,
 	}})
+}
+
+// truncateLogStr 截断字符串到 max 字节，超出时末尾加省略号标记。
+// 用于日志字段（响应体摘要、错误信息等），防止超长内容刷屏。
+func truncateLogStr(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "...(truncated)"
 }
 
 // hopByHopHeaders 是 HTTP/1.1 逐跳头，转发时不得复制。
@@ -1097,6 +1275,8 @@ func (h *Handler) forwardRerank(w http.ResponseWriter, r *http.Request, body []b
 			CompletionTokens: completionTokens,
 			Tokens:           promptTokens + completionTokens,
 			APIKey:           h.recordAPIKey(r),
+			ClientAddr:       r.RemoteAddr, // 客户端地址 "IP:port"，用于区分调用程序
+			UserAgent:        r.UserAgent(), // 客户端 UA，程序识别最强信号
 		})
 	}()
 
@@ -1127,7 +1307,7 @@ func (h *Handler) forwardRerank(w http.ResponseWriter, r *http.Request, body []b
 	if err != nil {
 		// 客户端断连（context.Canceled）不算上游故障，不标记 fastfail
 		if !errors.Is(err, context.Canceled) && h.fastFail != nil {
-			h.fastFail.MarkFailed(up.Name, upstreamModel)
+			h.fastFail.MarkFailedWithReason(up.Name, upstreamModel, "request failed: "+err.Error())
 		}
 		return false, true, fmt.Errorf("rerank upstream request failed: %w", err)
 	}
@@ -1143,7 +1323,7 @@ func (h *Handler) forwardRerank(w http.ResponseWriter, r *http.Request, body []b
 		}
 		if shouldRetry {
 			if h.fastFail != nil {
-				h.fastFail.MarkFailed(up.Name, upstreamModel)
+				h.fastFail.MarkFailedWithReason(up.Name, upstreamModel, fmt.Sprintf("status=%d", resp.StatusCode))
 			}
 			return false, true, fmt.Errorf("rerank upstream error: %s", resp.Status)
 		}
@@ -1262,6 +1442,8 @@ func (h *Handler) forwardEmbedding(w http.ResponseWriter, r *http.Request, body 
 			CompletionTokens: completionTokens,
 			Tokens:           promptTokens + completionTokens,
 			APIKey:           h.recordAPIKey(r),
+			ClientAddr:       r.RemoteAddr, // 客户端地址 "IP:port"，用于区分调用程序
+			UserAgent:        r.UserAgent(), // 客户端 UA，程序识别最强信号
 		})
 	}()
 
@@ -1292,7 +1474,7 @@ func (h *Handler) forwardEmbedding(w http.ResponseWriter, r *http.Request, body 
 	if err != nil {
 		// 客户端断连（context.Canceled）不算上游故障，不标记 fastfail
 		if !errors.Is(err, context.Canceled) && h.fastFail != nil {
-			h.fastFail.MarkFailed(up.Name, upstreamModel)
+			h.fastFail.MarkFailedWithReason(up.Name, upstreamModel, "request failed: "+err.Error())
 		}
 		return false, true, fmt.Errorf("embedding upstream request failed: %w", err)
 	}
@@ -1308,7 +1490,7 @@ func (h *Handler) forwardEmbedding(w http.ResponseWriter, r *http.Request, body 
 		}
 		if shouldRetry {
 			if h.fastFail != nil {
-				h.fastFail.MarkFailed(up.Name, upstreamModel)
+				h.fastFail.MarkFailedWithReason(up.Name, upstreamModel, fmt.Sprintf("status=%d", resp.StatusCode))
 			}
 			return false, true, fmt.Errorf("embedding upstream error: %s", resp.Status)
 		}

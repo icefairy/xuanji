@@ -33,27 +33,45 @@ func New(cfg *config.Config) *Router {
 // 规则引用的上游名无效时跳过；整条规则的命中上游全部无效则继续匹配下一条规则。
 // 排序由调用方按 strategy 执行（见 proxy.SelectCandidates），本函数只负责过滤。
 func (r *Router) Route(model string) ([]*config.Upstream, string, error) {
+	rule := r.FindRule(model)
+	if rule == nil {
+		return nil, "", ErrNoRoute
+	}
+	var ups []*config.Upstream
+	for _, name := range rule.Upstreams {
+		if u, ok := r.upstreams[name]; ok {
+			ups = append(ups, u)
+		}
+	}
+	strategy := rule.Strategy
+	if strategy == "" {
+		strategy = r.cfg.Routing.DefaultStrategy
+	}
+	return ups, strategy, nil
+}
+
+// FindRule 返回第一条匹配 model 且至少含一个有效上游的路由规则（与 Route 的匹配
+// 口径完全一致），供调用方读取规则的扩展字段（vision / vision_fallback）。
+// 无匹配返回 nil。
+func (r *Router) FindRule(model string) *config.Rule {
 	for i := range r.cfg.Routing.Rules {
 		rule := &r.cfg.Routing.Rules[i]
 		if !matchModel(rule.Model, model) {
 			continue
 		}
-		var ups []*config.Upstream
+		valid := false
 		for _, name := range rule.Upstreams {
-			if u, ok := r.upstreams[name]; ok {
-				ups = append(ups, u)
+			if _, ok := r.upstreams[name]; ok {
+				valid = true
+				break
 			}
 		}
-		if len(ups) == 0 {
+		if !valid {
 			continue
 		}
-		strategy := rule.Strategy
-		if strategy == "" {
-			strategy = r.cfg.Routing.DefaultStrategy
-		}
-		return ups, strategy, nil
+		return rule
 	}
-	return nil, "", ErrNoRoute
+	return nil
 }
 
 // MapModel 对 model 应用 upstream 的 model_mapping，返回上游真实模型名；
