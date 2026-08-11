@@ -6,7 +6,9 @@
 package health
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -246,6 +248,13 @@ func (c *Checker) logProbeFailure(st *upstreamState, out probeOutcome) {
 //   - 连接错误：reason=连接错误信息
 //   - 非 2xx：status=状态码，reason="non-2xx response"，respBody=响应体摘要（截断）
 //
+// 回退探测（2026-09 新增）：GET 探测返回 405/404 时不立即判失败，改为尝试
+// POST {base_url}/embeddings 最小探测（见 embeddingsProbe），POST 2xx 视为健康。
+// 背景：Cloudflare Workers AI 的 OpenAI 兼容端点（…/ai/v1）不支持 GET，
+// GET .../ai/v1/models 返回 405 {"code":7001,...}，仅 POST .../ai/v1/embeddings 可用
+// （实测 200 + 正常向量）；无回退时 cfcdn 等上游健康检查永远失败 → 被判 dead → 路由跳过。
+// 其余非 2xx（401/403/500 等）不触发回退，连接错误/超时也不触发，避免掩盖真正的鉴权/服务错误。
+//
 // ⚠ base_url 不带 /v1 时探测路径必须拼 /v1/models：部分上游（商汤日日新、基元律动）
 // 只认 /v1/ 前缀，打 {base_url}/models 会 404 导致误判 dead（与 chatPath 同源坑，2026-08 修复）。
 func (c *Checker) ping(ctx context.Context, st *upstreamState) probeOutcome {
@@ -277,6 +286,13 @@ func (c *Checker) ping(ctx context.Context, st *upstreamState) probeOutcome {
 	// 读取响应体：2xx 时消费以复用连接；非 2xx 时截断摘要供排障日志
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		// 仅 405/404 触发 POST /embeddings 回退（部分上游不支持 GET /models 但支持 POST embeddings）；
+		// 其余非 2xx（401/403/500 等）直接判失败，避免掩盖真正的鉴权/服务错误。
+		if resp.StatusCode == http.StatusMethodNotAllowed || resp.StatusCode == http.StatusNotFound {
+			if out, ok := c.embeddingsProbe(ctx, st); ok {
+				return out
+			}
+		}
 		return probeOutcome{
 			latency:  latency,
 			status:   resp.StatusCode,
@@ -285,6 +301,66 @@ func (c *Checker) ping(ctx context.Context, st *upstreamState) probeOutcome {
 		}
 	}
 	return probeOutcome{ok: true, latency: latency}
+}
+
+// embeddingsProbe 是 405/404 回退探测：POST {base_url}/embeddings 最小探测。
+// 请求体 {"model": <上游真实模型名>, "input": "ping"}，Content-Type: application/json，
+// Authorization 与 GET 探测同一 key，超时复用 st.timeout。
+// 返回 (结果, ok)：POST 2xx → ok=true（视为健康，latency 为 POST 往返延迟）；
+// 否则 ok=false（调用方保持原 GET 探测的失败判定）。
+//
+// 上游真实模型名取 st.up.ModelMapping 的第一个 value（map 无序，配置通常仅一个映射），
+// ModelMapping 为空时取 st.up.Models 的第一个元素；都为空则跳过回退（保持原失败判定）。
+// 连接错误/超时也跳过回退（GET 已连上、POST 不应再失败，失败则按原判定处理）。
+func (c *Checker) embeddingsProbe(ctx context.Context, st *upstreamState) (probeOutcome, bool) {
+	var model string
+	for _, v := range st.up.ModelMapping {
+		model = v
+		break
+	}
+	if model == "" && len(st.up.Models) > 0 {
+		model = st.up.Models[0]
+	}
+	if model == "" {
+		// 无模型名可探测：跳过回退，保持原失败判定
+		return probeOutcome{}, false
+	}
+	payload, err := json.Marshal(embeddingsProbeReq{Model: model, Input: "ping"})
+	if err != nil {
+		return probeOutcome{}, false
+	}
+
+	target := strings.TrimRight(st.up.BaseURL, "/") + "/embeddings"
+	reqCtx, cancel := context.WithTimeout(ctx, st.timeout)
+	defer cancel()
+
+	start := time.Now()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, target, bytes.NewReader(payload))
+	if err != nil {
+		return probeOutcome{}, false
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+st.up.APIKey)
+
+	resp, err := c.client.Do(req)
+	latency := time.Since(start)
+	if err != nil {
+		// 连接错误/超时：不触发回退成功，保持原失败判定
+		return probeOutcome{}, false
+	}
+	defer resp.Body.Close()
+	// 消费响应体以复用连接
+	_, _ = io.Copy(io.Discard, resp.Body)
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return probeOutcome{ok: true, latency: latency}, true
+	}
+	return probeOutcome{}, false
+}
+
+// embeddingsProbeReq 是回退探测 POST /embeddings 的最小请求体。
+type embeddingsProbeReq struct {
+	Model string `json:"model"`
+	Input string `json:"input"`
 }
 
 // truncateStr 截断字符串到 max 字节，超出时末尾加省略号标记。

@@ -2,6 +2,7 @@ package health
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
@@ -215,6 +216,132 @@ func TestHealthyUpstreams_UnknownUpstreamKept(t *testing.T) {
 	out := c.HealthyUpstreams([]*config.Upstream{unknown})
 	if len(out) != 1 || out[0].Name != "ghost" {
 		t.Errorf("HealthyUpstreams = %v, want [ghost] kept", names(out))
+	}
+}
+
+// TestPingFallback405ToEmbeddings 验证 GET /models 返回 405/404 时回退 POST /embeddings：
+// POST 2xx → ok=true（健康）；POST 非 2xx → ok=false（保持原失败判定）。
+// 模拟 Cloudflare Workers AI：GET 不支持（405 7001），仅 POST /embeddings 可用。
+func TestPingFallback405ToEmbeddings(t *testing.T) {
+	cases := []struct {
+		name      string
+		getStatus int    // GET /models 状态码
+		embStatus int    // POST /embeddings 状态码（0 表示服务端不应收到 POST）
+		modelMap  map[string]string
+		models    []string
+		wantOK    bool
+	}{
+		{
+			name:      "405+POST200→健康",
+			getStatus: http.StatusMethodNotAllowed,
+			embStatus: http.StatusOK,
+			modelMap:  map[string]string{"bge-m3": "bge-m3"},
+			wantOK:    true,
+		},
+		{
+			name:      "405+POST500→失败",
+			getStatus: http.StatusMethodNotAllowed,
+			embStatus: http.StatusInternalServerError,
+			modelMap:  map[string]string{"bge-m3": "bge-m3"},
+			wantOK:    false,
+		},
+		{
+			name:      "404+POST200→健康",
+			getStatus: http.StatusNotFound,
+			embStatus: http.StatusOK,
+			modelMap:  map[string]string{"bge-m3": "bge-m3"},
+			wantOK:    true,
+		},
+		{
+			name:      "500不触发回退",
+			getStatus: http.StatusInternalServerError,
+			embStatus: 0,
+			modelMap:  map[string]string{"bge-m3": "bge-m3"},
+			wantOK:    false,
+		},
+		{
+			name:      "ModelMapping空取Models首元素",
+			getStatus: http.StatusMethodNotAllowed,
+			embStatus: http.StatusOK,
+			models:    []string{"@cf/baai/bge-m3"},
+			wantOK:    true,
+		},
+		{
+			name:      "模型名都为空不触发回退",
+			getStatus: http.StatusMethodNotAllowed,
+			embStatus: 0,
+			wantOK:    false,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var embReqMethod, embReqCT, embReqAuth string
+			var embReqBody []byte
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/models":
+					if got := r.Header.Get("Authorization"); got != "Bearer sk-test" {
+						t.Errorf("Authorization = %q, want Bearer sk-test", got)
+					}
+					w.WriteHeader(c.getStatus)
+					_, _ = io.WriteString(w, `{"code":7001,"message":"GET not supported for requested URI."}`)
+				case "/embeddings":
+					if c.embStatus == 0 {
+						t.Errorf("unexpected POST /embeddings, path = %q", r.URL.Path)
+					}
+					embReqMethod = r.Method
+					embReqCT = r.Header.Get("Content-Type")
+					embReqAuth = r.Header.Get("Authorization")
+					embReqBody, _ = io.ReadAll(r.Body)
+					w.WriteHeader(c.embStatus)
+				default:
+					t.Errorf("unexpected path %q", r.URL.Path)
+				}
+			}))
+			defer srv.Close()
+
+			up := config.Upstream{
+				Name:         "cfcdn",
+				BaseURL:      srv.URL,
+				APIKey:       "sk-test",
+				ModelMapping: c.modelMap,
+				Models:       c.models,
+			}
+			ck := New(testCfg(up))
+			defer ck.Close()
+
+			out := ck.ping(context.Background(), &upstreamState{up: &up, timeout: 2 * time.Second})
+			if out.ok != c.wantOK {
+				t.Errorf("ok = %v, want %v (out=%+v)", out.ok, c.wantOK, out)
+			}
+			if c.embStatus != 0 {
+				// 验证回退请求的姿势：POST + JSON + 同一 key
+				if embReqMethod != http.MethodPost {
+					t.Errorf("embeddings method = %q, want POST", embReqMethod)
+				}
+				if embReqCT != "application/json" {
+					t.Errorf("Content-Type = %q, want application/json", embReqCT)
+				}
+				if embReqAuth != "Bearer sk-test" {
+					t.Errorf("Authorization = %q, want Bearer sk-test", embReqAuth)
+				}
+				// 验证请求体：真实模型名 + input=ping
+				var payload struct {
+					Model string `json:"model"`
+					Input string `json:"input"`
+				}
+				if err := json.Unmarshal(embReqBody, &payload); err != nil {
+					t.Fatalf("decode embeddings body: %v", err)
+				}
+				wantModel := "bge-m3"
+				if len(c.models) > 0 {
+					wantModel = c.models[0]
+				}
+				if payload.Model != wantModel || payload.Input != "ping" {
+					t.Errorf("embeddings payload = %+v, want {model:%s input:ping}", payload, wantModel)
+				}
+			}
+		})
 	}
 }
 
