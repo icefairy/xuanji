@@ -477,6 +477,8 @@ func buildServeMux(cfg *config.Config, rt *router.Router, hc *health.Checker, re
 	mux.HandleFunc("POST /v1/images/generations", apiKeys.Middleware(pxHandler.ImageGenerations))
 	mux.HandleFunc("POST /v1/audio/speech", apiKeys.Middleware(pxHandler.AudioSpeech))
 	mux.HandleFunc("POST /v1/audio/transcriptions", apiKeys.Middleware(pxHandler.AudioTranscriptions))
+	mux.HandleFunc("POST /v1/videos", apiKeys.Middleware(pxHandler.VideoCreate))
+	mux.HandleFunc("GET /v1/videos", apiKeys.Middleware(pxHandler.VideoQuery))
 
 	return mux
 }
