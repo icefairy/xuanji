@@ -472,6 +472,8 @@ type APIKeyRow struct {
 	Successes    int64
 	AvgLatencyMS float64
 	TotalTokens  int64
+	CacheHit     int64
+	CacheMiss    int64
 }
 
 // MetricsByAPIKey 返回按下游 API Key 聚合的统计（用于"哪些程序用得多"）。
@@ -481,7 +483,9 @@ func (s *Store) MetricsByAPIKey(since string) []APIKeyRow {
 	              COUNT(*) as requests,
 	              COALESCE(SUM(CASE WHEN status < 400 THEN 1 ELSE 0 END), 0) as successes,
 	              COALESCE(AVG(duration_ms), 0) as avg_ms,
-	              COALESCE(SUM(tokens), 0) as tokens
+	              COALESCE(SUM(tokens), 0) as tokens,
+	              COALESCE(SUM(prompt_cache_hit_tokens), 0) as cache_hit,
+	              COALESCE(SUM(prompt_cache_miss_tokens), 0) as cache_miss
 	       FROM request_log`
 	var args []any
 	if since != "" {
@@ -497,7 +501,7 @@ func (s *Store) MetricsByAPIKey(since string) []APIKeyRow {
 	var out []APIKeyRow
 	for rows.Next() {
 		var r APIKeyRow
-		if err := rows.Scan(&r.Name, &r.Requests, &r.Successes, &r.AvgLatencyMS, &r.TotalTokens); err != nil {
+		if err := rows.Scan(&r.Name, &r.Requests, &r.Successes, &r.AvgLatencyMS, &r.TotalTokens, &r.CacheHit, &r.CacheMiss); err != nil {
 			continue
 		}
 		out = append(out, r)

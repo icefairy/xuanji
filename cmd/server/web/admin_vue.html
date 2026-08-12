@@ -72,6 +72,143 @@
         padding: 16px;
         box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
       }
+      /* 对话调试 */
+      .chat-bar {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px 16px;
+        align-items: center;
+        padding: 10px 12px;
+        background: #fafafa;
+        border-radius: 6px;
+        margin-bottom: 12px;
+        font-size: 13px;
+      }
+      .chat-bar label {
+        color: #606266;
+        margin-right: 4px;
+      }
+      .chat-bar input[type='number'] {
+        width: 76px;
+        padding: 3px 6px;
+        border: 1px solid #dcdfe6;
+        border-radius: 4px;
+      }
+      .chat-bar select {
+        padding: 3px 6px;
+        border: 1px solid #dcdfe6;
+        border-radius: 4px;
+        min-width: 180px;
+      }
+      .chat-list {
+        max-height: 56vh;
+        overflow-y: auto;
+        border: 1px solid #ebeef5;
+        border-radius: 6px;
+        padding: 12px;
+        margin-bottom: 12px;
+        background: #fcfcfc;
+      }
+      .chat-msg {
+        display: flex;
+        margin-bottom: 10px;
+      }
+      .chat-msg .bubble {
+        max-width: 78%;
+        padding: 8px 12px;
+        border-radius: 8px;
+        font-size: 13px;
+        line-height: 1.6;
+        word-break: break-word;
+        white-space: pre-wrap;
+      }
+      .chat-msg.user {
+        justify-content: flex-end;
+      }
+      .chat-msg.user .bubble {
+        background: #409eff;
+        color: #fff;
+        border-top-right-radius: 2px;
+      }
+      .chat-msg.assistant {
+        justify-content: flex-start;
+      }
+      .chat-msg.assistant .bubble {
+        background: #f0f2f5;
+        color: #303133;
+        border-top-left-radius: 2px;
+      }
+      .chat-msg.error .bubble {
+        background: #fef0f0;
+        color: #f56c6c;
+        border: 1px solid #fbc4c4;
+      }
+      .chat-msg .thumbs {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-top: 6px;
+      }
+      .chat-msg .thumbs img {
+        width: 56px;
+        height: 56px;
+        object-fit: cover;
+        border-radius: 4px;
+        border: 1px solid rgba(255, 255, 255, 0.35);
+      }
+      .chat-msg .routing {
+        font-size: 12px;
+        color: #909399;
+        margin-top: 6px;
+        line-height: 1.5;
+      }
+      .chat-input-row {
+        display: flex;
+        gap: 8px;
+        align-items: flex-end;
+      }
+      .chat-input-row textarea {
+        flex: 1;
+        resize: vertical;
+        min-height: 52px;
+        max-height: 140px;
+        padding: 8px 10px;
+        border: 1px solid #dcdfe6;
+        border-radius: 6px;
+        font-size: 13px;
+        font-family: inherit;
+      }
+      .chat-preview {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-bottom: 8px;
+      }
+      .chat-preview .thumb {
+        position: relative;
+      }
+      .chat-preview .thumb img {
+        width: 64px;
+        height: 64px;
+        object-fit: cover;
+        border-radius: 6px;
+        border: 1px solid #dcdfe6;
+      }
+      .chat-preview .thumb .rm {
+        position: absolute;
+        top: -6px;
+        right: -6px;
+        width: 18px;
+        height: 18px;
+        line-height: 16px;
+        text-align: center;
+        border-radius: 50%;
+        background: #f56c6c;
+        color: #fff;
+        font-size: 11px;
+        cursor: pointer;
+        border: none;
+      }
       table {
         width: 100%;
         border-collapse: collapse;
@@ -409,6 +546,13 @@
         </button>
         <button
           class="tab-btn"
+          :class="{ active: tab === 'chat' }"
+          @click="switchTab('chat')"
+        >
+          对话调试
+        </button>
+        <button
+          class="tab-btn"
           :class="{ active: tab === 'efforts' }"
           @click="switchTab('efforts')"
         >
@@ -624,6 +768,156 @@
             </tr>
           </tbody>
         </table>
+      </div>
+
+      <!-- 对话调试：走完整网关路由链路，支持多轮对话 / 图片上传 / 采样参数 -->
+      <div class="tab-content" v-if="tab === 'chat'">
+        <div class="chat-bar">
+          <span>
+            <label>模型</label>
+            <select v-model="chatModel">
+              <option v-for="m in chatModels" :value="m">{{ m }}</option>
+            </select>
+          </span>
+          <span>
+            <label>temperature</label>
+            <input
+              type="number"
+              v-model.number="chatParams.temperature"
+              min="0"
+              max="2"
+              step="0.1"
+            />
+          </span>
+          <span>
+            <label>top_p</label>
+            <input
+              type="number"
+              v-model.number="chatParams.top_p"
+              min="0"
+              max="1"
+              step="0.05"
+            />
+          </span>
+          <span>
+            <label>top_k</label>
+            <input
+              type="number"
+              v-model.number="chatParams.top_k"
+              min="0"
+              max="100"
+              step="1"
+            />
+          </span>
+          <span>
+            <label>repetition_penalty</label>
+            <input
+              type="number"
+              v-model.number="chatParams.repetition_penalty"
+              min="0"
+              max="2"
+              step="0.1"
+            />
+          </span>
+          <span>
+            <label>frequency_penalty</label>
+            <input
+              type="number"
+              v-model.number="chatParams.frequency_penalty"
+              min="0"
+              max="2"
+              step="0.1"
+            />
+          </span>
+          <span>
+            <label>max_tokens</label>
+            <input
+              type="number"
+              v-model.number="chatParams.max_tokens"
+              min="64"
+              max="8192"
+              step="64"
+            />
+          </span>
+          <span>
+            <label>思考</label>
+            <select
+              v-model="chatParams.reasoning_effort"
+              style="
+                padding: 4px 6px;
+                border: 1px solid #dcdfe6;
+                border-radius: 4px;
+                font-size: 13px;
+                background: #fff;
+              "
+            >
+              <option value="">不设置</option>
+              <option value="none">none（关闭思考）</option>
+              <option value="low">low</option>
+              <option value="medium">medium</option>
+              <option value="high">high</option>
+              <option value="max">max</option>
+            </select>
+          </span>
+          <span style="color:#909399;font-size:12px"
+            >top_k / repetition_penalty 为 0 时不发送；上游不认的采样参数由网关 normalize 处理</span
+          >
+        </div>
+
+        <div class="chat-list" ref="chatList">
+          <div v-if="chatMessages.length === 0" style="color:#c0c4cc;text-align:center;padding:24px 0">
+            开始对话吧 —— 请求将走完整网关路由链路（路由选择 / 模型映射 / vision fallback / 健康检查）
+          </div>
+          <div
+            v-for="(m, i) in chatMessages"
+            :key="i"
+            class="chat-msg"
+            :class="m.role === 'user' ? 'user' : m.role === 'error' ? 'error' : 'assistant'"
+          >
+            <div class="bubble">
+              <div v-if="m.images && m.images.length" class="thumbs">
+                <img v-for="(im, j) in m.images" :key="j" :src="im.preview" alt="" />
+              </div>
+              <div>{{ m.content }}</div>
+              <div v-if="m.routing" class="routing">
+                <template v-if="m.routing.upstream"
+                  >上游：{{ m.routing.upstream }}（{{ m.routing.upstream_model || '?' }}）</template
+                >
+                · 状态：{{ m.routing.status }} · 耗时：{{ m.routing.duration_ms }}ms
+                <template v-if="m.usage"
+                  ><br />tokens：输入 {{ m.usage.prompt_tokens || 0 }} / 输出
+                  {{ m.usage.completion_tokens || 0 }} / 缓存命中
+                  {{ m.usage.cache_hit_tokens || 0 }} / 未命中
+                  {{ m.usage.cache_miss_tokens || 0 }}</template
+                >
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="chat-preview">
+          <div v-for="(im, i) in chatImages" :key="i" class="thumb">
+            <img :src="im.preview" alt="" />
+            <button class="rm" @click="removeChatImage(i)">×</button>
+          </div>
+        </div>
+
+        <div class="chat-input-row">
+          <textarea
+            v-model="chatInput"
+            placeholder="输入消息，Enter 发送（Shift+Enter 换行）"
+            @keydown.enter.exact.prevent="chatSend()"
+          ></textarea>
+          <input type="file" accept="image/*" multiple style="display:none" ref="chatFile" @change="onChatFiles" />
+          <button class="btn" :disabled="chatLoading" @click="$refs.chatFile.click()">
+            📷 {{ chatImages.length ? '图片(' + chatImages.length + ')' : '加图' }}
+          </button>
+          <button class="btn btn-danger" :disabled="chatLoading" @click="chatClear()">清空对话</button>
+          <button class="btn btn-primary" :disabled="chatLoading || !chatInput.trim()" @click="chatSend()">
+            {{ chatLoading ? '发送中…' : '发送' }}
+          </button>
+        </div>
+        <div style="margin-top:4px;color:#909399;font-size:12px">Enter 发送 · Shift+Enter 换行</div>
       </div>
 
       <!-- 思考等级（最佳思考等级配置） -->
@@ -1133,6 +1427,7 @@
               <th>请求成功率</th>
               <th>延迟(ms)</th>
               <th>Tokens</th>
+              <th>缓存命中</th>
               <th>费用(元)</th>
             </tr>
           </thead>
@@ -1161,10 +1456,16 @@
                     >{{ fmtTokens(s.total_tokens) }}</span
                   >
                 </td>
+                <td>
+                  <span
+                    :title="'命中 '+fmtNum(s.cache_hit_tokens||0,0)+' / 未命中 '+fmtNum(s.cache_miss_tokens||0,0)"
+                    >{{ cacheRateAPIKey(s) }}</span
+                  >
+                </td>
                 <td>{{ fmtMoney(costByAPIKey(s.name)) }}</td>
               </tr>
               <tr v-show="expandedAPIKey === s.name">
-                <td colspan="8" style="padding: 12px">
+                <td colspan="9" style="padding: 12px">
                   <div v-if="!apiKeyModels[s.name]" style="text-align: center">
                     加载中…
                   </div>
@@ -2304,6 +2605,21 @@
             tab: "metrics",
             upstreams: [],
             rules: [],
+            // 对话调试
+            chatModel: "",
+            chatParams: {
+              temperature: 0.7,
+              top_p: 0.9,
+              top_k: 0,
+              repetition_penalty: 0,
+              frequency_penalty: 0,
+              max_tokens: 1024,
+              reasoning_effort: "",
+            },
+            chatMessages: [],
+            chatInput: "",
+            chatImages: [],
+            chatLoading: false,
             efforts: [],
             showEffortDialog: false,
             effortIsEdit: false,
@@ -2692,9 +3008,17 @@
             // 前缀缓存命中率：命中 / 总输入 tokens，无 cache 统计显示 '-'
             cacheRate: function (l) {
               var hit = Number(l.prompt_cache_hit_tokens) || 0;
+              var miss = Number(l.prompt_cache_miss_tokens) || 0;
               var prompt = Number(l.prompt_tokens) || 0;
-              if (hit <= 0 || prompt <= 0) return "-";
+              if (prompt <= 0 || (hit <= 0 && miss <= 0)) return "-";
               return this.fmtNum((hit / prompt) * 100, 1) + "%";
+            },
+            // API Key 聚合的缓存命中率：命中 / (命中+未命中)，无缓存数据显示 '-'
+            cacheRateAPIKey: function (s) {
+              var hit = Number(s.cache_hit_tokens) || 0;
+              var miss = Number(s.cache_miss_tokens) || 0;
+              if (hit <= 0 && miss <= 0) return "-";
+              return this.fmtNum((hit / (hit + miss)) * 100, 1) + "%";
             },
             // Token 模糊显示：万/亿，精确值放 title
             fmtTokens: function (n) {
@@ -3104,6 +3428,130 @@
                 })
                 .catch(function () {});
             },
+            // ---- 对话调试 ----
+            scrollChatToBottom: function () {
+              var el = this.$refs.chatList;
+              if (el) el.scrollTop = el.scrollHeight;
+            },
+            chatClear: function () {
+              this.chatMessages = [];
+              this.chatImages = [];
+              this.chatInput = "";
+            },
+            onChatFiles: function (ev) {
+              var self = this;
+              var files = Array.prototype.slice.call(ev.target.files || []);
+              ev.target.value = ""; // 允许重复选择同一文件
+              files.forEach(function (f) {
+                if (!f.type || f.type.indexOf("image/") !== 0) return;
+                var reader = new FileReader();
+                reader.onload = function (e) {
+                  var b64 = String(e.target.result);
+                  // 去掉 data:...;base64, 前缀，只存裸 base64（后端会按扩展名拼 MIME）
+                  var data = b64.split(",")[1] || b64;
+                  self.chatImages.push({
+                    name: f.name,
+                    mime: f.type,
+                    data: data,
+                    preview: b64,
+                  });
+                };
+                reader.readAsDataURL(f);
+              });
+            },
+            removeChatImage: function (i) {
+              this.chatImages.splice(i, 1);
+            },
+            chatSend: function () {
+              var self = this;
+              var text = (self.chatInput || "").trim();
+              if (!text && !self.chatImages.length) return;
+              if (!self.chatModel && self.chatModels.length) {
+                self.chatModel = self.chatModels[0];
+              }
+              var images = self.chatImages.map(function (im) {
+                return { name: im.name, data: im.data };
+              });
+              // 本次发送的 user 消息（含图）先入列表
+              self.chatMessages.push({
+                role: "user",
+                content: text,
+                images: self.chatImages.map(function (im) {
+                  return { preview: im.preview };
+                }),
+              });
+              self.chatInput = "";
+              self.chatImages = [];
+              self.chatLoading = true;
+              self.scrollChatToBottom();
+
+              var history = self.chatMessages
+                .filter(function (m) {
+                  return m.role === "user" || m.role === "assistant";
+                })
+                .map(function (m) {
+                  return { role: m.role, content: m.content };
+                });
+              var body = {
+                model: self.chatModel,
+                messages: history,
+                images: images,
+                temperature: self.chatParams.temperature,
+                top_p: self.chatParams.top_p,
+                top_k: self.chatParams.top_k || 0,
+                repetition_penalty: self.chatParams.repetition_penalty || 0,
+                frequency_penalty: self.chatParams.frequency_penalty || 0,
+                max_tokens: self.chatParams.max_tokens || 1024,
+                reasoning_effort: self.chatParams.reasoning_effort || "",
+              };
+              axios({
+                url: "/admin/chat",
+                method: "POST",
+                data: body,
+                headers: { Authorization: "Bearer " + self.token },
+              })
+                .then(function (r) {
+                  var d = r.data || {};
+                  if (d.error) {
+                    self.chatMessages.push({
+                      role: "error",
+                      content: "发送失败：" + d.error,
+                    });
+                  } else {
+                    self.chatMessages.push({
+                      role: "assistant",
+                      content: d.reply || "（空回复）",
+                      routing: d.routing || null,
+                      usage: d.usage || null,
+                    });
+                  }
+                  self.chatLoading = false;
+                  self.scrollChatToBottom();
+                })
+                .catch(function (e) {
+                  if (e.response && e.response.status === 401) {
+                    self.token = "";
+                    localStorage.removeItem("xuanji_jwt");
+                    self.chatMessages.push({
+                      role: "error",
+                      content: "登录已过期，请重新登录",
+                    });
+                  } else {
+                    var msg =
+                      (e.response &&
+                        e.response.data &&
+                        e.response.data.error) ||
+                      e.message ||
+                      "网络错误";
+                    self.chatMessages.push({
+                      role: "error",
+                      content: "发送失败：" + msg,
+                    });
+                  }
+                  self.chatLoading = false;
+                  self.scrollChatToBottom();
+                });
+            },
             switchTab: function (name) {
               this.tab = name;
               var self = this;
@@ -3112,6 +3560,16 @@
                   self.loadUpstreams();
                 } else if (name === "rules") {
                   self.loadRules();
+                } else if (name === "chat") {
+                  // 对话调试：需要路由规则与上游模型列表生成模型下拉
+                  self.loadRules();
+                  self.loadUpstreams();
+                  // 首次进入且未选模型时，默认选中第一个可调用模型
+                  self.$nextTick(function () {
+                    if (!self.chatModel && self.chatModels.length) {
+                      self.chatModel = self.chatModels[0];
+                    }
+                  });
                 } else if (name === "efforts") {
                   self.loadEfforts();
                 } else if (name === "logs") {
@@ -4199,6 +4657,43 @@
             },
           },
           computed: {
+            // 对话调试可选模型：路由规则模型（含通配符）+ 通配符展开后的实际模型 + 上游 model_mapping 的客户端名
+            chatModels: function () {
+              var out = [];
+              var push = function (m) {
+                if (m && out.indexOf(m) < 0) out.push(m);
+              };
+              var self = this;
+              // 只列出路由规则中设定的模型：规则名 + 通配符在规则勾选的启用上游中展开
+              var upByName = {};
+              (self.upstreams || []).forEach(function (u) {
+                upByName[u.name] = u;
+              });
+              (self.rules || []).forEach(function (r) {
+                // 规则本身被禁用则忽略
+                if (r.enabled === false || r.enabled === 0) return;
+                var ruleUpNames = (r.upstreams || []) || [];
+                if (r.model.indexOf("*") >= 0) {
+                  var re = new RegExp(
+                    "^" +
+                      r.model.replace(/\./g, "\\.").replace(/\*/g, ".*") +
+                      "$",
+                  );
+                  ruleUpNames.forEach(function (un) {
+                    var u = upByName[un];
+                    // 只展开规则勾选且未禁用的上游
+                    if (u && u.enabled !== 0 && u.enabled !== false) {
+                      (u.models || []).forEach(function (m) {
+                        if (re.test(m)) push(m);
+                      });
+                    }
+                  });
+                } else {
+                  push(r.model);
+                }
+              });
+              return out;
+            },
             logTotalPage: function () {
               return Math.max(
                 1,
@@ -4232,6 +4727,12 @@
                   JSON.stringify(val || []),
                 );
               } catch (e) {}
+            },
+            // 模型候选就绪且未手动选择时，默认选第一个可调用模型
+            chatModels: function (val) {
+              if (val && val.length && !this.chatModel) {
+                this.chatModel = val[0];
+              }
             },
           },
           mounted: function () {

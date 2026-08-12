@@ -975,6 +975,12 @@ func parseUsage(data []byte, promptTokens, completionTokens, promptCacheHit, pro
 		if *promptCacheMiss == 0 && *promptCacheHit > 0 && *promptTokens > *promptCacheHit {
 			*promptCacheMiss = *promptTokens - *promptCacheHit
 		}
+		// 上游完全没有返回缓存字段时（如 agnes 首次请求无缓存可命中），
+		// 按"全部未命中"记录（miss = prompt），日志命中率显示 0% 而非 '-'，
+		// 与计费口径一致（calcCost 已有同样兜底）。
+		if *promptCacheHit == 0 && *promptCacheMiss == 0 && *promptTokens > 0 {
+			*promptCacheMiss = *promptTokens
+		}
 	}
 	return true
 }

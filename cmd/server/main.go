@@ -420,12 +420,17 @@ func buildServeMux(cfg *config.Config, rt *router.Router, hc *health.Checker, re
 	mux.HandleFunc("POST /admin/backups", adminAuth(admHandler.CreateBackup))
 	mux.HandleFunc("DELETE /admin/backups/{name}", adminAuth(admHandler.DeleteBackup))
 
+	// 对话调试：走完整网关路由链路（依赖 pxHandler，见上方 SetProxy 注入）
+	mux.HandleFunc("POST /admin/chat", adminAuth(admHandler.Chat))
+
 	olHandler := ollama.New(rt, hc)
 	olHandler.SetTimeout(time.Duration(cfg.Retry.UpstreamTimeout) * time.Second)
 	pxHandler := proxy.New(cfg, rt, hc)
 	ff := proxy.NewFastFailCache(time.Duration(cfg.Retry.FastFailMinutes) * time.Minute)
 	pxHandler.SetFastFail(ff)
 	admHandler.SetFastFail(ff)
+	// 对话调试（/admin/chat）注入完整转发链路与路由探测器：走完整网关路由链路
+	admHandler.SetProxy(pxHandler, rt)
 	stopProbe := pxHandler.StartFastFailProbe(time.Duration(cfg.Retry.FastFailProbeMinutes) * time.Minute)
 	_ = stopProbe
 	tz := proxy.NewTokenizer()
