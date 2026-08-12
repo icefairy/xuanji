@@ -13,17 +13,20 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
+	"github.com/tidwall/gjson"
 
 	"github.com/icefairy/xuanji/internal/auth"
 	"github.com/icefairy/xuanji/internal/config"
 	"github.com/icefairy/xuanji/internal/health"
 	"github.com/icefairy/xuanji/internal/proxy"
+	"github.com/icefairy/xuanji/internal/router"
 	"github.com/icefairy/xuanji/internal/store"
 )
 
@@ -36,6 +39,8 @@ type Handler struct {
 	reload func() error         // 热重载回调，nil 时不可用
 	ff     *proxy.FastFailCache // 快速失败缓存；nil 时不显示 fast_fail 状态
 	auth   *auth.APIKeys        // 下游 key 鉴权缓存；nil 时无需刷新
+	px     *proxy.Handler       // 完整转发链路（对话调试 /admin/chat 用）；nil 时返回 503
+	rt     *router.Router       // 路由探测器（对话调试 routing 展示用）；nil 时不展示路由信息
 }
 
 // SetAuth 注入下游 key 鉴权器（api_tokens CRUD 后刷新内存缓存）。
@@ -70,6 +75,13 @@ func (h *Handler) SetStore(s *store.Store) { h.store = s }
 
 // SetReload 设置热重载回调。
 func (h *Handler) SetReload(fn func() error) { h.reload = fn }
+
+// SetProxy 注入完整转发链路 handler 与路由探测器（对话调试 /admin/chat 用）。
+// px 为 nil 时 /admin/chat 返回 503；rt 为 nil 时响应不含 upstream/upstream_model。
+func (h *Handler) SetProxy(px *proxy.Handler, rt *router.Router) {
+	h.px = px
+	h.rt = rt
+}
 
 // statusResponse 是 GET /admin/status 的响应体。
 // 注意：字段名不能叫 "status"，amis 会把响应 JSON 里 status 非 0 视为业务失败。
@@ -625,6 +637,8 @@ type apiKeyMetrics struct {
 	SuccessRate  float64 `json:"success_rate"`
 	AvgLatencyMS float64 `json:"avg_latency_ms"`
 	TotalTokens  int64   `json:"total_tokens"`
+	CacheHit     int64   `json:"cache_hit_tokens"`
+	CacheMiss    int64   `json:"cache_miss_tokens"`
 }
 
 // MetricsByAPIKey 返回按下游 API Key 聚合的统计（支持 ?range=...）。
@@ -644,6 +658,8 @@ func (h *Handler) MetricsByAPIKey(w http.ResponseWriter, r *http.Request) {
 			Successes:    row.Successes,
 			AvgLatencyMS: row.AvgLatencyMS,
 			TotalTokens:  row.TotalTokens,
+			CacheHit:     row.CacheHit,
+			CacheMiss:    row.CacheMiss,
 		}
 		if m.Requests > 0 {
 			m.SuccessRate = float64(m.Successes) / float64(m.Requests)
@@ -1999,3 +2015,249 @@ func (h *Handler) TestUpstream(w http.ResponseWriter, r *http.Request) {
 		"warning": warning,
 	})
 }
+
+// chatRequest 是 POST /admin/chat 的请求体（对话调试）。
+type chatRequest struct {
+	Model             string        `json:"model"`
+	Messages          []chatMessage `json:"messages"`
+	Images            []chatImage   `json:"images"` // 可选；data 不含 data: 前缀
+	Temperature       float64       `json:"temperature"`
+	TopP              float64       `json:"top_p"`
+	TopK              int           `json:"top_k"`              // 0 表示不传
+	RepetitionPenalty float64       `json:"repetition_penalty"` // 0 表示不传
+	FrequencyPenalty  float64       `json:"frequency_penalty"`  // 0 表示不传
+	MaxTokens         int           `json:"max_tokens"`
+	ReasoningEffort   string        `json:"reasoning_effort"` // 空串表示不传；none/low/medium/high/max
+}
+
+// chatMessage 是对话调试的单个消息。
+type chatMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+// chatImage 是对话调试的图片附件（OpenAI 标准 data URL base64）。
+type chatImage struct {
+	Name string `json:"name"`
+	Data string `json:"data"` // base64，不含 data: 前缀
+}
+
+// Chat 处理 POST /admin/chat：多轮对话调试，走完整网关路由链路。
+// 复用 proxy.Handler.ChatCompletions（路由选择/模型映射/vision fallback/健康检查/
+// 日志记录），非直连上游。图片转 OpenAI 标准 image_url content，网关 vision fallback
+// 自动识别。响应含 reply/usage/routing（routing 尽力而为，供前端展示）。
+func (h *Handler) Chat(w http.ResponseWriter, r *http.Request) {
+	if h.px == nil {
+		writeJSON(w, map[string]any{"error": "对话调试不可用：转发链路未注入（proxy 为 nil）"})
+		return
+	}
+	var req chatRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, map[string]string{"error": "请求体解析失败: " + err.Error()})
+		return
+	}
+	if req.Model == "" {
+		req.Model = "deepseek-v4-flash"
+	}
+	if len(req.Messages) == 0 {
+		writeJSON(w, map[string]string{"error": "messages 不能为空"})
+		return
+	}
+	if req.MaxTokens <= 0 {
+		req.MaxTokens = 1024
+	}
+	// 图片：把最后一条 user 消息的 content 从 string 改为多模态数组
+	messages, multimodal := buildChatMessages(req.Messages, req.Images)
+
+	// 组装 OpenAI chat body（采样参数仅非零时携带；0 表示不传）
+	body := map[string]any{
+		"model":      req.Model,
+		"messages":   messages,
+		"max_tokens": req.MaxTokens,
+	}
+	if req.Temperature != 0 {
+		body["temperature"] = req.Temperature
+	}
+	if req.TopP != 0 {
+		body["top_p"] = req.TopP
+	}
+	if req.TopK > 0 {
+		body["top_k"] = req.TopK
+	}
+	if req.RepetitionPenalty > 0 {
+		body["repetition_penalty"] = req.RepetitionPenalty
+	}
+	if req.FrequencyPenalty != 0 {
+		body["frequency_penalty"] = req.FrequencyPenalty
+	}
+	if req.ReasoningEffort != "" {
+		body["reasoning_effort"] = req.ReasoningEffort
+	}
+	payload, _ := json.Marshal(body)
+
+	// 路由探测（尽力而为）：供 routing 展示，实际命中可能因健康/黑名单/随机略有出入
+	upstream, upstreamModel := h.probeRoute(req.Model, multimodal)
+
+	// 构造合成请求走完整转发链路（复用 ChatCompletions，含 vision fallback 与日志记录）
+	start := time.Now()
+	httpReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, "/v1/chat/completions", bytes.NewReader(payload))
+	if err != nil {
+		writeJSON(w, map[string]string{"error": "构造请求失败: " + err.Error()})
+		return
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	cw := &captureWriter{header: http.Header{}}
+	h.px.ChatCompletions(cw, httpReq)
+	durationMS := time.Since(start).Milliseconds()
+
+	routing := map[string]any{"status": cw.status, "duration_ms": durationMS}
+	if upstream != "" {
+		routing["upstream"] = upstream
+	}
+	if upstreamModel != "" {
+		routing["upstream_model"] = upstreamModel
+	}
+
+	respBody := cw.body.Bytes()
+	if cw.status >= 300 || cw.status == 0 {
+		msg := gjson.GetBytes(respBody, "error.message").String()
+		if msg == "" {
+			msg = "网关转发失败（HTTP " + strconv.Itoa(cw.status) + "）"
+		}
+		writeJSON(w, map[string]any{"error": msg, "status": cw.status, "routing": routing})
+		return
+	}
+	writeJSON(w, map[string]any{
+		"reply":   extractChatReply(respBody),
+		"usage":   extractChatUsage(respBody),
+		"routing": routing,
+	})
+}
+
+// buildChatMessages 把 images 拼进最后一条 user 消息的 content（OpenAI 多模态数组）。
+// 返回改造后的消息列表与"是否多模态请求"（供路由探测）。无图片时原样返回。
+func buildChatMessages(messages []chatMessage, images []chatImage) ([]map[string]any, bool) {
+	out := make([]map[string]any, 0, len(messages))
+	for _, m := range messages {
+		out = append(out, map[string]any{"role": m.Role, "content": m.Content})
+	}
+	if len(images) == 0 {
+		return out, false
+	}
+	idx := -1
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == "user" {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		// 没有 user 消息：追加一条空 user 消息承载图片
+		out = append(out, map[string]any{"role": "user", "content": ""})
+		idx = len(out) - 1
+	}
+	parts := []map[string]any{{"type": "text", "text": messages[idx].Content}}
+	for _, img := range images {
+		parts = append(parts, map[string]any{
+			"type": "image_url",
+			"image_url": map[string]string{
+				"url": "data:" + mimeForImage(img.Name) + ";base64," + img.Data,
+			},
+		})
+	}
+	out[idx]["content"] = parts
+	return out, true
+}
+
+// mimeForImage 按图片文件名扩展名映射 MIME 类型；未知扩展名回退 image/png。
+func mimeForImage(name string) string {
+	switch strings.ToLower(strings.TrimPrefix(filepath.Ext(name), ".")) {
+	case "jpg", "jpeg":
+		return "image/jpeg"
+	case "webp":
+		return "image/webp"
+	case "gif":
+		return "image/gif"
+	default:
+		return "image/png"
+	}
+}
+
+// probeRoute 尽力而为地探测 model 会命中的上游名与真实模型名（展示用）。
+// 与 proxy 内部路由逻辑一致：多模态请求命中 vision=0 且配置 vision_fallback 的
+// 规则时改用兑底模型探测；取第一个候选 + MapModel 的真实模型名。
+func (h *Handler) probeRoute(model string, multimodal bool) (string, string) {
+	if h.rt == nil {
+		return "", ""
+	}
+	m := model
+	if multimodal {
+		if rule := h.rt.FindRule(m); rule != nil && !rule.Vision && strings.TrimSpace(rule.VisionFallback) != "" {
+			m = rule.VisionFallback
+		}
+	}
+	ups, _, err := h.rt.Route(m)
+	if err != nil || len(ups) == 0 {
+		return "", ""
+	}
+	up := ups[0]
+	return up.Name, h.rt.MapModel(up, m)
+}
+
+// extractChatReply 从 OpenAI chat 响应提取模型回复文本（content 可能为数组，拼接 text 部分）。
+func extractChatReply(data []byte) string {
+	content := gjson.GetBytes(data, "choices.0.message.content")
+	if content.IsArray() {
+		var sb strings.Builder
+		content.ForEach(func(_, part gjson.Result) bool {
+			if part.Get("type").String() == "text" {
+				sb.WriteString(part.Get("text").String())
+			}
+			return true
+		})
+		return sb.String()
+	}
+	return content.String()
+}
+
+// extractChatUsage 从 OpenAI chat 响应提取 token 用量（含前缀缓存命中/未命中）。
+func extractChatUsage(data []byte) map[string]int64 {
+	usage := map[string]int64{}
+	u := gjson.GetBytes(data, "usage")
+	if !u.Exists() {
+		return usage
+	}
+	prompt := u.Get("prompt_tokens").Int()
+	completion := u.Get("completion_tokens").Int()
+	hit := u.Get("prompt_cache_hit_tokens").Int()
+	if hit == 0 {
+		// OpenAI 标准字段兑底（商汤等上游用 prompt_tokens_details.cached_tokens）
+		hit = u.Get("prompt_tokens_details.cached_tokens").Int()
+	}
+	miss := u.Get("prompt_cache_miss_tokens").Int()
+	if miss == 0 && hit > 0 && prompt > hit {
+		miss = prompt - hit
+	}
+	usage["prompt_tokens"] = prompt
+	usage["completion_tokens"] = completion
+	usage["cache_hit_tokens"] = hit
+	usage["cache_miss_tokens"] = miss
+	return usage
+}
+
+// captureWriter 捕获 proxy 转发链路的响应状态码与响应体（对话调试用）。
+type captureWriter struct {
+	header http.Header
+	status int
+	body   bytes.Buffer
+}
+
+func (w *captureWriter) Header() http.Header { return w.header }
+
+func (w *captureWriter) WriteHeader(code int) {
+	if w.status == 0 {
+		w.status = code
+	}
+}
+
+func (w *captureWriter) Write(b []byte) (int, error) { return w.body.Write(b) }

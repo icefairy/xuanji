@@ -297,3 +297,30 @@ func TestChatCompletions_AllConnErrorsClearsBlacklist(t *testing.T) {
 		t.Error("up2 must be cleared after all-conn-error failure")
 	}
 }
+
+func TestParseUsageCacheFallback(t *testing.T) {
+	// 场景1：上游返回 DeepSeek 系字段（完整缓存信息）
+	var hit1, miss1, pt1, ct1 int64
+	ok := parseUsage([]byte(`{"usage":{"prompt_tokens":100,"completion_tokens":20,"prompt_cache_hit_tokens":60,"prompt_cache_miss_tokens":40}}`), &pt1, &ct1, &hit1, &miss1)
+	if !ok || hit1 != 60 || miss1 != 40 || pt1 != 100 {
+		t.Errorf("scenario1 failed: ok=%v hit=%d miss=%d pt=%d", ok, hit1, miss1, pt1)
+	}
+	// 场景2：OpenAI 标准 cached_tokens（无 miss 字段 → 兜底 miss=pt-hit）
+	var hit2, miss2, pt2, ct2 int64
+	ok = parseUsage([]byte(`{"usage":{"prompt_tokens":100,"completion_tokens":20,"prompt_tokens_details":{"cached_tokens":60}}}`), &pt2, &ct2, &hit2, &miss2)
+	if !ok || hit2 != 60 || miss2 != 40 {
+		t.Errorf("scenario2 failed: ok=%v hit=%d miss=%d", ok, hit2, miss2)
+	}
+	// 场景3：上游完全不返回缓存字段 → 兜底 miss=pt（全未命中，显示 0%）
+	var hit3, miss3, pt3, ct3 int64
+	ok = parseUsage([]byte(`{"usage":{"prompt_tokens":100,"completion_tokens":20}}`), &pt3, &ct3, &hit3, &miss3)
+	if !ok || hit3 != 0 || miss3 != 100 {
+		t.Errorf("scenario3 failed: ok=%v hit=%d miss=%d (want miss=100)", ok, hit3, miss3)
+	}
+	// 场景4：无 usage → false
+	var hit4, miss4, pt4, ct4 int64
+	ok = parseUsage([]byte(`{"id":"x"}`), &pt4, &ct4, &hit4, &miss4)
+	if ok {
+		t.Errorf("scenario4: expected false, got ok=%v", ok)
+	}
+}
