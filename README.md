@@ -212,6 +212,8 @@
 
 ## 快速开始
 
+> **📖 新手请看图文教程**：[璇玑网关使用说明（小白版，含截图）](docs/使用说明.md)
+
 ```bash
 # 构建
 go build -o xuanji-server ./cmd/server
