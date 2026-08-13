@@ -65,35 +65,25 @@ func VerifyToken(secret, token string) (string, error) {
 // ===== 下游 API Key 鉴权 =====
 
 // APIKeys 是允许访问网关的 key 集合（map 加速查找）。
-// 支持三层：静态 key（server.api_keys 配置）+ 动态下游 key（api_tokens 表）+ 管理端 JWT。
+// 支持两层：动态下游 key（api_tokens 表）+ 管理端 JWT。
 type APIKeys struct {
 	mu        sync.RWMutex
-	keys      map[string]bool   // 静态 key（server.api_keys 配置）
 	dbKeys    map[string]bool   // 下游 key 内存缓存（api_tokens 表 enabled=1 的 key，New/Refresh 时加载）
-	names     map[string]string // key → 展示名称（api_tokens.name；静态 key 用 key 自身）
+	names     map[string]string // key → 展示名称（api_tokens.name）
 	store     *store.Store      // 非 nil 时启用下游 key 动态校验（Refresh 用）
 	jwtSecret string            // 非空时管理端 JWT 也可访问 /v1/*（前端测试用）
 }
 
-// New 从逗号分隔的 key 列表构建鉴权器。空列表返回 nil（鉴权关闭）。
-// store 非 nil 时，除静态 key 外还会校验 api_tokens 表中的下游 key（启动时全量加载到内存缓存）。
+// New 构建鉴权器：从 api_tokens 表加载启用的下游 key（启动时全量加载到内存缓存）。
+// store 为 nil 且 jwtSecret 为空时返回 nil（鉴权关闭）。
 // jwtSecret 非空时，管理端登录签发的 JWT 也能通过转发鉴权。
-func New(keysCSV string, st *store.Store, jwtSecret string) *APIKeys {
-	a := &APIKeys{keys: make(map[string]bool), names: make(map[string]string), store: st, jwtSecret: jwtSecret}
-	if strings.TrimSpace(keysCSV) != "" {
-		for _, k := range strings.Split(keysCSV, ",") {
-			k = strings.TrimSpace(k)
-			if k != "" {
-				a.keys[k] = true
-				a.names[k] = k // 静态 key 名称即 key 本身
-			}
-		}
-	}
+func New(st *store.Store, jwtSecret string) *APIKeys {
+	a := &APIKeys{names: make(map[string]string), store: st, jwtSecret: jwtSecret}
 	if st != nil {
 		a.dbKeys = st.AllEnabledTokenKeys()
 		a.names = mergeNames(a.names, st.AllEnabledTokenNames())
 	}
-	if st == nil && len(a.keys) == 0 && jwtSecret == "" {
+	if st == nil && jwtSecret == "" {
 		return nil
 	}
 	return a
@@ -122,8 +112,8 @@ func (a *APIKeys) Refresh() {
 	a.mu.Unlock()
 }
 
-// Name 返回给定 Bearer token 的展示名称（api_tokens.name；静态 key 用 key 自身；
-// JWT 返回 "(admin)"；未知返回 key 本身）。
+// Name 返回给定 Bearer token 的展示名称（api_tokens.name；JWT 返回 "(admin)"；
+// 未知返回 key 本身）。
 func (a *APIKeys) Name(token string) string {
 	if a == nil || token == "" {
 		return ""
@@ -132,9 +122,6 @@ func (a *APIKeys) Name(token string) string {
 	defer a.mu.RUnlock()
 	if n, ok := a.names[token]; ok {
 		return n
-	}
-	if a.keys[token] {
-		return token
 	}
 	if a.jwtSecret != "" {
 		if _, err := VerifyToken(a.jwtSecret, token); err == nil {
@@ -148,16 +135,13 @@ func (a *APIKeys) Name(token string) string {
 func (a *APIKeys) Enabled() bool { return a != nil }
 
 // Valid 判断给定的 Bearer token 是否有效。
-// 顺序：静态 key map → 下游 key 内存缓存 → 管理端 JWT。全程无 DB 查询。
+// 顺序：下游 key 内存缓存 → 管理端 JWT。全程无 DB 查询。
 func (a *APIKeys) Valid(token string) bool {
 	if a == nil {
 		return true
 	}
 	a.mu.RLock()
-	ok := a.keys[token]
-	if !ok && a.dbKeys != nil {
-		ok = a.dbKeys[token]
-	}
+	ok := a.dbKeys != nil && a.dbKeys[token]
 	a.mu.RUnlock()
 	if ok {
 		return true

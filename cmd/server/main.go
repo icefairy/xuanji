@@ -195,7 +195,7 @@ func main() {
 	// API key 鉴权（server.api_keys 配置后生效，/healthz 不鉴权）
 	// storeInst 非 nil 时，api_tokens 表中的下游 key 也参与转发鉴权；
 	// 管理端 JWT 也放行（前端测试按钮直接用登录 token 调转发）
-	keys := auth.New(cfg.Server.APIKeys, storeInst, admJWTSecret(storeInst))
+	keys := auth.New(storeInst, admJWTSecret(storeInst))
 
 	mux := buildServeMux(cfg, rt, hc, rec, storeInst, keys)
 
@@ -517,7 +517,7 @@ func reloadConfig(storeInst *store.Store, rec *store.Recorder) error {
 	state.mu.Unlock()
 
 	// 创建新 handler
-	apiKeys := auth.New(newCfg.Server.APIKeys, storeInst, admJWTSecret(storeInst))
+	apiKeys := auth.New(storeInst, admJWTSecret(storeInst))
 	newHandler := buildServeMux(newCfg, rt, hc, rec, storeInst, apiKeys)
 
 	// 替换 srv.Handler

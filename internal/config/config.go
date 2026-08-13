@@ -110,11 +110,6 @@ type Storage struct {
 // Server 是 HTTP 服务配置。
 type Server struct {
 	Port int `yaml:"port"`
-	// APIKeys 是允许访问网关的 API key 列表（Bearer 认证）。
-	// 配置为空时鉴权关闭（开发模式）；配置后所有 /v1/* 请求必须携带
-	// Authorization: Bearer *** ${XUANJI_API_KEYS} 环境变量展开，
-	// 多 key 用逗号分隔。
-	APIKeys string `yaml:"api_keys"`
 	// AdminAPIKey 是管理 API（/api/admin/*）的独立鉴权 key。
 	// 供 AI 助手等自动化工具免登录调用动态管理接口；存 config 表 admin.api_key。
 	AdminAPIKey string `yaml:"admin_api_key"`
@@ -345,10 +340,6 @@ func LoadFromDB(s *store.Store) (*Config, error) {
 		}
 	}
 
-	// 解析 API keys
-	if v, ok := all["server.api_keys"]; ok {
-		cfg.Server.APIKeys = strings.TrimSpace(v)
-	}
 	// 解析管理 API key（/api/admin/* 独立鉴权，供 AI 助手调用）
 	if v, ok := all["admin.api_key"]; ok {
 		cfg.Server.AdminAPIKey = strings.TrimSpace(v)

@@ -303,9 +303,6 @@ func TestLoadFromDB_CustomValues(t *testing.T) {
 	if err := s.SetConfig("server.port", "9999"); err != nil {
 		t.Fatalf("SetConfig port: %v", err)
 	}
-	if err := s.SetConfig("server.api_keys", "sk-admin-1,sk-admin-2"); err != nil {
-		t.Fatalf("SetConfig api_keys: %v", err)
-	}
 	if err := s.SetConfig("retry.max_retries", "5"); err != nil {
 		t.Fatalf("SetConfig max_retries: %v", err)
 	}
@@ -325,9 +322,6 @@ func TestLoadFromDB_CustomValues(t *testing.T) {
 	}
 	if cfg.Server.Port != 9999 {
 		t.Errorf("Port = %d, want 9999", cfg.Server.Port)
-	}
-	if cfg.Server.APIKeys != "sk-admin-1,sk-admin-2" {
-		t.Errorf("APIKeys = %q, want sk-admin-1,sk-admin-2", cfg.Server.APIKeys)
 	}
 	if cfg.Retry.MaxRetries != 5 {
 		t.Errorf("MaxRetries = %d, want 5", cfg.Retry.MaxRetries)
