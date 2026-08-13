@@ -730,6 +730,9 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 			reqBody = nb
 		}
 	}
+	if nb, changed := normalizeMaxTokens(reqBody, up); changed {
+		reqBody = nb
+	}
 	if nb, changed := applyBestEffort(reqBody, model, h.cfg); changed {
 		reqBody = nb
 	}
