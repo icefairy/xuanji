@@ -5,7 +5,8 @@
 set -e
 cd /data/codes/xuanji
 
-TOKEN="ghp_REVOKED_PLACEHOLDER"
+# GitHub Token 从环境变量读取（不要硬编码进脚本，避免 GitHub Push Protection 拦截）
+TOKEN="${GITHUB_TOKEN:?请先 export GITHUB_TOKEN=ghp_xxx}"
 PROXY="socks5h://127.0.0.1:10809"
 REPO="icefairy/xuanji"
 
