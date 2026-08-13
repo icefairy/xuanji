@@ -13,6 +13,7 @@ import (
 
 	"github.com/icefairy/xuanji/internal/config"
 	"github.com/icefairy/xuanji/internal/health"
+	"github.com/icefairy/xuanji/internal/router"
 	"github.com/icefairy/xuanji/internal/store"
 )
 
@@ -24,7 +25,7 @@ func init() {
 // testConfig 构造一个含 3 个上游、2 条路由规则的配置。
 func testConfig() *config.Config {
 	return &config.Config{
-		Server: config.Server{Port: 8787, APIKeys: "sk-admin-1"},
+		Server: config.Server{Port: 8787},
 		Upstreams: []config.Upstream{
 			{Name: "硅基流动", Type: "openai", BaseURL: "http://a.local", APIKey: "sk-a",
 				Tier: "payg", Priority: 5, Weight: 100, Models: []string{"deepseek-v4-flash", "bge-m3"}},
@@ -56,6 +57,45 @@ func decodeBody(t *testing.T, rr *httptest.ResponseRecorder, out any) {
 	t.Helper()
 	if err := json.Unmarshal(rr.Body.Bytes(), out); err != nil {
 		t.Fatalf("decode response %q: %v", rr.Body.String(), err)
+	}
+}
+
+// TestProbeRoute_SkipsDisabledUpstream 验证探测跳过已禁用上游：
+// 路由规则第一个候选 disabled 时应跳到下一个 enabled 候选，而不是直接返回第一个。
+func TestProbeRoute_SkipsDisabledUpstream(t *testing.T) {
+	cfg := testConfig()
+	// 硅基流动禁用，opencode_go 启用；flash 规则第一个候选是禁用的硅基流动
+	cfg.Upstreams[0].Enabled = false
+	cfg.Upstreams[1].Enabled = true
+	cfg.Routing.Rules = append(cfg.Routing.Rules, config.Rule{
+		Model: "flash", Upstreams: []string{"硅基流动", "opencode_go"},
+	})
+	h, hc := newTestHandler(t, cfg)
+	defer hc.Close()
+	h.rt = router.New(cfg)
+
+	up, m := h.probeRoute("flash", false)
+	if up != "opencode_go" {
+		t.Fatalf("probeRoute(flash) = %q, want opencode_go（跳过禁用的硅基流动）", up)
+	}
+	if m != "flash" {
+		t.Fatalf("probeRoute upstream_model = %q, want flash（无映射原样返回）", m)
+	}
+}
+
+// TestProbeRoute_AllDisabled 全部候选禁用时探测返回空（与 selectCandidates 语义一致：无可用候选）。
+func TestProbeRoute_AllDisabled(t *testing.T) {
+	cfg := testConfig()
+	for i := range cfg.Upstreams {
+		cfg.Upstreams[i].Enabled = false
+	}
+	h, hc := newTestHandler(t, cfg)
+	defer hc.Close()
+	h.rt = router.New(cfg)
+
+	up, m := h.probeRoute("deepseek-v4-flash", false)
+	if up != "" || m != "" {
+		t.Fatalf("probeRoute(all-disabled) = %q/%q, want empty", up, m)
 	}
 }
 
@@ -207,7 +247,7 @@ func TestRules_StrategyInherit(t *testing.T) {
 }
 
 func TestConfig_Endpoints(t *testing.T) {
-	cfg := testConfig() // APIKeys = "sk-admin-1"
+	cfg := testConfig()
 	h, hc := newTestHandler(t, cfg)
 	defer hc.Close()
 
@@ -219,9 +259,6 @@ func TestConfig_Endpoints(t *testing.T) {
 	if len(out.Endpoints) == 0 {
 		t.Fatal("endpoints is empty")
 	}
-	if !out.Server.APIKeysConfigured {
-		t.Error("api_keys_configured = false, want true when APIKeys set")
-	}
 	if out.Server.Port != 8787 {
 		t.Errorf("server.port = %d, want 8787", out.Server.Port)
 	}
@@ -229,22 +266,9 @@ func TestConfig_Endpoints(t *testing.T) {
 		t.Errorf("default_strategy = %q, want primary_backup", out.DefaultStrategy)
 	}
 	body := rr.Body.String()
-	// api_keys_configured 是合法布尔字段，但绝不能出现密钥明文
+	// 配置摘要绝不出现密钥明文
 	if strings.Contains(body, "sk-admin-1") {
 		t.Errorf("config response must not leak api_key value, got body: %s", body)
-	}
-
-	// APIKeys 为空时 api_keys_configured 应为 false
-	cfg2 := testConfig()
-	cfg2.Server.APIKeys = ""
-	h2, hc2 := newTestHandler(t, cfg2)
-	defer hc2.Close()
-	rr2 := httptest.NewRecorder()
-	h2.Config(rr2, httptest.NewRequest(http.MethodGet, "/admin/config", nil))
-	var out2 configResponse
-	decodeBody(t, rr2, &out2)
-	if out2.Server.APIKeysConfigured {
-		t.Error("api_keys_configured = true, want false when APIKeys empty")
 	}
 }
 

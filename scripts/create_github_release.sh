@@ -5,7 +5,7 @@
 set -e
 cd /data/codes/xuanji
 
-TOKEN="ghp_...」
+TOKEN="ghp_REVOKED_PLACEHOLDER"
 PROXY="socks5h://127.0.0.1:10809"
 REPO="icefairy/xuanji"
 
