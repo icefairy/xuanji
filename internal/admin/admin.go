@@ -2200,8 +2200,15 @@ func (h *Handler) probeRoute(model string, multimodal bool) (string, string) {
 	if err != nil || len(ups) == 0 {
 		return "", ""
 	}
-	up := ups[0]
-	return up.Name, h.rt.MapModel(up, m)
+	// 跳过已禁用上游（与管理页禁用一致：selectCandidates 会过滤 enabled=false，
+	// 探测必须同步过滤，否则展示与实际转发不一致）
+	for _, u := range ups {
+		if !u.Enabled {
+			continue
+		}
+		return u.Name, h.rt.MapModel(u, m)
+	}
+	return "", ""
 }
 
 // extractChatReply 从 OpenAI chat 响应提取模型回复文本（content 可能为数组，拼接 text 部分）。
