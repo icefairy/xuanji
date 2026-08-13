@@ -398,8 +398,7 @@ func (h *Handler) Rules(w http.ResponseWriter, _ *http.Request) {
 
 // serverSummary 是 /admin/config 中 server 块的摘要（脱敏，无 api_key 明文）。
 type serverSummary struct {
-	Port              int  `json:"port"`
-	APIKeysConfigured bool `json:"api_keys_configured"`
+	Port int `json:"port"`
 }
 
 // endpointInfo 描述一个对外 HTTP 端点，供前端展示功能清单。
@@ -428,13 +427,11 @@ var endpoints = []endpointInfo{
 	{Path: "POST /api/embed", Desc: "Ollama 原生嵌入"},
 }
 
-// Config 返回配置摘要：端口、是否配置了 api_key（仅布尔值，绝不返回明文）
-// 以及端点清单。
+// Config 返回配置摘要：端口以及端点清单。
 func (h *Handler) Config(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, configResponse{
 		Server: serverSummary{
-			Port:              h.cfg.Server.Port,
-			APIKeysConfigured: h.cfg.Server.APIKeys != "",
+			Port: h.cfg.Server.Port,
 		},
 		DefaultStrategy: h.cfg.Routing.DefaultStrategy,
 		Endpoints:       endpoints,

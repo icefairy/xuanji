@@ -25,7 +25,7 @@ func init() {
 // testConfig 构造一个含 3 个上游、2 条路由规则的配置。
 func testConfig() *config.Config {
 	return &config.Config{
-		Server: config.Server{Port: 8787, APIKeys: "sk-admin-1"},
+		Server: config.Server{Port: 8787},
 		Upstreams: []config.Upstream{
 			{Name: "硅基流动", Type: "openai", BaseURL: "http://a.local", APIKey: "sk-a",
 				Tier: "payg", Priority: 5, Weight: 100, Models: []string{"deepseek-v4-flash", "bge-m3"}},
@@ -247,7 +247,7 @@ func TestRules_StrategyInherit(t *testing.T) {
 }
 
 func TestConfig_Endpoints(t *testing.T) {
-	cfg := testConfig() // APIKeys = "sk-admin-1"
+	cfg := testConfig()
 	h, hc := newTestHandler(t, cfg)
 	defer hc.Close()
 
@@ -259,9 +259,6 @@ func TestConfig_Endpoints(t *testing.T) {
 	if len(out.Endpoints) == 0 {
 		t.Fatal("endpoints is empty")
 	}
-	if !out.Server.APIKeysConfigured {
-		t.Error("api_keys_configured = false, want true when APIKeys set")
-	}
 	if out.Server.Port != 8787 {
 		t.Errorf("server.port = %d, want 8787", out.Server.Port)
 	}
@@ -269,22 +266,9 @@ func TestConfig_Endpoints(t *testing.T) {
 		t.Errorf("default_strategy = %q, want primary_backup", out.DefaultStrategy)
 	}
 	body := rr.Body.String()
-	// api_keys_configured 是合法布尔字段，但绝不能出现密钥明文
+	// 配置摘要绝不出现密钥明文
 	if strings.Contains(body, "sk-admin-1") {
 		t.Errorf("config response must not leak api_key value, got body: %s", body)
-	}
-
-	// APIKeys 为空时 api_keys_configured 应为 false
-	cfg2 := testConfig()
-	cfg2.Server.APIKeys = ""
-	h2, hc2 := newTestHandler(t, cfg2)
-	defer hc2.Close()
-	rr2 := httptest.NewRecorder()
-	h2.Config(rr2, httptest.NewRequest(http.MethodGet, "/admin/config", nil))
-	var out2 configResponse
-	decodeBody(t, rr2, &out2)
-	if out2.Server.APIKeysConfigured {
-		t.Error("api_keys_configured = true, want false when APIKeys empty")
 	}
 }
 
