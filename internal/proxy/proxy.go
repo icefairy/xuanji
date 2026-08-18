@@ -740,6 +740,11 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 	if nb, changed := normalizeThinkingEffort(reqBody, upstreamModel); changed {
 		reqBody = nb
 	}
+	// image_url 拍平：OpenAI 标准嵌套对象 {image_url:{url}} → 上游认识的平铺字符串 {image_url:url}。
+	// vllm/agnes 等后端不认嵌套对象，收到直接 400 "Unexpected item type in content"。
+	if nb, changed := normalizeImageURLFlat(reqBody); changed {
+		reqBody = nb
+	}
 	// thinking 模式 reasoning_content 回传兼容：客户端 agent（pi / Claude Code 等）
 	// 消息规范化时可能丢掉历史 assistant 消息的 reasoning_content，DeepSeek thinking
 	// 模式多轮 tool-calling 要求原样回传否则上游 400。用上一轮响应缓存的

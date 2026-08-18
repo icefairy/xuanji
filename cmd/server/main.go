@@ -29,6 +29,7 @@ import (
 	"github.com/icefairy/xuanji/internal/anthropic"
 	"github.com/icefairy/xuanji/internal/auth"
 	"github.com/icefairy/xuanji/internal/config"
+	"github.com/icefairy/xuanji/internal/gemini"
 	"github.com/icefairy/xuanji/internal/health"
 	"github.com/icefairy/xuanji/internal/ollama"
 	"github.com/icefairy/xuanji/internal/proxy"
@@ -426,6 +427,8 @@ func buildServeMux(cfg *config.Config, rt *router.Router, hc *health.Checker, re
 	olHandler := ollama.New(rt, hc)
 	olHandler.SetTimeout(time.Duration(cfg.Retry.UpstreamTimeout) * time.Second)
 	pxHandler := proxy.New(cfg, rt, hc)
+	gmHandler := gemini.New(rt, hc)
+	gmHandler.SetTimeout(time.Duration(cfg.Retry.UpstreamTimeout) * time.Second)
 	ff := proxy.NewFastFailCache(time.Duration(cfg.Retry.FastFailMinutes) * time.Minute)
 	pxHandler.SetFastFail(ff)
 	admHandler.SetFastFail(ff)
@@ -454,8 +457,10 @@ func buildServeMux(cfg *config.Config, rt *router.Router, hc *health.Checker, re
 	if rec != nil {
 		olHandler.SetRecorder(rec)
 		pxHandler.SetRecorder(rec)
+		gmHandler.SetRecorder(rec)
 		olHandler.SetKeyName(keyNameFn)
 		pxHandler.SetKeyName(keyNameFn)
+		gmHandler.SetKeyName(keyNameFn)
 	}
 	// 模型单价查询：按上游真实模型名定价（默认价兜底在 store.PriceFor 内部）
 	pxHandler.SetPriceFor(storeInst.PriceFor)
@@ -468,7 +473,7 @@ func buildServeMux(cfg *config.Config, rt *router.Router, hc *health.Checker, re
 
 	// OpenAI 兼容入口：按路由结果分发（ollama 上游走转换，其余走 proxy）
 	mux.HandleFunc("GET /v1/models", apiKeys.Middleware(admHandler.Models))
-	mux.HandleFunc("POST /v1/chat/completions", apiKeys.Middleware(dispatchOpenAI(rt, olHandler, pxHandler)))
+	mux.HandleFunc("POST /v1/chat/completions", apiKeys.Middleware(dispatchOpenAI(rt, olHandler, pxHandler, gmHandler)))
 	// 老版 OpenAI 兼容接口（text 补全）：直接走 proxy 转换转发，ollama 上游兼容暂不考虑
 	mux.HandleFunc("POST /v1/completions", apiKeys.Middleware(pxHandler.Completions))
 	mux.HandleFunc("POST /v1/embeddings", apiKeys.Middleware(dispatchEmbeddings(rt, olHandler, pxHandler)))
@@ -479,6 +484,8 @@ func buildServeMux(cfg *config.Config, rt *router.Router, hc *health.Checker, re
 		antHandler.SetRecorder(rec)
 	}
 	mux.HandleFunc("POST /v1/messages", apiKeys.Middleware(antHandler.Messages))
+
+	// Gemini 上游：由 dispatchOpenAI 在路由命中 gemini 类型上游时调用转换（见上方）。
 	mux.HandleFunc("POST /v1/images/generations", apiKeys.Middleware(pxHandler.ImageGenerations))
 	mux.HandleFunc("POST /v1/audio/speech", apiKeys.Middleware(pxHandler.AudioSpeech))
 	mux.HandleFunc("POST /v1/audio/transcriptions", apiKeys.Middleware(pxHandler.AudioTranscriptions))
@@ -535,8 +542,9 @@ func reloadConfig(storeInst *store.Store, rec *store.Recorder) error {
 }
 
 // dispatchOpenAI 按请求 model 的路由结果分发 /v1/chat/completions：
-// 命中 ollama 上游走 ollama 协议转换，其余走 OpenAI proxy 转发。
-func dispatchOpenAI(rt *router.Router, ol *ollama.Handler, px *proxy.Handler) http.HandlerFunc {
+// 命中 ollama 上游走 ollama 协议转换，命中 gemini 上游走 Gemini 转换，
+// 其余走 OpenAI proxy 转发。
+func dispatchOpenAI(rt *router.Router, ol *ollama.Handler, px *proxy.Handler, gm *gemini.Handler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -561,6 +569,10 @@ func dispatchOpenAI(rt *router.Router, ol *ollama.Handler, px *proxy.Handler) ht
 		// 第一个候选（按 tier+priority 排序）是 ollama 则走转换
 		if len(ups) > 0 && ups[0].IsOllama() {
 			ol.OpenAICompletions(w, r)
+			return
+		}
+		if len(ups) > 0 && ups[0].IsGemini() {
+			gm.OpenAICompletions(w, r)
 			return
 		}
 		px.ChatCompletions(w, r)
