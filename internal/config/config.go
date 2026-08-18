@@ -146,6 +146,11 @@ func (u *Upstream) IsAnthropic() bool {
 	return strings.EqualFold(u.Type, "anthropic")
 }
 
+// IsGemini 判断上游是否为 Google Gemini 原生协议。
+func (u *Upstream) IsGemini() bool {
+	return strings.EqualFold(u.Type, "gemini")
+}
+
 // TierWeight 返回上游的成本层级权重，用于路由排序：subscription(0) < free(1) < payg(2)。
 // 包月（订阅）优先——用户付费的官方服务质量最高，先用完包月额度；
 // 免费次之；按量付费最不优先（按量花钱，能省则省）。
