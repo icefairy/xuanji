@@ -141,9 +141,21 @@ func (u *Upstream) IsOllama() bool {
 	return strings.EqualFold(u.Type, "ollama")
 }
 
+// IsDots 判断上游是否为 Dots API 开放平台（dots.ai）。
+// Dots 的特殊性：认证用 api-key 请求头（非 Authorization Bearer），
+// 图片要求标准 OpenAI 嵌套格式（image_url:{url}，不接受拍平字符串）。
+func (u *Upstream) IsDots() bool {
+	return strings.EqualFold(u.Type, "dots")
+}
+
 // IsAnthropic 判断上游是否为 Anthropic 原生协议。
 func (u *Upstream) IsAnthropic() bool {
 	return strings.EqualFold(u.Type, "anthropic")
+}
+
+// IsGemini 判断上游是否为 Google Gemini 原生协议。
+func (u *Upstream) IsGemini() bool {
+	return strings.EqualFold(u.Type, "gemini")
 }
 
 // TierWeight 返回上游的成本层级权重，用于路由排序：subscription(0) < free(1) < payg(2)。
