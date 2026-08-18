@@ -1690,7 +1690,10 @@ func (h *Handler) UpstreamModels(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]string{"error": err.Error()})
 		return
 	}
-	if up.APIKey != "" {
+	// 鉴权头按上游协议区分：Gemini 用 x-goog-api-key，其余用 Bearer。
+	if up.IsGemini() {
+		httpReq.Header.Set("x-goog-api-key", up.APIKey)
+	} else if up.APIKey != "" {
 		httpReq.Header.Set("Authorization", "Bearer "+up.APIKey)
 	}
 
@@ -1706,19 +1709,40 @@ func (h *Handler) UpstreamModels(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{"error": fmt.Sprintf("上游返回 HTTP %d: %s", resp.StatusCode, truncateStr(string(respBody), 200))})
 		return
 	}
-	var data struct {
-		Data []struct {
-			ID string `json:"id"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(respBody, &data); err != nil {
-		writeJSON(w, map[string]string{"error": "解析响应失败: " + err.Error()})
-		return
-	}
+
 	var models []string
-	for _, m := range data.Data {
-		if m.ID != "" {
-			models = append(models, m.ID)
+	if up.IsGemini() {
+		// Gemini 格式：{"models":[{"name":"models/gemini-2.0-flash",...}]}，name 带 models/ 前缀。
+		var gdata struct {
+			Models []struct {
+				Name string `json:"name"`
+			} `json:"models"`
+		}
+		if err := json.Unmarshal(respBody, &gdata); err != nil {
+			writeJSON(w, map[string]string{"error": "解析响应失败: " + err.Error()})
+			return
+		}
+		for _, m := range gdata.Models {
+			id := strings.TrimPrefix(m.Name, "models/")
+			if id != "" {
+				models = append(models, id)
+			}
+		}
+	} else {
+		// OpenAI 兼容格式：{"data":[{"id":"...",...}]}
+		var data struct {
+			Data []struct {
+				ID string `json:"id"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(respBody, &data); err != nil {
+			writeJSON(w, map[string]string{"error": "解析响应失败: " + err.Error()})
+			return
+		}
+		for _, m := range data.Data {
+			if m.ID != "" {
+				models = append(models, m.ID)
+			}
 		}
 	}
 	writeJSON(w, map[string]any{"status": "ok", "models": models, "count": len(models)})

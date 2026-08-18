@@ -204,6 +204,12 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, claudeReq 
 		return false, true, fmt.Errorf("build upstream request: %w", err), 0, 0
 	}
 	req.Header.Set("Authorization", "Bearer "+up.APIKey)
+	if up.IsDots() {
+		req.Header.Set("api-key", up.APIKey)
+		req.Header.Del("Authorization")
+		// Dots 的 Anthropic 兼容端点需要版本头
+		req.Header.Set("anthropic-version", "2023-06-01")
+	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := h.client.Do(req)

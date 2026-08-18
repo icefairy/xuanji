@@ -398,6 +398,17 @@ func realModels(up *config.Upstream, model string) []string {
 //   - 客户端模型名在 model_mapping 中有映射 → 支持（映射可能指向其他真实模型）
 //   - 客户端模型名是 models 中某项的真实模型名（如 model_mapping 的 value）→ 支持
 //   - 其余情况返回 false（路由该上游必然 404/400）
+// setUpstreamAuth 按上游类型设置认证请求头。
+// 默认 OpenAI 惯例 Authorization: Bearer <key>；Dots API（dots.ai）要求 api-key 头。
+func setUpstreamAuth(req *http.Request, up *config.Upstream) {
+	if up.IsDots() {
+		req.Header.Set("api-key", up.APIKey)
+		req.Header.Del("Authorization")
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+up.APIKey)
+}
+
 func upstreamSupportsModel(up *config.Upstream, model string) bool {
 	if up == nil {
 		return true
@@ -740,6 +751,13 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 	if nb, changed := normalizeThinkingEffort(reqBody, upstreamModel); changed {
 		reqBody = nb
 	}
+	// image_url 拍平：OpenAI 标准嵌套对象 {image_url:{url}} → 上游认识的平铺字符串 {image_url:url}。
+		// vllm/agnes 等后端不认嵌套对象，收到报 400 Unexpected item type；Dots 例外（要求标准嵌套，跳过拍平）。
+		if !up.IsDots() {
+			if nb, changed := normalizeImageURLFlat(reqBody); changed {
+				reqBody = nb
+			}
+		}
 	// thinking 模式 reasoning_content 回传兼容：客户端 agent（pi / Claude Code 等）
 	// 消息规范化时可能丢掉历史 assistant 消息的 reasoning_content，DeepSeek thinking
 	// 模式多轮 tool-calling 要求原样回传否则上游 400。用上一轮响应缓存的
@@ -783,7 +801,7 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 		}
 		return false, true, fmt.Errorf("build upstream request: %w", err), 0, 0, 0, 0
 	}
-	req.Header.Set("Authorization", "Bearer "+up.APIKey)
+	setUpstreamAuth(req, up)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := h.client.Do(req)
@@ -1310,7 +1328,7 @@ func (h *Handler) forwardRerank(w http.ResponseWriter, r *http.Request, body []b
 	if err != nil {
 		return false, true, fmt.Errorf("build rerank request: %w", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+up.APIKey)
+	setUpstreamAuth(req, up)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := h.client.Do(req)
@@ -1477,7 +1495,7 @@ func (h *Handler) forwardEmbedding(w http.ResponseWriter, r *http.Request, body 
 	if err != nil {
 		return false, true, fmt.Errorf("build embedding request: %w", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+up.APIKey)
+	setUpstreamAuth(req, up)
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := h.client.Do(req)

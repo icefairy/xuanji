@@ -2026,14 +2026,22 @@
             <label>Base URL</label
             ><input
               v-model="addForm.base_url"
-              placeholder="需带完整版本前缀，如 https://api.xxx.com/v1 或 /api/v3 /v2 /api/paas/v4"
+              placeholder="需带完整版本前缀。gemini: https://generativelanguage.googleapis.com/v1beta；其他如 https://api.xxx.com/v1 或 /api/v3 /v2 /api/paas/v4"
             />
           </div>
           <div class="form-group">
             <label>API Key</label><input v-model="addForm.api_key" />
           </div>
           <div class="form-group">
-            <label>类型</label><input v-model="addForm.type" />
+            <label>类型</label
+            ><select v-model="addForm.type">
+              <option value="openai">openai（原生转发）</option>
+              <option value="openai-compatible">openai-compatible</option>
+              <option value="anthropic">anthropic</option>
+              <option value="ollama">ollama</option>
+              <option value="gemini">gemini（自动转换）</option>
+              <option value="dots">dots（Dots 开放平台，api-key 头认证）</option>
+            </select>
           </div>
           <div class="form-group">
             <label>成本层级</label
@@ -2068,6 +2076,17 @@
           <h3>编辑上游</h3>
           <div class="form-group">
             <label>名称</label><input v-model="editForm.name" disabled />
+          </div>
+          <div class="form-group">
+            <label>类型</label
+            ><select v-model="editForm.type">
+              <option value="openai">openai（原生转发）</option>
+              <option value="openai-compatible">openai-compatible</option>
+              <option value="anthropic">anthropic</option>
+              <option value="ollama">ollama</option>
+              <option value="gemini">gemini（自动转换）</option>
+              <option value="dots">dots（Dots 开放平台，api-key 头认证）</option>
+            </select>
           </div>
           <div class="form-group">
             <label>Base URL</label><input v-model="editForm.base_url" />
