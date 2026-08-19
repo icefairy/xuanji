@@ -751,6 +751,10 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 	if nb, changed := normalizeThinkingEffort(reqBody, upstreamModel); changed {
 		reqBody = nb
 	}
+	// 请求体复写：网关层强制覆盖请求参数（如关思考、固定采样参数）
+	if nb, changed := applyRequestOverride(reqBody, up.RequestOverride); changed {
+		reqBody = nb
+	}
 	// image_url 拍平：OpenAI 标准嵌套对象 {image_url:{url}} → 上游认识的平铺字符串 {image_url:url}。
 		// vllm/agnes 等后端不认嵌套对象，收到报 400 Unexpected item type；Dots 例外（要求标准嵌套，跳过拍平）。
 		if !up.IsDots() {

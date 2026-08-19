@@ -2155,6 +2155,31 @@
               格式：{"简单名":"上游真实名"}。点「从上游获取模型」自动拉取真实模型并生成简化映射，可再手动调整。
             </div>
           </div>
+          <div
+            style="
+              margin-bottom: 16px;
+              display: flex;
+              flex-direction: column;
+            "
+          >
+            <label style="margin-bottom: 4px">请求体复写（可选）</label>
+            <textarea
+              rows="4"
+              v-model="editForm.request_override"
+              placeholder='{"chat_template_kwargs":{"enable_thinking":false},"temperature":0.3}'
+              style="
+                font-family: monospace;
+                font-size: 12px;
+                width: 100%;
+                padding: 8px;
+                border: 1px solid #dcdfe6;
+                border-radius: 4px;
+              "
+            ></textarea>
+            <div style="margin-top: 4px; font-size: 12px; color: #909399">
+              覆盖转发给上游的请求参数（空=不启用）。仅填部分字段即可，嵌套对象逐层合并覆盖，未填的子键保留客户端原值。常用于关闭思考、固定采样参数。
+            </div>
+          </div>
           <div class="modal-footer">
             <button class="btn" @click="showEditDialog=false">取消</button
             ><button class="btn btn-primary" @click="doEditUpstream">
@@ -2762,7 +2787,7 @@
               model_mapping: "{}",
             },
             showEditDialog: false,
-            editForm: { billing_exempt: false },
+            editForm: { billing_exempt: false, request_override: "" },
             fetchingModels: false,
             showCloneDialog: false,
             cloneForm: { name: "", api_key: "" },
@@ -4304,6 +4329,19 @@
               }
               if (!this.editForm.model_mapping)
                 this.editForm.model_mapping = "{}";
+              // request_override 可能是对象或字符串，统一成 JSON 字符串便于编辑
+              if (
+                this.editForm.request_override &&
+                typeof this.editForm.request_override === "object"
+              ) {
+                this.editForm.request_override = JSON.stringify(
+                  this.editForm.request_override,
+                  null,
+                  2,
+                );
+              }
+              if (!this.editForm.request_override)
+                this.editForm.request_override = "";
               // models 统一成逗号分隔字符串（兼容数组与历史 JSON 字符串两种来源）
               if (Array.isArray(this.editForm.models)) {
                 this.editForm.models = this.editForm.models.join(", ");
@@ -4337,6 +4375,7 @@
                     weight: f.weight,
                     models: self.normalizeModels(f.models),
                     model_mapping: f.model_mapping || "{}",
+                    request_override: f.request_override || "",
                     billing_exempt: f.billing_exempt ? 1 : 0,
                   },
                 })

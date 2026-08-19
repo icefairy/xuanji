@@ -130,6 +130,7 @@ type Upstream struct {
 	Weight       int               `yaml:"weight"`
 	Models       []string          `yaml:"models"`
 	ModelMapping map[string]string `yaml:"model_mapping"` // 客户端模型名 → 上游真实模型名
+	RequestOverride string            `yaml:"request_override"` // 请求体复写（JSON 字符串）：转发前强制覆盖请求体部分字段，空=不启用
 	Enabled      bool              `yaml:"enabled"`       // 禁用（false）时不参与转发路由
 	MaxTokensCap int               `yaml:"max_tokens_cap"` // 上游 max_tokens 上限；0=不限制（客户端传超范围值时 clamp 到该值，防 400）
 	Quota        *Quota            `yaml:"quota"`
@@ -509,6 +510,7 @@ func LoadFromDB(s *store.Store) (*Config, error) {
 		if u.ModelMapping != "" {
 			json.Unmarshal([]byte(u.ModelMapping), &up.ModelMapping)
 		}
+		up.RequestOverride = u.RequestOverride
 		// 每上游 max_tokens 上限：config 表键 upstream.<name>.max_tokens_cap
 		// （不落 upstreams 表，避免动表结构；0=不限制，默认行为不变）
 		if v, ok := all["upstream."+u.Name+".max_tokens_cap"]; ok {
