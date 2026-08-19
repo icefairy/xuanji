@@ -1008,11 +1008,26 @@ func (h *Handler) ruleHealthState(upstreams []string) []string {
 
 // sortUpstreamsJSON 解析规则上游列表（JSON 数组字符串），按路由优先级排序后重新序列化。
 // 排序规则与 selectCandidates 一致：tier 升序（free→subscription→payg）→ 同 tier 内 weight 降序。
+// 兼容两种输入：JSON 数组字符串（"[\"a\",\"b\"]"）与逗号分隔字符串（"a,b"），
+// 逗号串会先转成 JSON 数组再排序入库，避免 DB 存入非法 JSON 导致加载时规则失效（404）。
 // 解析失败时原样返回，不阻断保存。
 func (h *Handler) sortUpstreamsJSON(s string) string {
 	var ups []string
 	if err := json.Unmarshal([]byte(s), &ups); err != nil {
-		return s
+		// 非 JSON 数组：尝试按逗号拆分（兼容 "a,b" 旧式/直觉式输入）
+		trimmed := strings.TrimSpace(s)
+		if trimmed != "" {
+			parts := strings.Split(trimmed, ",")
+			ups = make([]string, 0, len(parts))
+			for _, p := range parts {
+				if p = strings.TrimSpace(p); p != "" {
+					ups = append(ups, p)
+				}
+			}
+		}
+		if len(ups) == 0 {
+			return s
+		}
 	}
 	sorted, _, _, _ := sortRuleUpstreams(ups, nil, nil, nil, h)
 	out, err := json.Marshal(sorted)
