@@ -2741,6 +2741,7 @@
               },
             ],
             logTimer: null,
+            autoRefreshPaused: false,
             logTotal: 0,
             logPage: 1,
             logPageSize: 50,
@@ -4784,16 +4785,57 @@
               });
             if (this.token) {
               this.switchTab("metrics");
-              this.logTimer = setInterval(function () {
-                self.loadLogs();
-                if (self.tab === "rules") {
-                  self.loadRules();
-                }
-              }, 10000);
+              this.startAutoRefresh();
+              // 浏览器选项卡（窗口）非激活时暂停自动刷新，恢复激活时立即续刷：
+              // Page Visibility API 在 document.hidden 变为 true/false 时触发。
+              var self = this;
+              this._visListener = function () {
+                self.onVisibilityChange();
+              };
+              document.addEventListener(
+                "visibilitychange",
+                this._visListener,
+              );
+            }
+          },
+          // 启动自动刷新（每 10 秒刷日志、在 rules 页时刷路由状态）。
+          startAutoRefresh: function () {
+            var self = this;
+            if (this.logTimer) clearInterval(this.logTimer);
+            this.autoRefreshPaused = false;
+            this.logTimer = setInterval(function () {
+              self.loadLogs();
+              if (self.tab === "rules") {
+                self.loadRules();
+              }
+            }, 10000);
+          },
+          // 停止自动刷新并置暂停标记。
+          stopAutoRefresh: function () {
+            if (this.logTimer) clearInterval(this.logTimer);
+            this.logTimer = null;
+            this.autoRefreshPaused = true;
+          },
+          // 选项卡可见性变化回调：隐藏时暂停，恢复可见时续刷。
+          onVisibilityChange: function () {
+            if (document.hidden) {
+              this.stopAutoRefresh();
+            } else if (this.autoRefreshPaused) {
+              // 回到激活状态：立即刷一次，再恢复定时。
+              this.startAutoRefresh();
+              this.loadLogs();
+              if (this.tab === "rules") this.loadRules();
             }
           },
           beforeDestroy: function () {
             if (this.logTimer) clearInterval(this.logTimer);
+            // 移除选项卡可见性监听，避免泄漏。
+            if (this._visListener) {
+              document.removeEventListener(
+                "visibilitychange",
+                this._visListener,
+              );
+            }
           },
         });
       }
