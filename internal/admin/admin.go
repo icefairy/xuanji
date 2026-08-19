@@ -142,6 +142,7 @@ type upstreamResponse struct {
 	Models        []string `json:"models"`
 	ModelCount    int      `json:"model_count"`
 	ModelMapping  string   `json:"model_mapping"` // JSON 对象字符串
+	RequestOverride string `json:"request_override"` // 请求体复写 JSON 字符串
 }
 
 // fastFailState 返回上游是否处于快速失败黑名单（渠道级判断，不区分模型）。
@@ -173,7 +174,8 @@ func (h *Handler) Upstreams(w http.ResponseWriter, _ *http.Request) {
 													Models:        models,
 													ModelCount:    len(models),
 													ModelMapping:  u.ModelMapping,
-												})
+													RequestOverride: u.RequestOverride,
+													})
 			}
 			writeJSON(w, resp)
 			return
