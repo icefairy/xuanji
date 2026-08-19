@@ -532,7 +532,9 @@ func LoadFromDB(s *store.Store) (*Config, error) {
 			VisionFallback: r.VisionFallback,
 		}
 		if r.Upstreams != "" {
-			json.Unmarshal([]byte(r.Upstreams), &rule.Upstreams)
+			// 正常存储是 JSON 数组字符串；兜底兼容历史脏数据（纯逗号串），
+			// 避免 json.Unmarshal 失败后 rule.Upstreams 为空导致规则失效（404）。
+			rule.Upstreams = ParseModelsString(r.Upstreams)
 		}
 		cfg.Routing.Rules = append(cfg.Routing.Rules, rule)
 	}
