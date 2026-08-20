@@ -45,6 +45,8 @@ func normalizeThinkingEffort(body []byte, upstreamModel string) ([]byte, bool) {
 		return applySenseNova(body, effort)
 	case "agnes":
 		return applyAgnes(body, effort)
+	case "mimo":
+		return applyMimo(body, effort)
 	case "kimi-k3":
 		return applyKimiK3(body, effort)
 	case "kimi-k2", "glm":
@@ -68,6 +70,8 @@ func matchThinkingProfile(model string) string {
 		return "deepseek"
 	case strings.Contains(m, "agnes"):
 		return "agnes"
+	case strings.Contains(m, "mimo"):
+		return "mimo"
 	case strings.Contains(m, "kimi-k3"), strings.HasPrefix(m, "kimi-k3"):
 		return "kimi-k3"
 	case strings.Contains(m, "kimi-k2"):
@@ -175,6 +179,20 @@ func applyAgnes(body []byte, effort string) ([]byte, bool) {
 		return body, false
 	}
 	nb, err := sjson.SetBytes(body, "reasoning_effort", "max")
+	if err != nil {
+		return body, false
+	}
+	return nb, true
+}
+
+// applyMimo MiMo（mimo-v2.5 / mimo-v2.5-pro 等）：reasoning_effort 原生支持，
+// 但枚举只到 low/medium/high（实测 xhigh、max 原样透传→上游均 400 "Invalid request parameters"）。
+// 因此把 xhigh/max 都降为 high（mimo 最高有效档），其余档位透传。
+func applyMimo(body []byte, effort string) ([]byte, bool) {
+	if effort != "xhigh" && effort != "max" {
+		return body, false
+	}
+	nb, err := sjson.SetBytes(body, "reasoning_effort", "high")
 	if err != nil {
 		return body, false
 	}
