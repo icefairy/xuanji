@@ -126,3 +126,27 @@ func TestMatchEffortPattern(t *testing.T) {
 		}
 	}
 }
+
+// agnes-2.5-* 被识别为 agnes profile，xhigh → max（agnes 枚举无 xhigh，否则 400）。
+func TestNormalizeThinkingEffort_Agnes(t *testing.T) {
+	profiles := []struct{ model, effort, wantEffort string }{
+		{"agnes-2.5-flash", "xhigh", "max"},
+		{"agnes-2.5-pro", "xhigh", "max"},
+		{"agnes-2.5-flash", "high", "high"},
+		{"agnes-2.5-pro", "low", "low"},
+	}
+	for _, p := range profiles {
+		if got := matchThinkingProfile(p.model); got != "agnes" {
+			t.Fatalf("matchThinkingProfile(%q)=%q want agnes", p.model, got)
+		}
+		body := []byte(`{"model":"` + p.model + `","reasoning_effort":"` + p.effort + `"}`)
+		out, changed := normalizeThinkingEffort(body, p.model)
+		got := gjson.GetBytes(out, "reasoning_effort").String()
+		if changed && got != p.wantEffort {
+			t.Fatalf("normalizeThinkingEffort(%s, effort=%s)=%s want %s", p.model, p.effort, got, p.wantEffort)
+		}
+		if !changed && p.effort != p.wantEffort {
+			t.Fatalf("expected change for %s effort=%s", p.model, p.effort)
+		}
+	}
+}

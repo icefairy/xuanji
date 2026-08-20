@@ -2105,7 +2105,7 @@ func (h *Handler) Chat(w http.ResponseWriter, r *http.Request) {
 		req.MaxTokens = 1024
 	}
 	// 图片：把最后一条 user 消息的 content 从 string 改为多模态数组
-	messages, multimodal := buildChatMessages(req.Messages, req.Images)
+	messages, _ := buildChatMessages(req.Messages, req.Images)
 
 	// 组装 OpenAI chat body（采样参数仅非零时携带；0 表示不传）
 	body := map[string]any{
@@ -2133,10 +2133,10 @@ func (h *Handler) Chat(w http.ResponseWriter, r *http.Request) {
 	}
 	payload, _ := json.Marshal(body)
 
-	// 路由探测（尽力而为）：供 routing 展示，实际命中可能因健康/黑名单/随机略有出入
-	upstream, upstreamModel := h.probeRoute(req.Model, multimodal)
-
 	// 构造合成请求走完整转发链路（复用 ChatCompletions，含 vision fallback 与日志记录）
+	// 带调试标记头：proxy 会把实际命中的上游与真实模型名写进响应自定义 header
+	// （X-Xuanji-Upstream / X-Xuanji-Upstream-Model），供 routing 展示——保证展示的就是
+	// 实际转发（含重试后）真正打中的上游，而非转发前再按规则选一次。
 	start := time.Now()
 	httpReq, err := http.NewRequestWithContext(r.Context(), http.MethodPost, "/v1/chat/completions", bytes.NewReader(payload))
 	if err != nil {
@@ -2144,16 +2144,18 @@ func (h *Handler) Chat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("X-Xuanji-Debug-Channel", "1")
 	cw := &captureWriter{header: http.Header{}}
 	h.px.ChatCompletions(cw, httpReq)
 	durationMS := time.Since(start).Milliseconds()
 
 	routing := map[string]any{"status": cw.status, "duration_ms": durationMS}
-	if upstream != "" {
-		routing["upstream"] = upstream
+	// 从响应自定义 header 读实际命中的上游与真实模型名
+	if up := cw.header.Get("X-Xuanji-Upstream"); up != "" {
+		routing["upstream"] = up
 	}
-	if upstreamModel != "" {
-		routing["upstream_model"] = upstreamModel
+	if um := cw.header.Get("X-Xuanji-Upstream-Model"); um != "" {
+		routing["upstream_model"] = um
 	}
 
 	respBody := cw.body.Bytes()
@@ -2219,34 +2221,6 @@ func mimeForImage(name string) string {
 	default:
 		return "image/png"
 	}
-}
-
-// probeRoute 尽力而为地探测 model 会命中的上游名与真实模型名（展示用）。
-// 与 proxy 内部路由逻辑一致：多模态请求命中 vision=0 且配置 vision_fallback 的
-// 规则时改用兑底模型探测；取第一个候选 + MapModel 的真实模型名。
-func (h *Handler) probeRoute(model string, multimodal bool) (string, string) {
-	if h.rt == nil {
-		return "", ""
-	}
-	m := model
-	if multimodal {
-		if rule := h.rt.FindRule(m); rule != nil && !rule.Vision && strings.TrimSpace(rule.VisionFallback) != "" {
-			m = rule.VisionFallback
-		}
-	}
-	ups, _, err := h.rt.Route(m)
-	if err != nil || len(ups) == 0 {
-		return "", ""
-	}
-	// 跳过已禁用上游（与管理页禁用一致：selectCandidates 会过滤 enabled=false，
-	// 探测必须同步过滤，否则展示与实际转发不一致）
-	for _, u := range ups {
-		if !u.Enabled {
-			continue
-		}
-		return u.Name, h.rt.MapModel(u, m)
-	}
-	return "", ""
 }
 
 // extractChatReply 从 OpenAI chat 响应提取模型回复文本（content 可能为数组，拼接 text 部分）。

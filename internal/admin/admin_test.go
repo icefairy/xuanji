@@ -13,7 +13,6 @@ import (
 
 	"github.com/icefairy/xuanji/internal/config"
 	"github.com/icefairy/xuanji/internal/health"
-	"github.com/icefairy/xuanji/internal/router"
 	"github.com/icefairy/xuanji/internal/store"
 )
 
@@ -57,45 +56,6 @@ func decodeBody(t *testing.T, rr *httptest.ResponseRecorder, out any) {
 	t.Helper()
 	if err := json.Unmarshal(rr.Body.Bytes(), out); err != nil {
 		t.Fatalf("decode response %q: %v", rr.Body.String(), err)
-	}
-}
-
-// TestProbeRoute_SkipsDisabledUpstream 验证探测跳过已禁用上游：
-// 路由规则第一个候选 disabled 时应跳到下一个 enabled 候选，而不是直接返回第一个。
-func TestProbeRoute_SkipsDisabledUpstream(t *testing.T) {
-	cfg := testConfig()
-	// 硅基流动禁用，opencode_go 启用；flash 规则第一个候选是禁用的硅基流动
-	cfg.Upstreams[0].Enabled = false
-	cfg.Upstreams[1].Enabled = true
-	cfg.Routing.Rules = append(cfg.Routing.Rules, config.Rule{
-		Model: "flash", Upstreams: []string{"硅基流动", "opencode_go"},
-	})
-	h, hc := newTestHandler(t, cfg)
-	defer hc.Close()
-	h.rt = router.New(cfg)
-
-	up, m := h.probeRoute("flash", false)
-	if up != "opencode_go" {
-		t.Fatalf("probeRoute(flash) = %q, want opencode_go（跳过禁用的硅基流动）", up)
-	}
-	if m != "flash" {
-		t.Fatalf("probeRoute upstream_model = %q, want flash（无映射原样返回）", m)
-	}
-}
-
-// TestProbeRoute_AllDisabled 全部候选禁用时探测返回空（与 selectCandidates 语义一致：无可用候选）。
-func TestProbeRoute_AllDisabled(t *testing.T) {
-	cfg := testConfig()
-	for i := range cfg.Upstreams {
-		cfg.Upstreams[i].Enabled = false
-	}
-	h, hc := newTestHandler(t, cfg)
-	defer hc.Close()
-	h.rt = router.New(cfg)
-
-	up, m := h.probeRoute("deepseek-v4-flash", false)
-	if up != "" || m != "" {
-		t.Fatalf("probeRoute(all-disabled) = %q/%q, want empty", up, m)
 	}
 }
 
