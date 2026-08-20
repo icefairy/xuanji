@@ -150,3 +150,27 @@ func TestNormalizeThinkingEffort_Agnes(t *testing.T) {
 		}
 	}
 }
+
+// mimo-* 被识别为 mimo profile，xhigh/max → high（mimo 枚举只到 high，否则 400）。
+func TestNormalizeThinkingEffort_Mimo(t *testing.T) {
+	profiles := []struct{ model, effort, wantEffort string }{
+		{"mimo-v2.5", "xhigh", "high"},
+		{"mimo-v2.5-pro", "max", "high"},
+		{"mimo-v2.5", "high", "high"},
+		{"mimo-v2.5-pro", "low", "low"},
+	}
+	for _, p := range profiles {
+		if got := matchThinkingProfile(p.model); got != "mimo" {
+			t.Fatalf("matchThinkingProfile(%q)=%q want mimo", p.model, got)
+		}
+		body := []byte(`{"model":"` + p.model + `","reasoning_effort":"` + p.effort + `"}`)
+		out, changed := normalizeThinkingEffort(body, p.model)
+		got := gjson.GetBytes(out, "reasoning_effort").String()
+		if changed && got != p.wantEffort {
+			t.Fatalf("normalizeThinkingEffort(%s, effort=%s)=%s want %s", p.model, p.effort, got, p.wantEffort)
+		}
+		if !changed && p.effort != p.wantEffort {
+			t.Fatalf("expected change for %s effort=%s", p.model, p.effort)
+		}
+	}
+}
