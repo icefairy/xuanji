@@ -912,6 +912,14 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 		if h.cacheReasoningEnabled() {
 			cacheReasoningFromMessage(respBody, h.reasoning)
 		}
+		// 调试通道：/admin/chat（对话调试）带标记头时，把实际命中的上游与真实模型名
+		// 写进响应自定义 header（仅调试通道生效；正常客户端不触发，也不透传到上游）。
+		if r.Header.Get("X-Xuanji-Debug-Channel") != "" {
+			w.Header().Set("X-Xuanji-Upstream", up.Name)
+			if upstreamModel != "" {
+				w.Header().Set("X-Xuanji-Upstream-Model", upstreamModel)
+			}
+		}
 		copyHeader(w.Header(), resp.Header)
 		w.WriteHeader(resp.StatusCode)
 		if _, werr := w.Write(respBody); werr != nil {

@@ -43,6 +43,8 @@ func normalizeThinkingEffort(body []byte, upstreamModel string) ([]byte, bool) {
 		return applyDeepSeek(body, effort)
 	case "sensenova":
 		return applySenseNova(body, effort)
+	case "agnes":
+		return applyAgnes(body, effort)
 	case "kimi-k3":
 		return applyKimiK3(body, effort)
 	case "kimi-k2", "glm":
@@ -64,6 +66,8 @@ func matchThinkingProfile(model string) string {
 		return "sensenova"
 	case strings.Contains(m, "deepseek"):
 		return "deepseek"
+	case strings.Contains(m, "agnes"):
+		return "agnes"
 	case strings.Contains(m, "kimi-k3"), strings.HasPrefix(m, "kimi-k3"):
 		return "kimi-k3"
 	case strings.Contains(m, "kimi-k2"):
@@ -159,6 +163,20 @@ func applySenseNova(body []byte, effort string) ([]byte, bool) {
 		if err != nil {
 			return body, false
 		}
+	}
+	return nb, true
+}
+
+// applyAgnes AgnesAI（sglang 托管）：reasoning_effort 原生支持，但枚举是
+// none/low/medium/high/max（OpenAI 标准，**没有 xhigh**，实测 xhigh 直接 400）。
+// 仅需把 xhigh 映射为 max；其余档位（none/low/medium/high/max）原样透传。
+func applyAgnes(body []byte, effort string) ([]byte, bool) {
+	if effort != "xhigh" {
+		return body, false
+	}
+	nb, err := sjson.SetBytes(body, "reasoning_effort", "max")
+	if err != nil {
+		return body, false
 	}
 	return nb, true
 }
