@@ -1687,27 +1687,88 @@
               >成员 {{ g.member_count }} 人</span
             >
             <span>
-              <button class="btn" @click="editGroupAllowed(g)">
-                模型白名单
+              <button class="btn" @click="openGroupAllowed(g)">
+                {{ g._editAllowed ? '收起白名单' : '模型白名单' }}
               </button>
               <button class="btn btn-danger" @click="delGroup(g)">
                 删除组
               </button>
             </span>
           </div>
+          <div style="color: #909399; font-size: 12px; margin-bottom: 8px">
+            可用模型：{{
+              g.allowed_models && g.allowed_models !== '[]'
+                ? g.allowed_models
+                : '不限（白名单未限制；已配配额的模型仍可用）'
+            }}
+          </div>
+          <!-- 白名单编辑器：从模型路由勾选 -->
           <div
-            style="color: #909399; font-size: 12px; margin-bottom: 8px"
+            v-if="g._editAllowed"
+            style="
+              border: 1px dashed #dcdfe6;
+              border-radius: 6px;
+              padding: 10px;
+              margin-bottom: 10px;
+              background: #fafafa;
+            "
           >
-            模型白名单：{{ g.allowed_models || '[]（不限）' }}
+            <div style="font-size: 13px; margin-bottom: 8px">
+              从「模型路由」勾选该组可用模型（未勾选的模型组内不能调用；勾选后若该模型也配了配额即受额度限制，没配配额则不限量）：
+            </div>
+            <div
+              style="
+                display: flex;
+                flex-wrap: wrap;
+                gap: 6px 18px;
+                margin-bottom: 10px;
+              "
+            >
+              <label
+                v-for="m in groupRuleModels"
+                :key="m"
+                style="font-size: 13px; cursor: pointer"
+              >
+                <input
+                  type="checkbox"
+                  :value="m"
+                  v-model="g._allowedChecked"
+                  style="margin-right: 4px"
+                />{{ m }}
+              </label>
+              <span v-if="!groupRuleModels.length" style="color: #c0c4cc">
+                暂无模型路由，请先在「路由规则」页添加模型后回来勾选
+              </span>
+            </div>
+            <div>
+              <button
+                class="btn"
+                @click="g._allowedChecked = groupRuleModels.slice()"
+              >
+                全选
+              </button>
+              <button class="btn" @click="g._allowedChecked = []">
+                清空
+              </button>
+              <button class="btn btn-primary" @click="saveGroupAllowed(g)">
+                保存白名单
+              </button>
+              <button class="btn" @click="g._editAllowed = false">
+                取消
+              </button>
+            </div>
+          </div>
+          <div style="color: #e6a23c; font-size: 12px; margin-bottom: 6px">
+            限额单位：token（输入+输出总计）；0 = 不限。三个窗口独立生效，任一超限只拦该模型，不影响其他模型。
           </div>
           <table>
             <thead>
               <tr>
                 <th>模型</th>
-                <th>5h(每key)</th>
-                <th>周(每key)</th>
-                <th>月(每key)</th>
-                <th>组内已用 5h/周/月</th>
+                <th>5h 上限</th>
+                <th>周上限</th>
+                <th>月上限</th>
+                <th>组内已用(5h/周/月)</th>
                 <th style="width: 140px">操作</th>
               </tr>
             </thead>
@@ -1754,21 +1815,21 @@
                 <td>
                   <input
                     v-model.number="g._new5h"
-                    placeholder="0=不限"
+                    placeholder="5h(token)"
                     style="width: 90px"
                   />
                 </td>
                 <td>
                   <input
                     v-model.number="g._newWeek"
-                    placeholder="0=不限"
+                    placeholder="周(token)"
                     style="width: 90px"
                   />
                 </td>
                 <td>
                   <input
                     v-model.number="g._newMonth"
-                    placeholder="0=不限"
+                    placeholder="月(token)"
                     style="width: 90px"
                   />
                 </td>
@@ -2883,6 +2944,7 @@
             dailyStats: [],
             apiKeys: [],
             groups: [],
+            groupRuleModels: [],
             configArr: [],
             editableConfigs: [
               "retry.upstream_timeout",
@@ -4896,10 +4958,30 @@
                     g._newWeek = 0;
                     g._newMonth = 0;
                     g.quotas = g.quotas || [];
+                    g._editAllowed = false;
+                    g._allowedChecked = [];
                   });
                   self.groups = gs;
+                  self.refreshGroupRuleModels();
                 })
                 .catch(function () {});
+            },
+            // 从「模型路由」+ 各组已有配额模型 汇总可勾选模型集合
+            refreshGroupRuleModels: function () {
+              var self = this;
+              var set = {};
+              self.groupRuleModels.forEach(function (m) {
+                if (m) set[m] = 1;
+              });
+              (self.rules || []).forEach(function (r) {
+                if (r.model) set[r.model] = 1;
+              });
+              self.groups.forEach(function (g) {
+                (g.quotas || []).forEach(function (q) {
+                  if (q.model && q.model !== "*") set[q.model] = 1;
+                });
+              });
+              self.groupRuleModels = Object.keys(set).sort();
             },
             openAddGroupDialog: function () {
               var self = this;
@@ -4921,33 +5003,50 @@
                   );
                 });
             },
-            editGroupAllowed: function (g) {
+            openGroupAllowed: function (g) {
               var self = this;
-              var cur = g.allowed_models || "[]";
-              var input = prompt(
-                "模型白名单（JSON 数组）：\n例: [\"ds-v4-flash\",\"qwen-max\"]\n空为 [] 表示不限制（无限额的仅白名单内可用）",
-                cur
-              );
-              if (input === null) return;
-              var models = "[]";
-              var t = String(input).trim();
-              if (t !== "" && t !== "[]") {
-                if (t[0] !== "[") {
-                  models = JSON.stringify(
-                    t.split(/[,，\s]+/).filter(function (s) { return s; })
-                  );
-                } else {
-                  models = t;
-                }
+              g._editAllowed = !g._editAllowed;
+              if (!g._editAllowed) return;
+              // 若模型路由未加载则拉一次
+              if (!self._rulesLoaded) {
+                self._rulesLoaded = true;
+                self
+                  .api("/admin/rules")
+                  .then(function (r) {
+                    self.rules = r.data || [];
+                    self.refreshGroupRuleModels();
+                  })
+                  .catch(function () {});
               }
+              var cur = [];
+              try {
+                var arr = JSON.parse(g.allowed_models || "[]");
+                if (Array.isArray(arr)) cur = arr;
+              } catch (e) {}
+              g._allowedChecked = cur.slice();
+            },
+            saveGroupAllowed: function (g) {
+              var self = this;
+              var models = JSON.stringify(
+                g._allowedChecked.filter(function (m) {
+                  return m;
+                })
+              );
               self
-                .api("/admin/groups/" + g.id, { method: "PUT", body: { allowed_models: models } })
+                .api("/admin/groups/" + g.id, {
+                  method: "PUT",
+                  body: { allowed_models: models },
+                })
                 .then(function () {
                   g.allowed_models = models;
-                  alert("白名单已更新（对组内所有 key 生效）");
+                  g._editAllowed = false;
+                  alert("白名单已保存（对组内所有 key 生效）");
                 })
                 .catch(function (e) {
-                  alert("更新失败: " + ((e.response && e.response.data && e.response.data.error) || e.message));
+                  alert(
+                    "保存失败: " +
+                      ((e.response && e.response.data && e.response.data.error) || e.message)
+                  );
                 });
             },
             delGroup: function (g) {
