@@ -90,6 +90,14 @@ type APIToken struct {
 	Enabled   bool   `json:"enabled"` // 是否启用
 	Remark    string `json:"remark"`  // 备注
 	CreatedAt string `json:"created_at"`
+
+	// 分组配额（v2）：
+	// GroupID=0 表示不归属任何组；AllowedModels 为空=继承组的模型白名单；
+	// QuotaOverride 为 JSON {模型:{"5h":..,"week":..,"month":..}}，空={} 表示无 key 级例外。
+	GroupID       uint   `json:"group_id"`
+	GroupName     string `json:"group_name"`     // 只读：所属组名（LEFT JOIN 带出）
+	AllowedModels string `json:"allowed_models"` // key 级模型白名单 JSON
+	QuotaOverride string `json:"quota_override"` // key×模型 例外配额 JSON
 }
 
 // User 是管理端用户（users 表）的行映射。
@@ -384,6 +392,32 @@ func (s *Store) init() error {
 	// 迁移：routing_rules 加 vision / vision_fallback 列（多模态兜底，老库自动补列）
 	ensureColumn(s.db, "routing_rules", "vision", "vision INTEGER NOT NULL DEFAULT 0")
 	ensureColumn(s.db, "routing_rules", "vision_fallback", "vision_fallback TEXT NOT NULL DEFAULT ''")
+
+	// 分组管理（配额按模型独立池、组内每人默认，key 可覆盖）
+	if _, err := s.db.Exec(`
+	CREATE TABLE IF NOT EXISTS groups (
+		id             INTEGER PRIMARY KEY AUTOINCREMENT,
+		name           TEXT    NOT NULL UNIQUE,
+		allowed_models TEXT    NOT NULL DEFAULT '[]',  -- JSON 数组；空/[] = 不限
+		remark         TEXT    NOT NULL DEFAULT '',
+		created_at     TEXT    NOT NULL DEFAULT (datetime('now'))
+	);
+	CREATE TABLE IF NOT EXISTS group_model_quota (
+		id           INTEGER PRIMARY KEY AUTOINCREMENT,
+		group_id     INTEGER NOT NULL,
+		model        TEXT    NOT NULL DEFAULT '',      -- 模型名；'*' = 全模型兜底
+		token_5h     INTEGER NOT NULL DEFAULT 0,
+		token_week   INTEGER NOT NULL DEFAULT 0,
+		token_month  INTEGER NOT NULL DEFAULT 0,
+		UNIQUE(group_id, model)
+	);
+	`); err != nil {
+		return err
+	}
+	// 迁移：api_tokens 加分组与覆盖策略列（group_id=0 表示不归属组）
+	ensureColumn(s.db, "api_tokens", "group_id", "group_id INTEGER NOT NULL DEFAULT 0")
+	ensureColumn(s.db, "api_tokens", "allowed_models", "allowed_models TEXT NOT NULL DEFAULT ''")
+	ensureColumn(s.db, "api_tokens", "quota_override", "quota_override TEXT NOT NULL DEFAULT '{}'")
 	return nil
 }
 
@@ -757,6 +791,8 @@ type Recorder struct {
 	closeOnce sync.Once
 	dropOnce  sync.Once
 	log       *slog.Logger
+
+	usageHook func(Record) // 实时用量钩子（配额内存计数用）；nil 不调用
 }
 
 // NewRecorder 创建并启动后台写入协程。batchInterval 默认 2s 或 batchSize 达到 100 即刷。
@@ -825,12 +861,24 @@ func (r *Recorder) Record(rec Record) {
 	if len(rec.UserAgent) > 200 {
 		rec.UserAgent = rec.UserAgent[:200]
 	}
+	// 实时用量钩子（配额内存计数）：在投递落库前同步调用，保证配额判定即时生效
+	// （异步批量落库存在 flush 窗口，不能依赖 request_log 做实时判定）。
+	if r.usageHook != nil {
+		r.usageHook(rec)
+	}
 	select {
 	case r.ch <- rec:
 	default:
 		r.dropOnce.Do(func() {
 			r.log.Warn("store: recorder channel full, dropping records")
 		})
+	}
+}
+
+// SetUsageHook 注入实时用量回调（main 接线到 quota.Service.AddUsage）。
+func (r *Recorder) SetUsageHook(f func(Record)) {
+	if r != nil {
+		r.usageHook = f
 	}
 }
 
@@ -1205,9 +1253,12 @@ func (s *Store) CreateAPIToken(name, key, remark string) (*APIToken, error) {
 	return &APIToken{ID: uint(id), Name: name, Key: key, Enabled: true, Remark: remark, CreatedAt: time.Now().Format(time.RFC3339)}, nil
 }
 
-// ListAPITokens 列出所有下游 API Key。
+// ListAPITokens 列出所有下游 API Key（含分组字段与组名）。
 func (s *Store) ListAPITokens() ([]APIToken, error) {
-	rows, err := s.db.Query(`SELECT id, name, key, enabled, remark, created_at FROM api_tokens ORDER BY id DESC`)
+	rows, err := s.db.Query(`SELECT t.id, t.name, t.key, t.enabled, t.remark, t.created_at,
+		t.group_id, COALESCE(g.name, ''), t.allowed_models, t.quota_override
+		FROM api_tokens t LEFT JOIN groups g ON g.id = t.group_id
+		ORDER BY t.id DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -1217,13 +1268,127 @@ func (s *Store) ListAPITokens() ([]APIToken, error) {
 	for rows.Next() {
 		var t APIToken
 		var enabled int
-		if err := rows.Scan(&t.ID, &t.Name, &t.Key, &enabled, &t.Remark, &t.CreatedAt); err != nil {
+		if err := rows.Scan(&t.ID, &t.Name, &t.Key, &enabled, &t.Remark, &t.CreatedAt,
+			&t.GroupID, &t.GroupName, &t.AllowedModels, &t.QuotaOverride); err != nil {
 			return nil, err
 		}
 		t.Enabled = enabled != 0
 		out = append(out, t)
 	}
 	return out, rows.Err()
+}
+
+// GetAPITokenByKey 按 key 字符串取整行（含分组/覆盖策略），key 不存在返回 (nil, nil)。
+func (s *Store) GetAPITokenByKey(key string) (*APIToken, error) {
+	var t APIToken
+	var enabled int
+	err := s.db.QueryRow(`SELECT t.id, t.name, t.key, t.enabled, t.remark, t.created_at,
+		t.group_id, COALESCE(g.name, ''), t.allowed_models, t.quota_override
+		FROM api_tokens t LEFT JOIN groups g ON g.id = t.group_id
+		WHERE t.key = ?`, key).Scan(
+		&t.ID, &t.Name, &t.Key, &enabled, &t.Remark, &t.CreatedAt,
+		&t.GroupID, &t.GroupName, &t.AllowedModels, &t.QuotaOverride)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	t.Enabled = enabled != 0
+	return &t, nil
+}
+
+// UpdateAPITokenPolicy 更新下游 key 的分组归属与覆盖策略。
+// allowedModels 与 quotaOverride 传空字符串表示不修改（保留原值）。
+func (s *Store) UpdateAPITokenPolicy(id uint, groupID uint, allowedModels, quotaOverride string) error {
+	q := `UPDATE api_tokens SET `
+	var args []interface{}
+	add := func(expr string, v interface{}) {
+		if len(args) > 0 {
+			q += ", "
+		}
+		q += expr
+		args = append(args, v)
+	}
+	add("group_id = ?", groupID)
+	if strings.TrimSpace(allowedModels) != "" {
+		add("allowed_models = ?", strings.TrimSpace(allowedModels))
+	}
+	if strings.TrimSpace(quotaOverride) != "" {
+		add("quota_override = ?", strings.TrimSpace(quotaOverride))
+	}
+	q += " WHERE id = ?"
+	args = append(args, id)
+	_, err := s.db.Exec(q, args...)
+	return err
+}
+
+// WindowTokenSum 返回某 key（按 api_tokens.name 快照）在 since 之后、指定模型的 token 总量。
+// model 为空串表示不限模型。用于配额窗口检查。
+func (s *Store) WindowTokenSum(name, model string, since time.Time) (int64, error) {
+	q := `SELECT COALESCE(SUM(tokens), 0) FROM request_log WHERE api_key = ? AND status < 400 AND ts >= ?`
+	args := []interface{}{name, since.Format(time.RFC3339)}
+	if model != "" {
+		q += ` AND model = ?`
+		args = append(args, model)
+	}
+	var n int64
+	if err := s.db.QueryRow(q, args...).Scan(&n); err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
+// WindowTokenEntries 返回某 key 在 since 之后、指定模型的 (时间戳, tokens) 明细，按时序升序。
+// 供配额懒加载重建近 5h 滑动窗口（不折叠，保证精确滑出）。
+func (s *Store) WindowTokenEntries(name, model string, since time.Time) ([]quotaEntry, error) {
+	q := `SELECT ts, tokens FROM request_log WHERE api_key = ? AND status < 400 AND ts >= ?`
+	args := []interface{}{name, since.Format(time.RFC3339)}
+	if model != "" {
+		q += ` AND model = ?`
+		args = append(args, model)
+	}
+	q += ` ORDER BY ts ASC`
+	rows, err := s.db.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []quotaEntry
+	for rows.Next() {
+		var ts string
+		var tk int64
+		if err := rows.Scan(&ts, &tk); err != nil {
+			return nil, err
+		}
+		if t, err := time.Parse(time.RFC3339, ts); err == nil && tk > 0 {
+			out = append(out, quotaEntry{At: t, Tokens: tk})
+		}
+	}
+	return out, rows.Err()
+}
+
+// quotaEntry 是 (时间戳, tokens) 明文明细（request_log 行），供配额包重建滑动窗口。
+type quotaEntry struct {
+	At     time.Time
+	Tokens int64
+}
+
+// GroupWindowTokenSum 返回某组内所有 key 在 since 之后、指定模型的 token 总量（组视图统计用）。
+func (s *Store) GroupWindowTokenSum(groupID uint, model string, since time.Time) (int64, error) {
+	q := `SELECT COALESCE(SUM(r.tokens), 0) FROM request_log r
+		JOIN api_tokens t ON r.api_key = t.name
+		WHERE t.group_id = ? AND r.status < 400 AND r.ts >= ?`
+	args := []interface{}{groupID, since.Format(time.RFC3339)}
+	if model != "" {
+		q += ` AND r.model = ?`
+		args = append(args, model)
+	}
+	var n int64
+	if err := s.db.QueryRow(q, args...).Scan(&n); err != nil {
+		return 0, err
+	}
+	return n, nil
 }
 
 // DeleteAPIToken 删除下游 API Key（按 id）。
@@ -1414,5 +1579,183 @@ func (s *Store) UpdateDiscount(id uint, d *Discount) error {
 // DeleteDiscount 删除优惠时段。
 func (s *Store) DeleteDiscount(id uint) error {
 	_, err := s.db.Exec(`DELETE FROM discounts WHERE id = ?`, id)
+	return err
+}
+
+// ===== 分组管理（groups / group_model_quota）=====
+
+// GroupRow 是 groups 表的行映射。AllowedModels 为 JSON 数组字符串（空/[]=不限）。
+type GroupRow struct {
+	ID            uint   `json:"id"`
+	Name          string `json:"name"`
+	AllowedModels string `json:"allowed_models"`
+	Remark        string `json:"remark"`
+	CreatedAt     string `json:"created_at"`
+	// MemberCount 只读：组内 key 数量（列表接口带出）
+	MemberCount int `json:"member_count"`
+}
+
+// GroupModelQuotaRow 是 group_model_quota 表的行映射（一行 = 一个模型的“组内每人默认”配额）。
+// Token 限额单位为原始 token，0 = 该窗口不限。
+type GroupModelQuotaRow struct {
+	ID        uint   `json:"id"`
+	GroupID   uint   `json:"group_id"`
+	Model     string `json:"model"` // 模型名；'*' = 全模型兜底
+	Token5H   int64  `json:"token_5h"`
+	TokenWeek int64  `json:"token_week"`
+	TokenMonth int64 `json:"token_month"`
+}
+
+// ListGroups 列出所有组（含成员数）。
+func (s *Store) ListGroups() ([]GroupRow, error) {
+	rows, err := s.db.Query(`SELECT g.id, g.name, g.allowed_models, g.remark, g.created_at,
+		(SELECT COUNT(*) FROM api_tokens t WHERE t.group_id = g.id) AS member_count
+		FROM groups g ORDER BY g.id ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []GroupRow
+	for rows.Next() {
+		var g GroupRow
+		if err := rows.Scan(&g.ID, &g.Name, &g.AllowedModels, &g.Remark, &g.CreatedAt, &g.MemberCount); err != nil {
+			return nil, err
+	}
+		out = append(out, g)
+	}
+	return out, rows.Err()
+}
+
+// GetGroup 按 id 取组。
+func (s *Store) GetGroup(id uint) (*GroupRow, error) {
+	var g GroupRow
+	err := s.db.QueryRow(`SELECT id, name, allowed_models, remark, created_at FROM groups WHERE id = ?`, id).Scan(
+		&g.ID, &g.Name, &g.AllowedModels, &g.Remark, &g.CreatedAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &g, nil
+}
+
+// CreateGroup 创建组。
+func (s *Store) CreateGroup(name, allowedModels, remark string) (*GroupRow, error) {
+	if strings.TrimSpace(name) == "" {
+		return nil, fmt.Errorf("name is required")
+	}
+	if strings.TrimSpace(allowedModels) == "" {
+		allowedModels = `[]`
+	}
+	res, err := s.db.Exec(`INSERT INTO groups (name, allowed_models, remark) VALUES (?, ?, ?)`,
+		strings.TrimSpace(name), strings.TrimSpace(allowedModels), remark)
+	if err != nil {
+		return nil, err
+	}
+	id, _ := res.LastInsertId()
+	return &GroupRow{ID: uint(id), Name: strings.TrimSpace(name), AllowedModels: strings.TrimSpace(allowedModels), Remark: remark, CreatedAt: time.Now().Format(time.RFC3339)}, nil
+}
+
+// UpdateGroup 更新组名/白名单/备注。传空字符串的字段表示不修改。
+func (s *Store) UpdateGroup(id uint, name, allowedModels, remark string) error {
+	q := `UPDATE groups SET `
+	var args []interface{}
+	add := func(expr string, v interface{}) {
+		if len(args) > 0 {
+			q += ", "
+		}
+		q += expr
+		args = append(args, v)
+	}
+	if strings.TrimSpace(name) != "" {
+		add("name = ?", strings.TrimSpace(name))
+	}
+	if allowedModels != "" {
+		add("allowed_models = ?", allowedModels)
+	}
+	if remark != "" {
+		add("remark = ?", remark)
+	}
+	if len(args) == 0 {
+		return nil
+	}
+	q += ` WHERE id = ?`
+	args = append(args, id)
+	_, err := s.db.Exec(q, args...)
+	return err
+}
+
+// DeleteGroup 删除组（组内 key 的 group_id 置 0，不删 key）。
+func (s *Store) DeleteGroup(id uint) error {
+	if _, err := s.db.Exec(`DELETE FROM group_model_quota WHERE group_id = ?`, id); err != nil {
+		return err
+	}
+	if _, err := s.db.Exec(`UPDATE api_tokens SET group_id = 0 WHERE group_id = ?`, id); err != nil {
+		return err
+	}
+	_, err := s.db.Exec(`DELETE FROM groups WHERE id = ?`, id)
+	return err
+}
+
+// ListGroupQuotas 列出某组的所有模型配额行。
+func (s *Store) ListGroupQuotas(groupID uint) ([]GroupModelQuotaRow, error) {
+	rows, err := s.db.Query(`SELECT id, group_id, model, token_5h, token_week, token_month
+		FROM group_model_quota WHERE group_id = ? ORDER BY id ASC`, groupID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []GroupModelQuotaRow
+	for rows.Next() {
+		var g GroupModelQuotaRow
+		if err := rows.Scan(&g.ID, &g.GroupID, &g.Model, &g.Token5H, &g.TokenWeek, &g.TokenMonth); err != nil {
+			return nil, err
+		}
+		out = append(out, g)
+	}
+	return out, rows.Err()
+}
+
+// ListAllGroupQuotas 列出所有组的模型配额（quota 包 Load 用）。
+func (s *Store) ListAllGroupQuotas() ([]GroupModelQuotaRow, error) {
+	rows, err := s.db.Query(`SELECT id, group_id, model, token_5h, token_week, token_month
+		FROM group_model_quota ORDER BY group_id ASC, model ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []GroupModelQuotaRow
+	for rows.Next() {
+		var g GroupModelQuotaRow
+		if err := rows.Scan(&g.ID, &g.GroupID, &g.Model, &g.Token5H, &g.TokenWeek, &g.TokenMonth); err != nil {
+			return nil, err
+		}
+		out = append(out, g)
+	}
+	return out, rows.Err()
+}
+
+// UpsertGroupQuota 插入/更新某组的一行模型配额（UNIQUE(group_id, model)）。
+// token 值为 0 表示删除该行的该窗口限制；若三窗口全 0 则删除整行。
+func (s *Store) UpsertGroupQuota(groupID uint, model string, fiveH, week, month int64) error {
+	if strings.TrimSpace(model) == "" {
+		return fmt.Errorf("model is required")
+	}
+	if fiveH == 0 && week == 0 && month == 0 {
+		// 全 0：无限制，直接删除该行
+		_, err := s.db.Exec(`DELETE FROM group_model_quota WHERE group_id = ? AND model = ?`, groupID, strings.TrimSpace(model))
+		return err
+	}
+	_, err := s.db.Exec(`INSERT INTO group_model_quota (group_id, model, token_5h, token_week, token_month)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(group_id, model) DO UPDATE SET token_5h=excluded.token_5h, token_week=excluded.token_week, token_month=excluded.token_month`,
+		groupID, strings.TrimSpace(model), fiveH, week, month)
+	return err
+}
+
+// DeleteGroupQuota 删除某组某模型的配额行。
+func (s *Store) DeleteGroupQuota(groupID uint, model string) error {
+	_, err := s.db.Exec(`DELETE FROM group_model_quota WHERE group_id = ? AND model = ?`, groupID, model)
 	return err
 }
