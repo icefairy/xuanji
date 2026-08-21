@@ -41,11 +41,13 @@ ts() { date '+%Y-%m-%d %H:%M:%S'; }
       extra=()
       # gitea 为局域网地址，绕开全局 socks 代理直连
       [ "$r" = "gitea" ] && extra=(-c http.proxy= -c https.proxy=)
-      git "${extra[@]}" push "$r" "$b" 2>&1 && continue
+      # 显式 refspec，避免 gitee/github 的 push 配置(public→main)把 
+      # public 误推到 main 导致 public 分支从不更新
+      git "${extra[@]}" push "$r" "refs/heads/$b:refs/heads/$b" 2>&1 && continue
       # 瞬时故障（408/断流）重试一次
       echo "     retry $b -> $r"
       sleep 3
-      git "${extra[@]}" push "$r" "$b" 2>&1
+      git "${extra[@]}" push "$r" "refs/heads/$b:refs/heads/$b" 2>&1
     done
   done
 
