@@ -1687,6 +1687,9 @@
               >成员 {{ g.member_count }} 人</span
             >
             <span>
+              <button class="btn btn-primary" @click="saveGroupQuotas(g)">
+                💾 保存配额
+              </button>
               <button class="btn" @click="openGroupAllowed(g)">
                 {{ g._editAllowed ? '收起白名单' : '模型白名单' }}
               </button>
@@ -1759,17 +1762,17 @@
             </div>
           </div>
           <div style="color: #e6a23c; font-size: 12px; margin-bottom: 6px">
-            限额单位：token（输入+输出总计）；0 = 不限。三个窗口独立生效，任一超限只拦该模型，不影响其他模型。
+            ≙ 限额单位：token（输入+输出总计）。0 = 不限。三个窗口各自独立，任一超限只拦该模型。
           </div>
           <table>
             <thead>
               <tr>
                 <th>模型</th>
-                <th>5h 上限</th>
-                <th>周上限</th>
-                <th>月上限</th>
+                <th>5h 上限(token)</th>
+                <th>周上限(token)</th>
+                <th>月上限(token)</th>
                 <th>组内已用(5h/周/月)</th>
-                <th style="width: 140px">操作</th>
+                <th style="width: 150px">操作</th>
               </tr>
             </thead>
             <tbody>
@@ -1792,56 +1795,61 @@
                     class="btn btn-primary"
                     @click="saveGroupQuota(g, q)"
                   >
-                    保存
+                    保存本行
                   </button>
                   <button class="btn btn-danger" @click="delGroupQuota(g, q)">
-                    删
+                    删除
                   </button>
                 </td>
               </tr>
               <tr v-if="!g.quotas.length">
                 <td colspan="6" style="color: #909399">
-                  未配置模型配额（组内仅可用白名单内模型，不限量）
+                  尚未为该组配置模型配额（组内可用模型 = 白名单内，不限量）。在下方填模型名与三个窗口额度后点「＋新增模型配额」即生效。
                 </td>
               </tr>
               <tr>
                 <td>
                   <input
                     v-model.trim="g._newModel"
-                    placeholder="新模型 或 *"
-                    style="width: 130px"
+                    placeholder="模型名（如 ds-v4-flash）或 *"
+                    style="width: 170px"
                   />
                 </td>
                 <td>
                   <input
                     v-model.number="g._new5h"
-                    placeholder="5h(token)"
+                    placeholder="0=不限"
                     style="width: 90px"
                   />
                 </td>
                 <td>
                   <input
                     v-model.number="g._newWeek"
-                    placeholder="周(token)"
+                    placeholder="0=不限"
                     style="width: 90px"
                   />
                 </td>
                 <td>
                   <input
                     v-model.number="g._newMonth"
-                    placeholder="月(token)"
+                    placeholder="0=不限"
                     style="width: 90px"
                   />
                 </td>
-                <td></td>
+                <td style="color: #c0c4cc; font-size: 12px">
+                  （三个窗口都填 0 表示不限）
+                </td>
                 <td>
-                  <button class="btn" @click="addGroupQuota(g)">
-                    + 添加模型
+                  <button class="btn btn-primary" @click="addGroupQuota(g)">
+                    ＋新增模型配额
                   </button>
                 </td>
               </tr>
             </tbody>
           </table>
+          <div style="color: #909399; font-size: 12px; margin-top: 6px">
+            ✏️ 修改任一模型的三个额度后，点行尾「保存本行」，或点组头「💾 保存配额」一键保存整组；把某模型三个窗口都填 0 点保存即可移除对该模型的限制。
+          </div>
         </div>
       </div>
 
@@ -5079,6 +5087,39 @@
                 })
                 .catch(function (e) {
                   alert("保存失败: " + ((e.response && e.response.data && e.response.data.error) || e.message));
+                });
+            },
+            // 一键保存整组所有模型配额（逐行 PUT，全部成功才提示）
+            saveGroupQuotas: function (g) {
+              var self = this;
+              var rows = (g.quotas || []).filter(function (q) {
+                return q && q.model;
+              });
+              if (!rows.length) {
+                alert("该组还没有模型配额可保存，请在表格下方填写模型名后点「＋新增模型配额」");
+                return;
+              }
+              var tasks = rows.map(function (q) {
+                return self.api("/admin/groups/" + g.id + "/quotas", {
+                  method: "PUT",
+                  body: {
+                    model: q.model,
+                    token_5h: q.token_5h || 0,
+                    token_week: q.token_week || 0,
+                    token_month: q.token_month || 0,
+                  },
+                });
+              });
+              Promise.all(tasks)
+                .then(function () {
+                  alert("已保存整组配额（对组内每个 key 生效）");
+                  self.loadGroups();
+                })
+                .catch(function (e) {
+                  var msg =
+                    (e.response && e.response.data && e.response.data.error) || e.message;
+                  alert("部分保存失败: " + msg);
+                  self.loadGroups();
                 });
             },
             addGroupQuota: function (g) {
