@@ -1762,16 +1762,16 @@
             </div>
           </div>
           <div style="color: #e6a23c; font-size: 12px; margin-bottom: 6px">
-            ≙ 限额单位：token（输入+输出总计）。0 = 不限。三个窗口各自独立，任一超限只拦该模型。
+            ≙ 限额单位：M = 百万 token（如 200 = 2 亿 token；0 = 不限）。三个窗口各自独立，任一超限只拦该模型。
           </div>
           <table>
             <thead>
               <tr>
                 <th>模型</th>
-                <th>5h 上限(token)</th>
-                <th>周上限(token)</th>
-                <th>月上限(token)</th>
-                <th>组内已用(5h/周/月)</th>
+                <th>5h 上限(M)</th>
+                <th>周上限(M)</th>
+                <th>月上限(M)</th>
+                <th>组内已用(M)</th>
                 <th style="width: 150px">操作</th>
               </tr>
             </thead>
@@ -1788,7 +1788,9 @@
                   <input v-model.number="q.token_month" style="width: 90px" />
                 </td>
                 <td style="font-size: 12px; color: #606266">
-                  {{ q.used_5h }} / {{ q.used_week }} / {{ q.used_month }}
+                  {{ pfmt(q.used_5h) }} / {{ pfmt(q.used_week) }} / {{
+                    pfmt(q.used_month)
+                  }}
                 </td>
                 <td>
                   <button
@@ -1818,26 +1820,26 @@
                 <td>
                   <input
                     v-model.number="g._new5h"
-                    placeholder="0=不限"
+                    placeholder="0=不限(M)"
                     style="width: 90px"
                   />
                 </td>
                 <td>
                   <input
                     v-model.number="g._newWeek"
-                    placeholder="0=不限"
+                    placeholder="0=不限(M)"
                     style="width: 90px"
                   />
                 </td>
                 <td>
                   <input
                     v-model.number="g._newMonth"
-                    placeholder="0=不限"
+                    placeholder="0=不限(M)"
                     style="width: 90px"
                   />
                 </td>
                 <td style="color: #c0c4cc; font-size: 12px">
-                  （三个窗口都填 0 表示不限）
+                  （单位 M=百万 token，如 200=2 亿；三个都填 0 = 不限）
                 </td>
                 <td>
                   <button class="btn btn-primary" @click="addGroupQuota(g)">
@@ -1848,7 +1850,7 @@
             </tbody>
           </table>
           <div style="color: #909399; font-size: 12px; margin-top: 6px">
-            ✏️ 修改任一模型的三个额度后，点行尾「保存本行」，或点组头「💾 保存配额」一键保存整组；把某模型三个窗口都填 0 点保存即可移除对该模型的限制。
+            ✏️ 单位 M = 百万 token（200 = 2 亿）。修改后点行尾「保存本行」或组头「💾 保存配额」生效；三个窗口都填 0 保存 = 移除该模型限制。
           </div>
         </div>
       </div>
@@ -4968,11 +4970,29 @@
                     g.quotas = g.quotas || [];
                     g._editAllowed = false;
                     g._allowedChecked = [];
+                    // 后端存原始 token，前端显示/录入以 M(百万) 为单位
+                    (g.quotas || []).forEach(function (q) {
+                      q._raw5h = q.token_5h || 0;
+                      q._rawWeek = q.token_week || 0;
+                      q._rawMonth = q.token_month || 0;
+                      q.token_5h = (q.token_5h || 0) / 1000000;
+                      q.token_week = (q.token_week || 0) / 1000000;
+                      q.token_month = (q.token_month || 0) / 1000000;
+                    });
                   });
                   self.groups = gs;
                   self.refreshGroupRuleModels();
                 })
                 .catch(function () {});
+            },
+            // 以 M(百万) 为单位展示用量数值（保留足够精度，去掉多余尾零）
+            pfmt: function (v) {
+              var n = Number(v) || 0;
+              var m = n / 1000000;
+              var s = m.toFixed(4);
+              s = s.replace(/\.?0+$/, "");
+              if (s === "" || s === "-") s = "0";
+              return s;
             },
             // 从「模型路由」+ 各组已有配额模型 汇总可勾选模型集合
             refreshGroupRuleModels: function () {
@@ -5076,9 +5096,9 @@
                   method: "PUT",
                   body: {
                     model: q.model,
-                    token_5h: q.token_5h || 0,
-                    token_week: q.token_week || 0,
-                    token_month: q.token_month || 0,
+                    token_5h: Math.round((q.token_5h || 0) * 1000000),
+                    token_week: Math.round((q.token_week || 0) * 1000000),
+                    token_month: Math.round((q.token_month || 0) * 1000000),
                   },
                 })
                 .then(function () {
@@ -5104,9 +5124,9 @@
                   method: "PUT",
                   body: {
                     model: q.model,
-                    token_5h: q.token_5h || 0,
-                    token_week: q.token_week || 0,
-                    token_month: q.token_month || 0,
+                    token_5h: Math.round((q.token_5h || 0) * 1000000),
+                    token_week: Math.round((q.token_week || 0) * 1000000),
+                    token_month: Math.round((q.token_month || 0) * 1000000),
                   },
                 });
               });
@@ -5134,9 +5154,9 @@
                   method: "PUT",
                   body: {
                     model: m,
-                    token_5h: g._new5h || 0,
-                    token_week: g._newWeek || 0,
-                    token_month: g._newMonth || 0,
+                    token_5h: Math.round((g._new5h || 0) * 1000000),
+                    token_week: Math.round((g._newWeek || 0) * 1000000),
+                    token_month: Math.round((g._newMonth || 0) * 1000000),
                   },
                 })
                 .then(function () {
