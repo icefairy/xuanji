@@ -588,6 +588,13 @@
         </button>
         <button
           class="tab-btn"
+          :class="{ active: tab === 'groups' }"
+          @click="switchTab('groups')"
+        >
+          组管理
+        </button>
+        <button
+          class="tab-btn"
           :class="{ active: tab === 'endpoints' }"
           @click="tab = 'endpoints'"
         >
@@ -1588,6 +1595,7 @@
             <tr>
               <th>ID</th>
               <th>名称</th>
+              <th>所属组</th>
               <th>状态</th>
               <th>创建时间</th>
               <th>操作</th>
@@ -1597,6 +1605,18 @@
             <tr v-for="k in apiKeys">
               <td>{{ k.id }}</td>
               <td>{{ k.name || '-' }}</td>
+              <td>
+                <select
+                  style="width: 120px"
+                  :value="k.group_id || 0"
+                  @change="setKeyGroup(k, $event.target.value)"
+                >
+                  <option :value="0">未分组</option>
+                  <option v-for="g in groups" :key="g.id" :value="g.id">
+                    {{ g.name }}
+                  </option>
+                </select>
+              </td>
               <td>
                 <span
                   class="badge"
@@ -1619,6 +1639,149 @@
             </tr>
           </tbody>
         </table>
+      </div>
+
+      <!-- 组管理（配额矩阵） -->
+      <div class="tab-content" v-if="tab === 'groups'">
+        <div
+          style="
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+          "
+        >
+          <span style="color: #909399; font-size: 13px"
+            >配额按「模型」独立核算：组内每人获得默认配额，便宜模型给多、贵的给少，一个模型用尽不影响其他模型。配置了配额的模型自动可用。</span
+          >
+          <button class="btn btn-primary" @click="openAddGroupDialog">
+            + 新建组
+          </button>
+        </div>
+        <div
+          v-if="!groups.length"
+          style="color: #909399; padding: 32px; text-align: center"
+        >
+          暂无分组。新建组后，把 API Key 分到组里即可批量下发配额与模型白名单。
+        </div>
+        <div
+          v-for="g in groups"
+          :key="g.id"
+          style="
+            border: 1px solid #e4e7ed;
+            border-radius: 6px;
+            padding: 12px;
+            margin-bottom: 16px;
+          "
+        >
+          <div
+            style="
+              display: flex;
+              justify-content: space-between;
+              align-items: center;
+              margin-bottom: 6px;
+            "
+          >
+            <b style="font-size: 14px">{{ g.name }}</b>
+            <span style="color: #909399; font-size: 12px"
+              >成员 {{ g.member_count }} 人</span
+            >
+            <span>
+              <button class="btn" @click="editGroupAllowed(g)">
+                模型白名单
+              </button>
+              <button class="btn btn-danger" @click="delGroup(g)">
+                删除组
+              </button>
+            </span>
+          </div>
+          <div
+            style="color: #909399; font-size: 12px; margin-bottom: 8px"
+          >
+            模型白名单：{{ g.allowed_models || '[]（不限）' }}
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>模型</th>
+                <th>5h(每key)</th>
+                <th>周(每key)</th>
+                <th>月(每key)</th>
+                <th>组内已用 5h/周/月</th>
+                <th style="width: 140px">操作</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="q in g.quotas" :key="q.model">
+                <td>{{ q.model }}</td>
+                <td>
+                  <input v-model.number="q.token_5h" style="width: 90px" />
+                </td>
+                <td>
+                  <input v-model.number="q.token_week" style="width: 90px" />
+                </td>
+                <td>
+                  <input v-model.number="q.token_month" style="width: 90px" />
+                </td>
+                <td style="font-size: 12px; color: #606266">
+                  {{ q.used_5h }} / {{ q.used_week }} / {{ q.used_month }}
+                </td>
+                <td>
+                  <button
+                    class="btn btn-primary"
+                    @click="saveGroupQuota(g, q)"
+                  >
+                    保存
+                  </button>
+                  <button class="btn btn-danger" @click="delGroupQuota(g, q)">
+                    删
+                  </button>
+                </td>
+              </tr>
+              <tr v-if="!g.quotas.length">
+                <td colspan="6" style="color: #909399">
+                  未配置模型配额（组内仅可用白名单内模型，不限量）
+                </td>
+              </tr>
+              <tr>
+                <td>
+                  <input
+                    v-model.trim="g._newModel"
+                    placeholder="新模型 或 *"
+                    style="width: 130px"
+                  />
+                </td>
+                <td>
+                  <input
+                    v-model.number="g._new5h"
+                    placeholder="0=不限"
+                    style="width: 90px"
+                  />
+                </td>
+                <td>
+                  <input
+                    v-model.number="g._newWeek"
+                    placeholder="0=不限"
+                    style="width: 90px"
+                  />
+                </td>
+                <td>
+                  <input
+                    v-model.number="g._newMonth"
+                    placeholder="0=不限"
+                    style="width: 90px"
+                  />
+                </td>
+                <td></td>
+                <td>
+                  <button class="btn" @click="addGroupQuota(g)">
+                    + 添加模型
+                  </button>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
       </div>
 
       <!-- 功能端点 -->
@@ -2719,6 +2882,7 @@
             pieHeight: 240,
             dailyStats: [],
             apiKeys: [],
+            groups: [],
             configArr: [],
             editableConfigs: [
               "retry.upstream_timeout",
@@ -3632,6 +3796,9 @@
                       self.apiKeys = r.data || [];
                     })
                     .catch(function () {});
+                  self.loadGroups();
+                } else if (name === "groups") {
+                  self.loadGroups();
                 } else if (name === "settings") {
                   self
                     .api("/admin/config")
@@ -4715,6 +4882,169 @@
                 document.body.removeChild(ta);
                 alert("已复制到剪贴板");
               }
+            },
+            // ===== 组管理（配额矩阵） =====
+            loadGroups: function () {
+              var self = this;
+              self
+                .api("/admin/groups")
+                .then(function (r) {
+                  var gs = r.data || [];
+                  gs.forEach(function (g) {
+                    g._newModel = "";
+                    g._new5h = 0;
+                    g._newWeek = 0;
+                    g._newMonth = 0;
+                    g.quotas = g.quotas || [];
+                  });
+                  self.groups = gs;
+                })
+                .catch(function () {});
+            },
+            openAddGroupDialog: function () {
+              var self = this;
+              var name = prompt("新建组，输入组名（如：前端组）");
+              if (!name || !String(name).trim()) return;
+              self
+                .api("/admin/groups", {
+                  method: "POST",
+                  body: { name: String(name).trim(), allowed_models: "[]", remark: "" },
+                })
+                .then(function () {
+                  alert("组创建成功，可为组配置模型配额与白名单");
+                  self.loadGroups();
+                })
+                .catch(function (e) {
+                  alert(
+                    "创建失败: " +
+                      ((e.response && e.response.data && e.response.data.error) || e.message)
+                  );
+                });
+            },
+            editGroupAllowed: function (g) {
+              var self = this;
+              var cur = g.allowed_models || "[]";
+              var input = prompt(
+                "模型白名单（JSON 数组）：\n例: [\"ds-v4-flash\",\"qwen-max\"]\n空为 [] 表示不限制（无限额的仅白名单内可用）",
+                cur
+              );
+              if (input === null) return;
+              var models = "[]";
+              var t = String(input).trim();
+              if (t !== "" && t !== "[]") {
+                if (t[0] !== "[") {
+                  models = JSON.stringify(
+                    t.split(/[,，\s]+/).filter(function (s) { return s; })
+                  );
+                } else {
+                  models = t;
+                }
+              }
+              self
+                .api("/admin/groups/" + g.id, { method: "PUT", body: { allowed_models: models } })
+                .then(function () {
+                  g.allowed_models = models;
+                  alert("白名单已更新（对组内所有 key 生效）");
+                })
+                .catch(function (e) {
+                  alert("更新失败: " + ((e.response && e.response.data && e.response.data.error) || e.message));
+                });
+            },
+            delGroup: function (g) {
+              var self = this;
+              if (!confirm("确定删除组 \"" + g.name + "\" 吗？\n组内 key 保留但变为未分组。")) return;
+              self
+                .api("/admin/groups/" + g.id, { method: "DELETE" })
+                .then(function () {
+                  alert("删除成功");
+                  self.loadGroups();
+                  self.switchTab("apikeys");
+                  self.loadGroups();
+                });
+            },
+            saveGroupQuota: function (g, q) {
+              var self = this;
+              self
+                .api("/admin/groups/" + g.id + "/quotas", {
+                  method: "PUT",
+                  body: {
+                    model: q.model,
+                    token_5h: q.token_5h || 0,
+                    token_week: q.token_week || 0,
+                    token_month: q.token_month || 0,
+                  },
+                })
+                .then(function () {
+                  alert("已保存（对组内每个 key 生效）");
+                  self.loadGroups();
+                })
+                .catch(function (e) {
+                  alert("保存失败: " + ((e.response && e.response.data && e.response.data.error) || e.message));
+                });
+            },
+            addGroupQuota: function (g) {
+              var self = this;
+              var m = String(g._newModel || "").trim();
+              if (!m) {
+                alert("请先输入模型名（或 * 表示全模型兜底）");
+                return;
+              }
+              self
+                .api("/admin/groups/" + g.id + "/quotas", {
+                  method: "PUT",
+                  body: {
+                    model: m,
+                    token_5h: g._new5h || 0,
+                    token_week: g._newWeek || 0,
+                    token_month: g._newMonth || 0,
+                  },
+                })
+                .then(function () {
+                  g._newModel = "";
+                  g._new5h = 0;
+                  g._newWeek = 0;
+                  g._newMonth = 0;
+                  self.loadGroups();
+                })
+                .catch(function (e) {
+                  alert("添加失败: " + ((e.response && e.response.data && e.response.data.error) || e.message));
+                });
+            },
+            delGroupQuota: function (g, q) {
+              var self = this;
+              if (!confirm("删除模型 " + q.model + " 的配额？")) return;
+              self
+                .api("/admin/groups/" + g.id + "/quotas/" + encodeURIComponent(q.model), {
+                  method: "DELETE",
+                })
+                .then(function () {
+                  self.loadGroups();
+                });
+            },
+            setKeyGroup: function (k, gid) {
+              var self = this;
+              self
+                .api("/admin/api-keys/" + k.id + "/policy", {
+                  method: "PUT",
+                  body: { group_id: Number(gid) || 0 },
+                })
+                .then(function (g) {
+                  if (Number(gid)) {
+                    var name = "";
+                    self.groups.forEach(function (x) {
+                      if (String(x.id) === String(gid)) name = x.name;
+                    });
+                    alert("key 已加入组「" + name + "」，继承该组配额与白名单");
+                  } else {
+                    alert("key 已移出分组，不再受组配额约束");
+                  }
+                  self.switchTab("apikeys");
+                  self.loadGroups();
+                })
+                .catch(function (e) {
+                  alert("设置失败: " + ((e.response && e.response.data && e.response.data.error) || e.message));
+                  self.switchTab("apikeys");
+                });
             },
           },
           computed: {

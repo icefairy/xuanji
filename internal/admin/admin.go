@@ -26,6 +26,7 @@ import (
 	"github.com/icefairy/xuanji/internal/config"
 	"github.com/icefairy/xuanji/internal/health"
 	"github.com/icefairy/xuanji/internal/proxy"
+	"github.com/icefairy/xuanji/internal/quota"
 	"github.com/icefairy/xuanji/internal/router"
 	"github.com/icefairy/xuanji/internal/store"
 )
@@ -41,6 +42,8 @@ type Handler struct {
 	auth   *auth.APIKeys        // 下游 key 鉴权缓存；nil 时无需刷新
 	px     *proxy.Handler       // 完整转发链路（对话调试 /admin/chat 用）；nil 时返回 503
 	rt     *router.Router       // 路由探测器（对话调试 routing 展示用）；nil 时不展示路由信息
+
+	quotaReload func() // 配额策略刷新回调（管理端改动组/分组后调用）；nil 时不刷新
 }
 
 // SetAuth 注入下游 key 鉴权器（api_tokens CRUD 后刷新内存缓存）。
@@ -50,6 +53,15 @@ func (h *Handler) SetAuth(a *auth.APIKeys) { h.auth = a }
 func (h *Handler) refreshAuth() {
 	if h.auth != nil {
 		h.auth.Refresh()
+	}
+}
+
+// SetQuotaReload 设置配额策略刷新回调（main 注入 quota.Service.Refresh）。
+func (h *Handler) SetQuotaReload(f func()) { h.quotaReload = f }
+
+func (h *Handler) refreshQuota() {
+	if h.quotaReload != nil {
+		h.quotaReload()
 	}
 }
 
@@ -1468,6 +1480,7 @@ func (h *Handler) DeleteAPIKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.refreshAuth()
+	h.refreshQuota()
 	writeJSON(w, map[string]string{"status": "ok"})
 }
 
@@ -1492,6 +1505,7 @@ func (h *Handler) SetAPIKeyEnabled(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.refreshAuth()
+	h.refreshQuota()
 	writeJSON(w, map[string]string{"status": "ok"})
 }
 
@@ -1538,6 +1552,7 @@ func (h *Handler) RenameAPIKey(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	h.refreshAuth()
+	h.refreshQuota()
 	writeJSON(w, map[string]string{"status": "ok"})
 }
 
@@ -2280,3 +2295,217 @@ func (w *captureWriter) WriteHeader(code int) {
 }
 
 func (w *captureWriter) Write(b []byte) (int, error) { return w.body.Write(b) }
+
+// ===== 分组管理（配额矩阵） =====
+
+// groupQuotaView 组视图里一个模型行的“限额 + 组内已用”。
+type groupQuotaView struct {
+	Model      string `json:"model"`
+	Token5H    int64  `json:"token_5h"`
+	TokenWeek  int64  `json:"token_week"`
+	TokenMonth int64 `json:"token_month"`
+	Used5H     int64  `json:"used_5h"` // 组内全部 key 对应用量（组视图统计）
+	UsedWeek   int64  `json:"used_week"`
+	UsedMonth  int64  `json:"used_month"`
+}
+
+// groupView 组列表单个元素。
+type groupView struct {
+	ID            uint             `json:"id"`
+	Name          string           `json:"name"`
+	AllowedModels string           `json:"allowed_models"`
+	Remark        string           `json:"remark"`
+	MemberCount   int              `json:"member_count"`
+	Quotas        []groupQuotaView `json:"quotas"`
+}
+
+// Groups 列出所有组及模型配额矩阵（GET /admin/groups）。
+func (h *Handler) Groups(w http.ResponseWriter, _ *http.Request) {
+	if h.store == nil {
+		writeJSON(w, []groupView{})
+		return
+	}
+	groups, err := h.store.ListGroups()
+	if err != nil {
+		writeJSON(w, map[string]string{"error": err.Error()})
+		return
+	}
+	now := time.Now().UTC()
+	quotaStart := func(win string) time.Time {
+		switch win {
+		case "week":
+			return quota.WeekStart(now)
+		case "month":
+			return quota.MonthStart(now)
+		default:
+			return now.Add(-5 * time.Hour)
+		}
+	}
+	out := make([]groupView, 0, len(groups))
+	for i := range groups {
+		g := &groups[i]
+		v := groupView{ID: g.ID, Name: g.Name, AllowedModels: g.AllowedModels, Remark: g.Remark, MemberCount: g.MemberCount, Quotas: []groupQuotaView{}}
+		qrows, err := h.store.ListGroupQuotas(g.ID)
+		if err != nil {
+			continue
+		}
+		for _, q := range qrows {
+			qv := groupQuotaView{Model: q.Model, Token5H: q.Token5H, TokenWeek: q.TokenWeek, TokenMonth: q.TokenMonth}
+			qv.Used5H, _ = h.store.GroupWindowTokenSum(g.ID, q.Model, quotaStart("5h"))
+			qv.UsedWeek, _ = h.store.GroupWindowTokenSum(g.ID, q.Model, quotaStart("week"))
+			qv.UsedMonth, _ = h.store.GroupWindowTokenSum(g.ID, q.Model, quotaStart("month"))
+			v.Quotas = append(v.Quotas, qv)
+		}
+		out = append(out, v)
+	}
+	writeJSON(w, out)
+}
+
+// CreateGroup 创建组（POST /admin/groups）。请求体：{"name","allowed_models","remark"}
+func (h *Handler) CreateGroup(w http.ResponseWriter, r *http.Request) {
+	if h.store == nil {
+		writeJSON(w, map[string]string{"error": "store not available"})
+		return
+	}
+	var req struct {
+		Name          string `json:"name"`
+		AllowedModels string `json:"allowed_models"`
+		Remark        string `json:"remark"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, map[string]string{"error": "invalid request: " + err.Error()})
+		return
+	}
+	g, err := h.store.CreateGroup(req.Name, req.AllowedModels, req.Remark)
+	if err != nil {
+		writeJSON(w, map[string]string{"error": err.Error()})
+		return
+	}
+	h.refreshQuota()
+	writeJSON(w, map[string]interface{}{"status": "ok", "id": g.ID})
+}
+
+// UpdateGroup 更新组信息（PUT /admin/groups/{id}）。空字段表示不修改。
+func (h *Handler) UpdateGroup(w http.ResponseWriter, r *http.Request) {
+	if h.store == nil {
+		writeJSON(w, map[string]string{"error": "store not available"})
+		return
+	}
+	id, err := strconv.ParseUint(r.PathValue("id"), 10, 32)
+	if err != nil {
+		writeJSON(w, map[string]string{"error": "invalid id"})
+		return
+	}
+	var req struct {
+		Name          string `json:"name"`
+		AllowedModels string `json:"allowed_models"`
+		Remark        string `json:"remark"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&req)
+	if err := h.store.UpdateGroup(uint(id), req.Name, req.AllowedModels, req.Remark); err != nil {
+		writeJSON(w, map[string]string{"error": err.Error()})
+		return
+	}
+	h.refreshQuota()
+	writeJSON(w, map[string]string{"status": "ok"})
+}
+
+// DeleteGroup 删除组（DELETE /admin/groups/{id}）。
+func (h *Handler) DeleteGroup(w http.ResponseWriter, r *http.Request) {
+	if h.store == nil {
+		writeJSON(w, map[string]string{"error": "store not available"})
+		return
+	}
+	id, err := strconv.ParseUint(r.PathValue("id"), 10, 32)
+	if err != nil {
+		writeJSON(w, map[string]string{"error": "invalid id"})
+		return
+	}
+	if err := h.store.DeleteGroup(uint(id)); err != nil {
+		writeJSON(w, map[string]string{"error": err.Error()})
+		return
+	}
+	h.refreshQuota()
+	writeJSON(w, map[string]string{"status": "ok"})
+}
+
+// UpdateGroupQuota 设置某组某模型的配额（PUT /admin/groups/{id}/quotas）。
+// 请求体：{"model","token_5h","token_week","token_month"}；三窗口全 0 视为删除该行。
+func (h *Handler) UpdateGroupQuota(w http.ResponseWriter, r *http.Request) {
+	if h.store == nil {
+		writeJSON(w, map[string]string{"error": "store not available"})
+		return
+	}
+	id, err := strconv.ParseUint(r.PathValue("id"), 10, 32)
+	if err != nil {
+		writeJSON(w, map[string]string{"error": "invalid id"})
+		return
+	}
+	var req struct {
+		Model      string `json:"model"`
+		Token5H    int64  `json:"token_5h"`
+		TokenWeek  int64  `json:"token_week"`
+		TokenMonth int64  `json:"token_month"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, map[string]string{"error": "invalid request: " + err.Error()})
+		return
+	}
+	if err := h.store.UpsertGroupQuota(uint(id), req.Model, req.Token5H, req.TokenWeek, req.TokenMonth); err != nil {
+		writeJSON(w, map[string]string{"error": err.Error()})
+		return
+	}
+	h.refreshQuota()
+	writeJSON(w, map[string]string{"status": "ok"})
+}
+
+// DeleteGroupQuota 删除某组某模型的配额（DELETE /admin/groups/{id}/quotas/{model}）。
+func (h *Handler) DeleteGroupQuota(w http.ResponseWriter, r *http.Request) {
+	if h.store == nil {
+		writeJSON(w, map[string]string{"error": "store not available"})
+		return
+	}
+	id, _ := strconv.ParseUint(r.PathValue("id"), 10, 32)
+	model := r.PathValue("model")
+	if model == "" {
+		writeJSON(w, map[string]string{"error": "model is required"})
+		return
+	}
+	if err := h.store.DeleteGroupQuota(uint(id), model); err != nil {
+		writeJSON(w, map[string]string{"error": err.Error()})
+		return
+	}
+	h.refreshQuota()
+	writeJSON(w, map[string]string{"status": "ok"})
+}
+
+// UpdateAPIKeyPolicy 更新下游 key 的分组归属与覆盖策略（PUT /admin/api-keys/{id}/policy）。
+// 请求体（全部为改动的字段，未传的保留）：
+//   {"group_id": 3, "allowed_models": "[...]", "quota_override": "{...}"}
+// 传 group_id 0 表示脱离组；allowed_models/quota_override 传空串表示不修改。
+func (h *Handler) UpdateAPIKeyPolicy(w http.ResponseWriter, r *http.Request) {
+	if h.store == nil {
+		writeJSON(w, map[string]string{"error": "store not available"})
+		return
+	}
+	id, err := strconv.ParseUint(r.PathValue("id"), 10, 32)
+	if err != nil {
+		writeJSON(w, map[string]string{"error": "invalid id"})
+		return
+	}
+	var req struct {
+		GroupID       uint   `json:"group_id"`
+		AllowedModels string `json:"allowed_models"`
+		QuotaOverride string `json:"quota_override"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, map[string]string{"error": "invalid request: " + err.Error()})
+		return
+	}
+	if err := h.store.UpdateAPITokenPolicy(uint(id), req.GroupID, req.AllowedModels, req.QuotaOverride); err != nil {
+		writeJSON(w, map[string]string{"error": err.Error()})
+		return
+	}
+	h.refreshQuota()
+	writeJSON(w, map[string]string{"status": "ok"})
+}

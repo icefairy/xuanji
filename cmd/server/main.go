@@ -33,6 +33,7 @@ import (
 	"github.com/icefairy/xuanji/internal/health"
 	"github.com/icefairy/xuanji/internal/ollama"
 	"github.com/icefairy/xuanji/internal/proxy"
+	"github.com/icefairy/xuanji/internal/quota"
 	"github.com/icefairy/xuanji/internal/router"
 	"github.com/icefairy/xuanji/internal/store"
 )
@@ -118,6 +119,7 @@ type appState struct {
 	mu  sync.RWMutex
 	hc  *health.Checker
 	srv *http.Server
+	qm  *quota.Service // 配额策略（组×模型 白名单+模型级配额）
 }
 
 var (
@@ -197,8 +199,12 @@ func main() {
 	// storeInst 非 nil 时，api_tokens 表中的下游 key 也参与转发鉴权；
 	// 管理端 JWT 也放行（前端测试按钮直接用登录 token 调转发）
 	keys := auth.New(storeInst, admJWTSecret(storeInst))
-
-	mux := buildServeMux(cfg, rt, hc, rec, storeInst, keys)
+	// 配额策略（组×模型 白名单 + 模型级配额；启动即加载，管理端改动后 Refresh）
+	qm := quota.New(storeInst)
+	state.mu.Lock()
+	state.qm = qm
+	state.mu.Unlock()
+	mux := buildServeMux(cfg, rt, hc, rec, storeInst, keys, qm)
 
 	addr := fmt.Sprintf(":%d", cfg.Server.Port)
 	srv := &http.Server{
@@ -276,7 +282,8 @@ func backupOnce(storeInst *store.Store) {
 }
 
 // buildServeMux 构造 HTTP 路由 mux。
-func buildServeMux(cfg *config.Config, rt *router.Router, hc *health.Checker, rec *store.Recorder, storeInst *store.Store, apiKeys *auth.APIKeys) *http.ServeMux {
+// qm 为配额策略服务（nil 时不启用配额检查）。
+func buildServeMux(cfg *config.Config, rt *router.Router, hc *health.Checker, rec *store.Recorder, storeInst *store.Store, apiKeys *auth.APIKeys, qm *quota.Service) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthzHandler)
 
@@ -299,6 +306,9 @@ func buildServeMux(cfg *config.Config, rt *router.Router, hc *health.Checker, re
 	// 管理接口（admin API，加认证：检查 Authorization header 是否匹配 server.api_keys）
 	admHandler := admin.New(cfg, hc)
 	admHandler.SetAuth(apiKeys)
+	if qm != nil {
+		admHandler.SetQuotaReload(qm.Refresh)
+	}
 	if rec != nil {
 		admHandler.SetStore(rec.Store())
 	}
@@ -365,6 +375,15 @@ func buildServeMux(cfg *config.Config, rt *router.Router, hc *health.Checker, re
 	mux.HandleFunc("DELETE /admin/api-keys/{key}", adminAuth(admHandler.DeleteAPIKey))
 	mux.HandleFunc("PUT /admin/api-keys/{id}/toggle", adminAuth(admHandler.SetAPIKeyEnabled))
 	mux.HandleFunc("PUT /admin/api-keys/{id}/name", adminAuth(admHandler.RenameAPIKey))
+	mux.HandleFunc("PUT /admin/api-keys/{id}/policy", adminAuth(admHandler.UpdateAPIKeyPolicy))
+
+	// 分组管理（配额矩阵）：组∖模型 独立配额，组内每人默认，key 可覆盖
+	mux.HandleFunc("GET /admin/groups", adminAuth(admHandler.Groups))
+	mux.HandleFunc("POST /admin/groups", adminAuth(admHandler.CreateGroup))
+	mux.HandleFunc("PUT /admin/groups/{id}", adminAuth(admHandler.UpdateGroup))
+	mux.HandleFunc("DELETE /admin/groups/{id}", adminAuth(admHandler.DeleteGroup))
+	mux.HandleFunc("PUT /admin/groups/{id}/quotas", adminAuth(admHandler.UpdateGroupQuota))
+	mux.HandleFunc("DELETE /admin/groups/{id}/quotas/{model}", adminAuth(admHandler.DeleteGroupQuota))
 
 	// CRUD 端点
 	mux.HandleFunc("POST /admin/upstreams", adminAuth(admHandler.CreateUpstream))
@@ -461,6 +480,12 @@ func buildServeMux(cfg *config.Config, rt *router.Router, hc *health.Checker, re
 		olHandler.SetKeyName(keyNameFn)
 		pxHandler.SetKeyName(keyNameFn)
 		gmHandler.SetKeyName(keyNameFn)
+		// 配额实时用量：转发放行并记录后，同步累加 (api_key, model) 内存窗口计数
+		rec.SetUsageHook(func(r store.Record) {
+			if qm != nil && r.Tokens > 0 {
+				qm.AddUsage(r.APIKey, r.Model, r.Tokens)
+			}
+		})
 	}
 	// 模型单价查询：按上游真实模型名定价（默认价兜底在 store.PriceFor 内部）
 	pxHandler.SetPriceFor(storeInst.PriceFor)
@@ -473,24 +498,24 @@ func buildServeMux(cfg *config.Config, rt *router.Router, hc *health.Checker, re
 
 	// OpenAI 兼容入口：按路由结果分发（ollama 上游走转换，其余走 proxy）
 	mux.HandleFunc("GET /v1/models", apiKeys.Middleware(admHandler.Models))
-	mux.HandleFunc("POST /v1/chat/completions", apiKeys.Middleware(dispatchOpenAI(rt, olHandler, pxHandler, gmHandler)))
+	mux.HandleFunc("POST /v1/chat/completions", apiKeys.Middleware(qm.Middleware(dispatchOpenAI(rt, olHandler, pxHandler, gmHandler))))
 	// 老版 OpenAI 兼容接口（text 补全）：直接走 proxy 转换转发，ollama 上游兼容暂不考虑
-	mux.HandleFunc("POST /v1/completions", apiKeys.Middleware(pxHandler.Completions))
-	mux.HandleFunc("POST /v1/embeddings", apiKeys.Middleware(dispatchEmbeddings(rt, olHandler, pxHandler)))
-	mux.HandleFunc("POST /v1/rerank", apiKeys.Middleware(pxHandler.Rerank))
+	mux.HandleFunc("POST /v1/completions", apiKeys.Middleware(qm.Middleware(pxHandler.Completions)))
+	mux.HandleFunc("POST /v1/embeddings", apiKeys.Middleware(qm.Middleware(dispatchEmbeddings(rt, olHandler, pxHandler))))
+	mux.HandleFunc("POST /v1/rerank", apiKeys.Middleware(qm.Middleware(pxHandler.Rerank)))
 	antHandler := anthropic.New(rt, hc)
 	antHandler.SetTimeout(time.Duration(cfg.Retry.UpstreamTimeout) * time.Second)
 	if rec != nil {
 		antHandler.SetRecorder(rec)
 	}
-	mux.HandleFunc("POST /v1/messages", apiKeys.Middleware(antHandler.Messages))
+	mux.HandleFunc("POST /v1/messages", apiKeys.Middleware(qm.Middleware(antHandler.Messages)))
 
 	// Gemini 上游：由 dispatchOpenAI 在路由命中 gemini 类型上游时调用转换（见上方）。
-	mux.HandleFunc("POST /v1/images/generations", apiKeys.Middleware(pxHandler.ImageGenerations))
-	mux.HandleFunc("POST /v1/audio/speech", apiKeys.Middleware(pxHandler.AudioSpeech))
-	mux.HandleFunc("POST /v1/audio/transcriptions", apiKeys.Middleware(pxHandler.AudioTranscriptions))
-	mux.HandleFunc("POST /v1/videos", apiKeys.Middleware(pxHandler.VideoCreate))
-	mux.HandleFunc("GET /v1/videos", apiKeys.Middleware(pxHandler.VideoQuery))
+	mux.HandleFunc("POST /v1/images/generations", apiKeys.Middleware(qm.Middleware(pxHandler.ImageGenerations)))
+	mux.HandleFunc("POST /v1/audio/speech", apiKeys.Middleware(qm.Middleware(pxHandler.AudioSpeech)))
+	mux.HandleFunc("POST /v1/audio/transcriptions", apiKeys.Middleware(qm.Middleware(pxHandler.AudioTranscriptions)))
+	mux.HandleFunc("POST /v1/videos", apiKeys.Middleware(qm.Middleware(pxHandler.VideoCreate)))
+	mux.HandleFunc("GET /v1/videos", apiKeys.Middleware(qm.Middleware(pxHandler.VideoQuery)))
 
 	return mux
 }
@@ -525,7 +550,10 @@ func reloadConfig(storeInst *store.Store, rec *store.Recorder) error {
 
 	// 创建新 handler
 	apiKeys := auth.New(storeInst, admJWTSecret(storeInst))
-	newHandler := buildServeMux(newCfg, rt, hc, rec, storeInst, apiKeys)
+	if state.qm != nil {
+		state.qm.Refresh()
+	}
+	newHandler := buildServeMux(newCfg, rt, hc, rec, storeInst, apiKeys, state.qm)
 
 	// 替换 srv.Handler
 	state.mu.Lock()
