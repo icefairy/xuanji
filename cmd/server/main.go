@@ -284,6 +284,14 @@ func backupOnce(storeInst *store.Store) {
 // buildServeMux 构造 HTTP 路由 mux。
 // qm 为配额策略服务（nil 时不启用配额检查）。
 func buildServeMux(cfg *config.Config, rt *router.Router, hc *health.Checker, rec *store.Recorder, storeInst *store.Store, apiKeys *auth.APIKeys, qm *quota.Service) *http.ServeMux {
+	// 上游 User-Agent：配置为空时默认用 pi agent 的 UA（可在系统设置自定）。
+	// 启动与热重载都经过 buildServeMux，这里统一生效。
+	ua := cfg.Proxy.UserAgent
+	if ua == "" {
+		ua = config.DefaultUpstreamUserAgent
+	}
+	config.SetUpstreamUserAgent(ua)
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthzHandler)
 

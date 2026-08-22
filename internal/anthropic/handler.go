@@ -172,7 +172,7 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, claudeReq 
 			DurationMS: time.Since(start).Milliseconds(),
 			Tokens:     0,
 			APIKey:     h.recordAPIKey(r),
-			ClientAddr: r.RemoteAddr, // 客户端地址 "IP:port"，用于区分调用程序
+			ClientAddr: r.RemoteAddr,  // 客户端地址 "IP:port"，用于区分调用程序
 			UserAgent:  r.UserAgent(), // 客户端 UA，程序识别最强信号
 		})
 	}()
@@ -211,6 +211,7 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, claudeReq 
 		req.Header.Set("anthropic-version", "2023-06-01")
 	}
 	req.Header.Set("Content-Type", "application/json")
+	config.ApplyUpstreamUserAgent(req)
 
 	resp, err := h.client.Do(req)
 	if err != nil {

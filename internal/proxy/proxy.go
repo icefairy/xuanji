@@ -398,6 +398,7 @@ func realModels(up *config.Upstream, model string) []string {
 //   - 客户端模型名在 model_mapping 中有映射 → 支持（映射可能指向其他真实模型）
 //   - 客户端模型名是 models 中某项的真实模型名（如 model_mapping 的 value）→ 支持
 //   - 其余情况返回 false（路由该上游必然 404/400）
+//
 // setUpstreamAuth 按上游类型设置认证请求头。
 // 默认 OpenAI 惯例 Authorization: Bearer <key>；Dots API（dots.ai）要求 api-key 头。
 func setUpstreamAuth(req *http.Request, up *config.Upstream) {
@@ -712,7 +713,7 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 			CompletionTokens:      completionTokens,
 			Tokens:                promptTokens + completionTokens,
 			APIKey:                h.recordAPIKey(r),
-			ClientAddr:            r.RemoteAddr, // 客户端地址 "IP:port"，用于区分调用程序
+			ClientAddr:            r.RemoteAddr,  // 客户端地址 "IP:port"，用于区分调用程序
 			UserAgent:             r.UserAgent(), // 客户端 UA，程序识别最强信号
 			PromptCacheHitTokens:  promptCacheHitTokens,
 			PromptCacheMissTokens: promptCacheMissTokens,
@@ -756,12 +757,12 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 		reqBody = nb
 	}
 	// image_url 拍平：OpenAI 标准嵌套对象 {image_url:{url}} → 上游认识的平铺字符串 {image_url:url}。
-		// vllm/agnes 等后端不认嵌套对象，收到报 400 Unexpected item type；Dots 例外（要求标准嵌套，跳过拍平）。
-		if !up.IsDots() {
-			if nb, changed := normalizeImageURLFlat(reqBody); changed {
-				reqBody = nb
-			}
+	// vllm/agnes 等后端不认嵌套对象，收到报 400 Unexpected item type；Dots 例外（要求标准嵌套，跳过拍平）。
+	if !up.IsDots() {
+		if nb, changed := normalizeImageURLFlat(reqBody); changed {
+			reqBody = nb
 		}
+	}
 	// thinking 模式 reasoning_content 回传兼容：客户端 agent（pi / Claude Code 等）
 	// 消息规范化时可能丢掉历史 assistant 消息的 reasoning_content，DeepSeek thinking
 	// 模式多轮 tool-calling 要求原样回传否则上游 400。用上一轮响应缓存的
@@ -807,6 +808,7 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 	}
 	setUpstreamAuth(req, up)
 	req.Header.Set("Content-Type", "application/json")
+	config.ApplyUpstreamUserAgent(req)
 
 	resp, err := h.client.Do(req)
 	if err != nil {
@@ -1056,7 +1058,7 @@ func extractMessages(body []byte) []map[string]string {
 // 与前缀缓存命中/未命中 token 数（DeepSeek 等上游在 usage 里带 prompt_cache_hit/miss_tokens）。
 // 处理 "usage":null 的中间 chunk（Exists() 对 null 也返回 true，需 IsObject() 过滤）。
 // 返回 interrupted：客户端在流结束前断开（写响应失败），调用方应把日志状态记为 499
-//（Nginx 语义 client closed request），避免把"中断"误记为 200 污染统计。
+// （Nginx 语义 client closed request），避免把"中断"误记为 200 污染统计。
 func (h *Handler) streamCopy(w http.ResponseWriter, resp *http.Response, promptTokens, completionTokens, promptCacheHit, promptCacheMiss *int64) (interrupted bool) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -1315,7 +1317,7 @@ func (h *Handler) forwardRerank(w http.ResponseWriter, r *http.Request, body []b
 			CompletionTokens: completionTokens,
 			Tokens:           promptTokens + completionTokens,
 			APIKey:           h.recordAPIKey(r),
-			ClientAddr:       r.RemoteAddr, // 客户端地址 "IP:port"，用于区分调用程序
+			ClientAddr:       r.RemoteAddr,  // 客户端地址 "IP:port"，用于区分调用程序
 			UserAgent:        r.UserAgent(), // 客户端 UA，程序识别最强信号
 		})
 	}()
@@ -1342,6 +1344,7 @@ func (h *Handler) forwardRerank(w http.ResponseWriter, r *http.Request, body []b
 	}
 	setUpstreamAuth(req, up)
 	req.Header.Set("Content-Type", "application/json")
+	config.ApplyUpstreamUserAgent(req)
 
 	resp, err := h.client.Do(req)
 	if err != nil {
@@ -1482,7 +1485,7 @@ func (h *Handler) forwardEmbedding(w http.ResponseWriter, r *http.Request, body 
 			CompletionTokens: completionTokens,
 			Tokens:           promptTokens + completionTokens,
 			APIKey:           h.recordAPIKey(r),
-			ClientAddr:       r.RemoteAddr, // 客户端地址 "IP:port"，用于区分调用程序
+			ClientAddr:       r.RemoteAddr,  // 客户端地址 "IP:port"，用于区分调用程序
 			UserAgent:        r.UserAgent(), // 客户端 UA，程序识别最强信号
 		})
 	}()
@@ -1509,6 +1512,7 @@ func (h *Handler) forwardEmbedding(w http.ResponseWriter, r *http.Request, body 
 	}
 	setUpstreamAuth(req, up)
 	req.Header.Set("Content-Type", "application/json")
+	config.ApplyUpstreamUserAgent(req)
 
 	resp, err := h.client.Do(req)
 	if err != nil {

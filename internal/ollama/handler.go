@@ -187,7 +187,7 @@ func (h *Handler) forward(w http.ResponseWriter, r *http.Request, path string) {
 			DurationMS: time.Since(start).Milliseconds(),
 			Tokens:     0,
 			APIKey:     h.recordAPIKey(r),
-			ClientAddr: r.RemoteAddr, // 客户端地址 "IP:port"，用于区分调用程序
+			ClientAddr: r.RemoteAddr,  // 客户端地址 "IP:port"，用于区分调用程序
 			UserAgent:  r.UserAgent(), // 客户端 UA，程序识别最强信号
 		})
 	}
@@ -217,6 +217,7 @@ func (h *Handler) passthrough(w http.ResponseWriter, r *http.Request, up *config
 		return 0, false, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	config.ApplyUpstreamUserAgent(req)
 	if up.APIKey != "" {
 		req.Header.Set("Authorization", "Bearer "+up.APIKey)
 	}
@@ -277,7 +278,7 @@ func (h *Handler) openAIForward(w http.ResponseWriter, r *http.Request, kind str
 			Status:     rec.status,
 			DurationMS: time.Since(start).Milliseconds(),
 			Tokens:     0,
-			ClientAddr: r.RemoteAddr, // 客户端地址 "IP:port"，用于区分调用程序
+			ClientAddr: r.RemoteAddr,  // 客户端地址 "IP:port"，用于区分调用程序
 			UserAgent:  r.UserAgent(), // 客户端 UA，程序识别最强信号
 		})
 	}()
@@ -358,6 +359,7 @@ func (h *Handler) openAIForward(w http.ResponseWriter, r *http.Request, kind str
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
+	config.ApplyUpstreamUserAgent(req)
 	if up.APIKey != "" {
 		req.Header.Set("Authorization", "Bearer "+up.APIKey)
 	}
