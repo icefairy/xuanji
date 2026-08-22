@@ -213,6 +213,7 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 	}
 	req.Header.Set("x-goog-api-key", up.APIKey)
 	req.Header.Set("Content-Type", "application/json")
+	config.ApplyUpstreamUserAgent(req)
 
 	resp, derr := h.client.Do(req)
 	if derr != nil {

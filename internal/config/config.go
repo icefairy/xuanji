@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/icefairy/xuanji/internal/store"
@@ -92,6 +94,10 @@ type Proxy struct {
 	ClientAnalysis bool `yaml:"client_analysis"`
 	// ClientAnalysisInterval 分析间隔秒数（默认 600，即 10 分钟）。
 	ClientAnalysisInterval int `yaml:"client_analysis_interval"`
+	// UserAgent 是转发到上游时设置的 User-Agent。留空时用 DefaultUpstreamUserAgent
+	// （pi agent 的 UA）。改动机：部分上游用 UA 判断调用方是否官方客户端，
+	// 设置自定义 UA 可避免 Go 默认的 Go-http-client/1.1 被误判为脚本/网关程序。
+	UserAgent string `yaml:"user_agent"`
 }
 
 // EffortConfig 描述单个模型的最佳思考等级配置。
@@ -121,20 +127,20 @@ type Server struct {
 //	anthropic —— Anthropic 原生（/v1/messages）
 //	ollama —— Ollama 原生（/api/chat, /api/generate, /api/embed）
 type Upstream struct {
-	Name         string            `yaml:"name"`
-	Type         string            `yaml:"type"`
-	BaseURL      string            `yaml:"base_url"`
-	APIKey       string            `yaml:"api_key"`
-	Tier         string            `yaml:"tier"` // free | subscription | payg（默认 payg）
-	Priority     int               `yaml:"priority"`
-	Weight       int               `yaml:"weight"`
-	Models       []string          `yaml:"models"`
-	ModelMapping map[string]string `yaml:"model_mapping"` // 客户端模型名 → 上游真实模型名
+	Name            string            `yaml:"name"`
+	Type            string            `yaml:"type"`
+	BaseURL         string            `yaml:"base_url"`
+	APIKey          string            `yaml:"api_key"`
+	Tier            string            `yaml:"tier"` // free | subscription | payg（默认 payg）
+	Priority        int               `yaml:"priority"`
+	Weight          int               `yaml:"weight"`
+	Models          []string          `yaml:"models"`
+	ModelMapping    map[string]string `yaml:"model_mapping"`    // 客户端模型名 → 上游真实模型名
 	RequestOverride string            `yaml:"request_override"` // 请求体复写（JSON 字符串）：转发前强制覆盖请求体部分字段，空=不启用
-	Enabled      bool              `yaml:"enabled"`       // 禁用（false）时不参与转发路由
-	MaxTokensCap int               `yaml:"max_tokens_cap"` // 上游 max_tokens 上限；0=不限制（客户端传超范围值时 clamp 到该值，防 400）
-	Quota        *Quota            `yaml:"quota"`
-	HealthCheck  *HealthCheck      `yaml:"health_check"`
+	Enabled         bool              `yaml:"enabled"`          // 禁用（false）时不参与转发路由
+	MaxTokensCap    int               `yaml:"max_tokens_cap"`   // 上游 max_tokens 上限；0=不限制（客户端传超范围值时 clamp 到该值，防 400）
+	Quota           *Quota            `yaml:"quota"`
+	HealthCheck     *HealthCheck      `yaml:"health_check"`
 }
 
 // IsOllama 判断上游是否为 Ollama 原生协议。
@@ -450,6 +456,10 @@ func LoadFromDB(s *store.Store) (*Config, error) {
 			cfg.Proxy.CooldownUpstreams = names
 		}
 	}
+	// 解析转发 User-Agent（上游看到的客户端标识；空 = 用内置默认 pi agent UA）
+	if v, ok := all["proxy.user_agent"]; ok {
+		cfg.Proxy.UserAgent = strings.TrimSpace(v)
+	}
 
 	// 默认值
 	if cfg.Server.Port == 0 {
@@ -584,4 +594,35 @@ func ParseModelsString(s string) []string {
 		}
 	}
 	return out
+}
+
+// ===== 上游 User-Agent 注入 =====
+//
+// 转发到上游时，各协议 handler（OpenAI proxy / Gemini / Anthropic / Ollama）
+// 构造完上游请求后统一调用 ApplyUpstreamUserAgent 设置 User-Agent。
+// 用包级 atomic 而不是把 cfg 传进每个 handler 结构，避免大改签名，
+// 并保证配置热重载后立即生效。
+
+// DefaultUpstreamUserAgent 是转发时的默认 User-Agent：pi agent 的真实 UA
+// （pi/0.84.1，linux；node v22.22.1；x64，与本机 pi 二进制实测一致）。
+const DefaultUpstreamUserAgent = "pi/0.84.1 (linux; node/v22.22.1; x64)"
+
+var upstreamUserAgent atomic.Value // string；空 = 不设置（用 Go 默认 Go-http-client/1.1）
+
+// SetUpstreamUserAgent 设置全局上游 UA（空串 = 不设置）。
+func SetUpstreamUserAgent(ua string) { upstreamUserAgent.Store(ua) }
+
+// UpstreamUserAgent 返回当前全局上游 UA。
+func UpstreamUserAgent() string {
+	if v, ok := upstreamUserAgent.Load().(string); ok {
+		return v
+	}
+	return ""
+}
+
+// ApplyUpstreamUserAgent 把全局上游 UA 写到请求头（配置非空时才设置）。
+func ApplyUpstreamUserAgent(req *http.Request) {
+	if ua := UpstreamUserAgent(); ua != "" {
+		req.Header.Set("User-Agent", ua)
+	}
 }

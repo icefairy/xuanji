@@ -2064,6 +2064,48 @@
             font-size: 14px;
           "
         >
+          转发 User-Agent
+        </div>
+        <div
+          style="
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 16px;
+            flex-wrap: wrap;
+          "
+        >
+          <select
+            v-model="uaPreset"
+            @change="onUaPresetChange"
+            style="width: 150px; height: 28px"
+          >
+            <option value="pi">pi agent</option>
+            <option value="hermes">Hermes agent</option>
+            <option value="custom">自定义…</option>
+            <option value="none">不设置（Go 默认）</option>
+          </select>
+          <input
+            v-model.trim="userAgent"
+            placeholder="转发给上游的 User-Agent"
+            style="width: 340px; height: 28px; padding: 0 8px"
+          />
+          <button class="btn btn-primary" @click="saveUserAgent">保存</button>
+          <span style="color: #909399; font-size: 12px"
+            >上游看到的客户端标识，默认 = pi agent（pi/0.84.1 …）。可选 Hermes
+            agent（hermes-cli/0.20.2）或自定义。避免上游把默认 Go-http-client/1.1
+            误判为脚本/网关程序。保存后立即热重载生效。</span
+          >
+        </div>
+
+        <div
+          style="
+            margin-bottom: 12px;
+            color: #303133;
+            font-weight: 600;
+            font-size: 14px;
+          "
+        >
           thinking 模式 reasoning_content 回传
         </div>
         <div
@@ -2885,6 +2927,9 @@
 
       function initApp() {
         var token = localStorage.getItem("xuanji_jwt") || "";
+        // 转发 User-Agent 预设（系统设置页）——与后端 config 包内置默认一致
+        var PI_UA = "pi/0.84.1 (linux; node/v22.22.1; x64)";
+        var HERMES_UA = "hermes-cli/0.20.2";
 
         new Vue({
           el: "#app",
@@ -2896,6 +2941,8 @@
             videoPassThrough: false,
             normalizeDeveloperRole: true,
             cacheReasoningContent: true,
+            userAgent: "",
+            uaPreset: "pi",
             loginUsername: "",
             loginPassword: "",
             loginError: "",
@@ -3909,6 +3956,18 @@
                         cm["proxy.force_best_effort"] === "true";
                       self.videoPassThrough =
                         cm["proxy.video_pass_through"] === "true";
+                      var ua = cm["proxy.user_agent"] || "";
+                      self.userAgent = ua;
+                      // 预设识别：与内置 UA 相同则选中对应预设，否则自定义/不设置
+                      if (ua === PI_UA) {
+                        self.uaPreset = "pi";
+                      } else if (ua === HERMES_UA) {
+                        self.uaPreset = "hermes";
+                      } else if (ua === "") {
+                        self.uaPreset = "none";
+                      } else {
+                        self.uaPreset = "custom";
+                      }
                       // developer 角色兼容默认开启：DB 未配置该 key 时视为 true
                       // （与后端 LoadFromDB 默认值一致），显式 "false" 才关闭
                       self.normalizeDeveloperRole =
@@ -3998,6 +4057,43 @@
                 })
                 .then(function () {
                   alert("视频透传开关已保存并热重载生效");
+                });
+            },
+            onUaPresetChange: function () {
+              var p = this.uaPreset;
+              if (p === "pi") {
+                this.userAgent = PI_UA;
+              } else if (p === "hermes") {
+                this.userAgent = HERMES_UA;
+              } else if (p === "none") {
+                this.userAgent = "";
+              }
+              // custom 保持用户已输入的值
+            },
+            saveUserAgent: function () {
+              var self = this;
+              var ua = self.userAgent || "";
+              self
+                .api("/admin/config", {
+                  method: "PUT",
+                  body: { "proxy.user_agent": ua },
+                })
+                .then(function () {
+                  // 回填预设识别
+                  if (ua === PI_UA) {
+                    self.uaPreset = "pi";
+                  } else if (ua === HERMES_UA) {
+                    self.uaPreset = "hermes";
+                  } else if (ua === "") {
+                    self.uaPreset = "none";
+                  } else {
+                    self.uaPreset = "custom";
+                  }
+                  alert(
+                    ua
+                      ? "转发 User-Agent 已保存并热重载生效: " + ua
+                      : "已清空转发 User-Agent（恢复 Go 默认 Go-http-client/1.1）"
+                  );
                 });
             },
             saveDeveloperRoleSwitch: function () {
