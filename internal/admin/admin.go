@@ -19,8 +19,8 @@ import (
 	"strings"
 	"time"
 
-	"golang.org/x/crypto/bcrypt"
 	"github.com/tidwall/gjson"
+	"golang.org/x/crypto/bcrypt"
 
 	"github.com/icefairy/xuanji/internal/auth"
 	"github.com/icefairy/xuanji/internal/config"
@@ -139,22 +139,22 @@ func (h *Handler) Status(w http.ResponseWriter, _ *http.Request) {
 // upstreamResponse 是 GET /admin/upstreams 的单个元素。
 // 绝不包含 api_key 字段（安全）。
 type upstreamResponse struct {
-	Name          string   `json:"name"`
-	Type          string   `json:"type"`
-	BaseURL       string   `json:"base_url"`
-	APIKey        string   `json:"api_key"`
-	Tier          string   `json:"tier"`
-	Priority      int      `json:"priority"`
-	Weight        int      `json:"weight"`
-	Enabled       bool     `json:"enabled"`        // 1=启用 0=禁用（禁用的不参与转发）
-	BillingExempt bool     `json:"billing_exempt"` // true=不参与计费（统计费用记 0，路由不受影响）
-	FastFail      bool     `json:"fast_fail"`      // 快速失败黑名单中（后台探测可自动恢复）
-	State         string   `json:"state"`
-	LatencyMS     int64    `json:"latency_ms"`
-	Models        []string `json:"models"`
-	ModelCount    int      `json:"model_count"`
-	ModelMapping  string   `json:"model_mapping"` // JSON 对象字符串
-	RequestOverride string `json:"request_override"` // 请求体复写 JSON 字符串
+	Name            string   `json:"name"`
+	Type            string   `json:"type"`
+	BaseURL         string   `json:"base_url"`
+	APIKey          string   `json:"api_key"`
+	Tier            string   `json:"tier"`
+	Priority        int      `json:"priority"`
+	Weight          int      `json:"weight"`
+	Enabled         bool     `json:"enabled"`        // 1=启用 0=禁用（禁用的不参与转发）
+	BillingExempt   bool     `json:"billing_exempt"` // true=不参与计费（统计费用记 0，路由不受影响）
+	FastFail        bool     `json:"fast_fail"`      // 快速失败黑名单中（后台探测可自动恢复）
+	State           string   `json:"state"`
+	LatencyMS       int64    `json:"latency_ms"`
+	Models          []string `json:"models"`
+	ModelCount      int      `json:"model_count"`
+	ModelMapping    string   `json:"model_mapping"`    // JSON 对象字符串
+	RequestOverride string   `json:"request_override"` // 请求体复写 JSON 字符串
 }
 
 // fastFailState 返回上游是否处于快速失败黑名单（渠道级判断，不区分模型）。
@@ -170,24 +170,24 @@ func (h *Handler) Upstreams(w http.ResponseWriter, _ *http.Request) {
 			resp := make([]upstreamResponse, 0, len(rows))
 			for _, u := range rows {
 				models := parseStringSlice(u.Models)
-								resp = append(resp, upstreamResponse{
-													Name:          u.Name,
-													Type:          u.Type,
-													BaseURL:       u.BaseURL,
-													APIKey:        u.APIKey,
-													Tier:          u.Tier,
-													Priority:      u.Priority,
-													Weight:        u.Weight,
-													Enabled:       u.Enabled == 1,
-													BillingExempt: u.BillingExempt == 1,
-													FastFail:      h.fastFailState(u.Name),
-													State:         string(h.hc.Status(u.Name)),
-													LatencyMS:     h.hc.Latency(u.Name).Milliseconds(),
-													Models:        models,
-													ModelCount:    len(models),
-													ModelMapping:  u.ModelMapping,
-													RequestOverride: u.RequestOverride,
-													})
+				resp = append(resp, upstreamResponse{
+					Name:            u.Name,
+					Type:            u.Type,
+					BaseURL:         u.BaseURL,
+					APIKey:          u.APIKey,
+					Tier:            u.Tier,
+					Priority:        u.Priority,
+					Weight:          u.Weight,
+					Enabled:         u.Enabled == 1,
+					BillingExempt:   u.BillingExempt == 1,
+					FastFail:        h.fastFailState(u.Name),
+					State:           string(h.hc.Status(u.Name)),
+					LatencyMS:       h.hc.Latency(u.Name).Milliseconds(),
+					Models:          models,
+					ModelCount:      len(models),
+					ModelMapping:    u.ModelMapping,
+					RequestOverride: u.RequestOverride,
+				})
 			}
 			writeJSON(w, resp)
 			return
@@ -1320,10 +1320,10 @@ func (h *Handler) RequestLogs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, map[string]interface{}{
-		"total":  total,
-		"limit":  limit,
-		"offset": offset,
-		"logs":   out,
+		"total":   total,
+		"limit":   limit,
+		"offset":  offset,
+		"logs":    out,
 		"filters": map[string]interface{}{"upstreams": upstreams, "models": models, "endpoints": endpoints},
 	})
 }
@@ -1996,9 +1996,10 @@ func (h *Handler) TestUpstream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Model     string `json:"model"`
-		Content   string `json:"content"`
-		MaxTokens int    `json:"max_tokens"`
+		Model           string `json:"model"`
+		Content         string `json:"content"`
+		MaxTokens       int    `json:"max_tokens"`
+		ReasoningEffort string `json:"reasoning_effort"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&req)
 	if req.Model == "" {
@@ -2024,6 +2025,10 @@ func (h *Handler) TestUpstream(w http.ResponseWriter, r *http.Request) {
 		"model":      realModel,
 		"messages":   []map[string]string{{"role": "user", "content": req.Content}},
 		"max_tokens": req.MaxTokens,
+	}
+	// 思考等级：非空时随测试请求带上（auto/自动=不传；none 也透传以便关闭思考）
+	if req.ReasoningEffort != "" && req.ReasoningEffort != "auto" {
+		body["reasoning_effort"] = req.ReasoningEffort
 	}
 	payload, _ := json.Marshal(body)
 
@@ -2303,7 +2308,7 @@ type groupQuotaView struct {
 	Model      string `json:"model"`
 	Token5H    int64  `json:"token_5h"`
 	TokenWeek  int64  `json:"token_week"`
-	TokenMonth int64 `json:"token_month"`
+	TokenMonth int64  `json:"token_month"`
 	Used5H     int64  `json:"used_5h"` // 组内全部 key 对应用量（组视图统计）
 	UsedWeek   int64  `json:"used_week"`
 	UsedMonth  int64  `json:"used_month"`
@@ -2481,7 +2486,9 @@ func (h *Handler) DeleteGroupQuota(w http.ResponseWriter, r *http.Request) {
 
 // UpdateAPIKeyPolicy 更新下游 key 的分组归属与覆盖策略（PUT /admin/api-keys/{id}/policy）。
 // 请求体（全部为改动的字段，未传的保留）：
-//   {"group_id": 3, "allowed_models": "[...]", "quota_override": "{...}"}
+//
+//	{"group_id": 3, "allowed_models": "[...]", "quota_override": "{...}"}
+//
 // 传 group_id 0 表示脱离组；allowed_models/quota_override 传空串表示不修改。
 func (h *Handler) UpdateAPIKeyPolicy(w http.ResponseWriter, r *http.Request) {
 	if h.store == nil {
