@@ -2655,6 +2655,27 @@
             <input v-model="testMaxTokens" type="number" min="10" max="4096" />
           </div>
           <div class="form-group">
+            <label>思考等级（reasoning_effort，默认跟随网关配置）</label>
+            <select
+              v-model="testEffort"
+              style="
+                width: 100%;
+                padding: 8px 10px;
+                border: 1px solid #dcdfe6;
+                border-radius: 4px;
+                font-size: 14px;
+                background: #fff;
+              "
+            >
+              <option value="">自动（不传，让上游/网关按默认）</option>
+              <option value="none">none（关闭思考）</option>
+              <option value="low">low</option>
+              <option value="high">high</option>
+              <option value="xhigh">xhigh</option>
+              <option value="max">max</option>
+            </select>
+          </div>
+          <div class="form-group">
             <label>返回结果</label
             ><textarea
               :rows="6"
@@ -3100,6 +3121,7 @@
             testModelsList: [],
             testContent: "你好，请用一句话回复",
             testMaxTokens: 512,
+            testEffort: "",
             testResult: "",
             testLoading: false,
             testRow: null,
@@ -4911,6 +4933,7 @@
               this.testModel = defaultModel || this.testModelsList[0] || "";
               this.testContent = "你好，请用一句话回复";
               this.testMaxTokens = 512;
+              this.testEffort = "";
               this.testResult = "";
               this.testLoading = false;
               this.showTestDialog = true;
@@ -4939,6 +4962,7 @@
                       model: self.testModel,
                       max_tokens: parseInt(self.testMaxTokens) || 512,
                       content: self.testContent || "你好，请用一句话回复",
+                      reasoning_effort: self.testEffort || "",
                     },
                   },
                 )
