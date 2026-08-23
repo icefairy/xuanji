@@ -2046,19 +2046,28 @@ func (h *Handler) TestUpstream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	client := &http.Client{Timeout: upstreamTestTimeout(h.cfg)}
+	started := time.Now()
 	resp, err := client.Do(httpReq)
 	if err != nil {
-		writeJSON(w, map[string]string{"error": "请求失败: " + err.Error()})
+		writeJSON(w, map[string]any{
+			"error":       "请求失败: " + err.Error(),
+			"duration_ms": time.Since(started).Milliseconds(),
+		})
 		return
 	}
 	defer resp.Body.Close()
+	// 首字节时间（Do 返回即收到响应头）
+	ttfbMs := time.Since(started).Milliseconds()
 	respBody, _ := io.ReadAll(resp.Body)
+	totalMs := time.Since(started).Milliseconds()
 
 	if resp.StatusCode >= 400 {
 		writeJSON(w, map[string]any{
-			"status": "fail",
-			"code":   resp.StatusCode,
-			"error":  string(respBody),
+			"status":      "fail",
+			"code":        resp.StatusCode,
+			"error":       string(respBody),
+			"duration_ms": totalMs,
+			"ttfb_ms":     ttfbMs,
 		})
 		return
 	}
@@ -2068,9 +2077,11 @@ func (h *Handler) TestUpstream(w http.ResponseWriter, r *http.Request) {
 		warning = "⚠ 响应内容为空：疑似思考型模型（商汤日日新等默认开启思考）max_tokens 不足，思考未完成即被截断（finish_reason=length）。请调大 max_tokens（如 512+）或检查模型思考模式。"
 	}
 	writeJSON(w, map[string]any{
-		"status":  "ok",
-		"body":    json.RawMessage(respBody),
-		"warning": warning,
+		"status":      "ok",
+		"body":        json.RawMessage(respBody),
+		"warning":     warning,
+		"duration_ms": totalMs,
+		"ttfb_ms":     ttfbMs,
 	})
 }
 

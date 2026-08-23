@@ -4998,15 +4998,28 @@
                         reasoning;
                     var usage = (body && body.usage) || {};
                     var warning = d.warning || "" ? d.warning + "\n\n" : "";
+                    var durLine =
+                      "⏱ 耗时: 总 " +
+                      (Number(d.duration_ms) || 0) +
+                      " ms（首字节 " +
+                      (Number(d.ttfb_ms) || 0) +
+                      " ms）\n\n";
                     self.testResult =
+                      durLine +
                       warning +
                       display +
                       "\n\n--- usage ---\n" +
                       JSON.stringify(usage, null, 2);
                   } else {
+                    var errDur =
+                      Number(d.duration_ms) > 0
+                        ? "（耗时 " + Number(d.duration_ms) + " ms）"
+                        : "";
                     self.testResult =
                       "测试失败: HTTP " +
                       (d.code || "") +
+                      " " +
+                      errDur +
                       "\n" +
                       (d.error || "");
                   }
