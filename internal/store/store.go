@@ -39,24 +39,24 @@ type Record struct {
 
 // UpstreamRow 是 upstreams 表的行映射。
 type UpstreamRow struct {
-	ID            uint   `json:"id"`
-	Name          string `json:"name"`
-	Type          string `json:"type"`
-	BaseURL       string `json:"base_url"`
-	APIKey        string `json:"api_key"`
-	Tier          string `json:"tier"`
-	Priority      int    `json:"priority"`
-	Weight        int    `json:"weight"`
-	Models        string `json:"models"`
-	ModelMapping   string `json:"model_mapping"`
-	Enabled        int    `json:"enabled"` // 1=启用 0=禁用（禁用的不参与转发路由）
-	BillingExempt  int    `json:"billing_exempt"` // 1=不参与计费（统计费用记 0，路由不受影响）
+	ID              uint   `json:"id"`
+	Name            string `json:"name"`
+	Type            string `json:"type"`
+	BaseURL         string `json:"base_url"`
+	APIKey          string `json:"api_key"`
+	Tier            string `json:"tier"`
+	Priority        int    `json:"priority"`
+	Weight          int    `json:"weight"`
+	Models          string `json:"models"`
+	ModelMapping    string `json:"model_mapping"`
+	Enabled         int    `json:"enabled"`          // 1=启用 0=禁用（禁用的不参与转发路由）
+	BillingExempt   int    `json:"billing_exempt"`   // 1=不参与计费（统计费用记 0，路由不受影响）
 	RequestOverride string `json:"request_override"` // 请求体复写（JSON 字符串）：转发前强制覆盖请求体部分字段，空=不启用
 	// EnabledPtr 区分 JSON body 中 enabled 字段"未传"(nil) 与"显式传 0/1"。
 	// UpdateUpstream 用它避免未传时误禁用上游。
 	EnabledPtr *int `json:"-"`
 	// BillingExemptPtr 区分 JSON body 中 billing_exempt 字段"未传"(nil) 与"显式传 0/1"。
-	BillingExemptPtr *int  `json:"-"`
+	BillingExemptPtr *int   `json:"-"`
 	CreatedAt        string `json:"created_at"`
 	UpdatedAt        string `json:"updated_at"`
 }
@@ -258,6 +258,9 @@ func (s *Store) init() error {
 	);
 	CREATE INDEX IF NOT EXISTS idx_request_log_ts ON request_log(ts);
 	CREATE INDEX IF NOT EXISTS idx_request_log_upstream ON request_log(upstream);
+	-- 按天聚合（AggregateDay）用 strftime('%Y-%m-%d', ts, '+8 hours') 表达式过滤，
+	-- 普通 ts 索引用不上，建表达式索引加速每日统计重算。
+	CREATE INDEX IF NOT EXISTS idx_request_log_day ON request_log(strftime('%Y-%m-%d', ts, '+8 hours'));
 
 	-- 定时探测结果（健康检查）。逐条记录，metrics 按时间范围聚合；
 	-- 与 request_log 对称，重启后保留历史，健康度不因重启归零。
@@ -269,6 +272,9 @@ func (s *Store) init() error {
 	);
 	CREATE INDEX IF NOT EXISTS idx_health_probe_ts ON health_probe_log(ts);
 	CREATE INDEX IF NOT EXISTS idx_health_probe_upstream ON health_probe_log(upstream);
+	-- 复合索引 (upstream, ts)：ProbeStats 用 upstream=? AND ts>=? 范围扫描，
+	-- 避免遍历该上游全部历史探针（探针表可达百万行）。
+	CREATE INDEX IF NOT EXISTS idx_health_probe_upstream_ts ON health_probe_log(upstream, ts);
 
 	CREATE TABLE IF NOT EXISTS upstreams (
 		id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -357,8 +363,26 @@ func (s *Store) init() error {
 		program     TEXT    NOT NULL DEFAULT '',   -- 识别出的程序名
 		confidence  REAL    NOT NULL DEFAULT 0,    -- 置信度 0-1
 		evidence    TEXT    NOT NULL DEFAULT '',   -- 分析依据（UA、端口、行为特征等）
-		updated_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+		updated_at      TEXT    NOT NULL DEFAULT (datetime('now'))
 	);
+
+	CREATE TABLE IF NOT EXISTS daily_stats (
+		date              TEXT PRIMARY KEY,
+		requests          INTEGER NOT NULL DEFAULT 0,
+		successes         INTEGER NOT NULL DEFAULT 0,
+		tokens            INTEGER NOT NULL DEFAULT 0,
+		prompt_tokens     INTEGER NOT NULL DEFAULT 0,
+		completion_tokens INTEGER NOT NULL DEFAULT 0,
+		cache_hit_tokens  INTEGER NOT NULL DEFAULT 0,
+		cache_miss_tokens INTEGER NOT NULL DEFAULT 0,
+		cost              REAL    NOT NULL DEFAULT 0,
+		sum_duration_ms   INTEGER NOT NULL DEFAULT 0,
+		by_upstream       TEXT    NOT NULL DEFAULT '{}',
+		by_api_key        TEXT    NOT NULL DEFAULT '{}',
+		by_model          TEXT    NOT NULL DEFAULT '{}',
+		computed_at       TEXT    NOT NULL DEFAULT ''
+	);
+	CREATE INDEX IF NOT EXISTS idx_daily_stats_date ON daily_stats(date);
 	`
 	if _, err := s.db.Exec(schema); err != nil {
 		return err
@@ -502,6 +526,77 @@ func (s *Store) ProbeStats(upstream, since string) (success, fail int64) {
 	return success, fail
 }
 
+// ProbeStatsAll 一次性返回所有上游的探针成功/失败计数（GROUP BY upstream）。
+// 替代 MetricsUpstreams 里对每个上游串行调用 ProbeStats 的 N 次查询，
+// 显著降低 30d 接口延迟（探针表可达百万行）。
+func (s *Store) ProbeStatsAll(since string) map[string][2]int64 {
+	q := `SELECT upstream, COALESCE(SUM(CASE WHEN ok=1 THEN 1 ELSE 0 END),0),
+	               COALESCE(SUM(CASE WHEN ok=0 THEN 1 ELSE 0 END),0)
+	       FROM health_probe_log`
+	var args []any
+	if since != "" {
+		q += ` WHERE ts >= ?`
+		args = append(args, since)
+	}
+	q += ` GROUP BY upstream`
+	rows, err := s.db.Query(q, args...)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	out := map[string][2]int64{}
+	for rows.Next() {
+		var u string
+		var okc, failc int64
+		if err := rows.Scan(&u, &okc, &failc); err != nil {
+			continue
+		}
+		out[u] = [2]int64{okc, failc}
+	}
+	return out
+}
+
+// ProbeRetainDays 探针记录保留天数：仅保留最近 N 天健康检查探针，
+// 控制 health_probe_log 规模（每天约数万条，无清理会无限膨胀拖慢读写）。
+const ProbeRetainDays = 7
+
+// PruneHealthProbeLog 删除超过 retainDays 的探针记录（ts 为 UTC RFC3339 文本，
+// 走 idx_health_probe_ts 索引范围删除）。返回删除行数。
+// 由 dailyStatsTicker 在启动时 + 每日调用维护。
+func (s *Store) PruneHealthProbeLog(retainDays int) (int64, error) {
+	if retainDays <= 0 {
+		return 0, nil
+	}
+	cutoff := time.Now().UTC().AddDate(0, 0, -retainDays).Format(time.RFC3339)
+	res, err := s.db.Exec(`DELETE FROM health_probe_log WHERE ts < ?`, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}
+
+// RequestLogRetainDays 请求明细保留天数：仅保留最近 N 天原始请求记录。
+// 历史统计已由 daily_stats 按天预聚合兜底，原始明细仅需保留近期
+// （用于单条追溯 + today 实时聚合），更早的明细每日自动删除控制表规模。
+const RequestLogRetainDays = 30
+
+// PruneRequestLog 删除超过 retainDays 的请求明细（ts 为 UTC RFC3339，
+// 走 idx_request_log_ts 索引范围删除）。返回删除行数。
+// 由 dailyStatsTicker 每日维护；删除前自动备份（backupOnce 每日轮转）兜底。
+func (s *Store) PruneRequestLog(retainDays int) (int64, error) {
+	if retainDays <= 0 {
+		return 0, nil
+	}
+	cutoff := time.Now().UTC().AddDate(0, 0, -retainDays).Format(time.RFC3339)
+	res, err := s.db.Exec(`DELETE FROM request_log WHERE ts < ?`, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}
+
 // APIKeyRow 是按下游 Key 聚合的统计行。
 type APIKeyRow struct {
 	Name         string
@@ -604,7 +699,7 @@ func (s *Store) RecalcCost() (int64, error) {
 		model          string
 		upstreamModel  string
 		promptTokens   int64
-		completionToks  int64
+		completionToks int64
 		oldCost        float64
 	}
 	var targets []row
@@ -988,6 +1083,15 @@ func (s *Store) DeleteUpstream(name string) error {
 	if _, err := tx.Exec(`DELETE FROM upstreams WHERE name = ?`, name); err != nil {
 		return err
 	}
+	// 级联删除请求日志中涉及该上游的记录。
+	// upstream 列可能逗号分隔多个上游（如 "a,b"），用四种模式精确覆盖：
+	// 精确匹配 / 前缀 / 中间 / 后缀。
+	if _, err := tx.Exec(
+		`DELETE FROM request_log WHERE upstream = ? OR upstream LIKE ? OR upstream LIKE ? OR upstream LIKE ?`,
+		name, name+",%", "%,"+name+",%", "%,"+name,
+	); err != nil {
+		return err
+	}
 	// 清理所有规则 JSON 里的引用
 	rows, err := tx.Query(`SELECT id, upstreams FROM routing_rules`)
 	if err != nil {
@@ -1026,7 +1130,81 @@ func (s *Store) DeleteUpstream(name string) error {
 			return err
 		}
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	// 事务提交后重算每日统计：基于已清干净 request_log 重新聚合，
+	// 被删上游的统计数据不再残留（全局汇总与按上游之和保持一致）。
+	if err := s.RebuildDailyStats(); err != nil {
+		slog.Error("rebuild daily stats after upstream delete", "upstream", name, "error", err)
+	}
+	return nil
+}
+
+// PurgeOrphanUpstreamLogs 一次性清理：删除请求日志中涉及"已在上游管理中删除"的
+// 上游的记录，并重算每日统计，使统计不再残留僵尸上游。返回删除的请求日志行数。
+// 用于上线"删除上游级联清理"功能后，清理历史遗留的脏数据。
+// 与 DeleteUpstream 的单条级联删除不同，此方法一次性处理所有僵尸上游，且仅重算一次。
+func (s *Store) PurgeOrphanUpstreamLogs() (int64, error) {
+	// 现存上游名集合
+	liveRows, err := s.db.Query(`SELECT name FROM upstreams`)
+	if err != nil {
+		return 0, err
+	}
+	live := map[string]bool{}
+	for liveRows.Next() {
+		var n string
+		if err := liveRows.Scan(&n); err != nil {
+			liveRows.Close()
+			return 0, err
+		}
+		live[n] = true
+	}
+	liveRows.Close()
+
+	// 收集 request_log 中出现过的所有上游 token，找出僵尸（不在 upstreams 表）
+	distinct, err := s.db.Query(`SELECT DISTINCT upstream FROM request_log WHERE upstream IS NOT NULL AND upstream != ''`)
+	if err != nil {
+		return 0, err
+	}
+	zombies := map[string]bool{}
+	for distinct.Next() {
+		var u string
+		if err := distinct.Scan(&u); err != nil {
+			distinct.Close()
+			return 0, err
+		}
+		for _, tok := range strings.Split(u, ",") {
+			tok = strings.TrimSpace(tok)
+			if tok != "" && !live[tok] {
+				zombies[tok] = true
+			}
+		}
+	}
+	distinct.Close()
+
+	if len(zombies) == 0 {
+		return 0, nil
+	}
+
+	var totalDeleted int64
+	for name := range zombies {
+		res, err := s.db.Exec(
+			`DELETE FROM request_log WHERE upstream = ? OR upstream LIKE ? OR upstream LIKE ? OR upstream LIKE ?`,
+			name, name+",%", "%,"+name+",%", "%,"+name,
+		)
+		if err != nil {
+			return totalDeleted, err
+		}
+		if n, _ := res.RowsAffected(); n > 0 {
+			totalDeleted += n
+		}
+	}
+	// 基于已清干净的 request_log 重算统计（只重算一次）
+	if err := s.RebuildDailyStats(); err != nil {
+		slog.Error("rebuild daily stats after purge", "error", err)
+	}
+	return totalDeleted, nil
 }
 
 // mustJSON 将 []string 编码为 JSON 字符串（忽略错误，调用方保证可序列化）。
@@ -1598,12 +1776,12 @@ type GroupRow struct {
 // GroupModelQuotaRow 是 group_model_quota 表的行映射（一行 = 一个模型的“组内每人默认”配额）。
 // Token 限额单位为原始 token，0 = 该窗口不限。
 type GroupModelQuotaRow struct {
-	ID        uint   `json:"id"`
-	GroupID   uint   `json:"group_id"`
-	Model     string `json:"model"` // 模型名；'*' = 全模型兜底
-	Token5H   int64  `json:"token_5h"`
-	TokenWeek int64  `json:"token_week"`
-	TokenMonth int64 `json:"token_month"`
+	ID         uint   `json:"id"`
+	GroupID    uint   `json:"group_id"`
+	Model      string `json:"model"` // 模型名；'*' = 全模型兜底
+	Token5H    int64  `json:"token_5h"`
+	TokenWeek  int64  `json:"token_week"`
+	TokenMonth int64  `json:"token_month"`
 }
 
 // ListGroups 列出所有组（含成员数）。
@@ -1620,7 +1798,7 @@ func (s *Store) ListGroups() ([]GroupRow, error) {
 		var g GroupRow
 		if err := rows.Scan(&g.ID, &g.Name, &g.AllowedModels, &g.Remark, &g.CreatedAt, &g.MemberCount); err != nil {
 			return nil, err
-	}
+		}
 		out = append(out, g)
 	}
 	return out, rows.Err()
@@ -1758,4 +1936,373 @@ func (s *Store) UpsertGroupQuota(groupID uint, model string, fiveH, week, month 
 func (s *Store) DeleteGroupQuota(groupID uint, model string) error {
 	_, err := s.db.Exec(`DELETE FROM group_model_quota WHERE group_id = ? AND model = ?`, groupID, model)
 	return err
+}
+
+// ---- 按天统计预聚合（daily_stats） ----
+// 数据量大后实时 GROUP BY 扫 request_log 越来越慢。改为把已完整过去的每一天预聚合到
+// daily_stats 一行（date=东八区 YYYY-MM-DD，与 MetricsDaily 分组口径一致）；统计接口只实时
+// 查「今天」未纳入统计的部分，历史天从 daily_stats 按主键取。
+
+// DimStat 是单维度（上游/Key/模型）的单日汇总。
+type DimStat struct {
+	Requests        int64   `json:"requests"`
+	Successes       int64   `json:"successes"`
+	Tokens          int64   `json:"tokens"`
+	Cost            float64 `json:"cost"`
+	SumDurationMS   int64   `json:"sum_duration_ms"`
+	CacheHitTokens  int64   `json:"cache_hit_tokens"`
+	CacheMissTokens int64   `json:"cache_miss_tokens"`
+}
+
+// DayStats 是 daily_stats 表的一行。
+type DayStats struct {
+	Date             string
+	Requests         int64
+	Successes        int64
+	Tokens           int64
+	PromptTokens     int64
+	CompletionTokens int64
+	CacheHitTokens   int64
+	CacheMissTokens  int64
+	Cost             float64
+	SumDurationMS    int64
+	ByUpstream       map[string]*DimStat
+	ByAPIKey         map[string]*DimStat
+	ByModel          map[string]*DimStat
+	ComputedAt       string
+}
+
+// DayPoint 是某一天的全局汇总（用于趋势图，不含维度拆分）。
+type DayPoint struct {
+	Date      string  `json:"date"`
+	Requests  int64   `json:"requests"`
+	Successes int64   `json:"successes"`
+	Tokens    int64   `json:"tokens"`
+	Cost      float64 `json:"cost"`
+}
+
+// RangeAgg 是某个时间范围合并后的统计结果。
+type RangeAgg struct {
+	Requests         int64
+	Successes        int64
+	Tokens           int64
+	PromptTokens     int64
+	CompletionTokens int64
+	CacheHitTokens   int64
+	CacheMissTokens  int64
+	Cost             float64
+	SumDurationMS    int64
+	ByUpstream       map[string]*DimStat
+	ByAPIKey         map[string]*DimStat
+	ByModel          map[string]*DimStat
+	Days             []DayPoint
+}
+
+func newRangeAgg() *RangeAgg {
+	return &RangeAgg{
+		ByUpstream: map[string]*DimStat{},
+		ByAPIKey:   map[string]*DimStat{},
+		ByModel:    map[string]*DimStat{},
+	}
+}
+
+func mergeDim(into map[string]*DimStat, from map[string]*DimStat) {
+	for k, v := range from {
+		if v == nil {
+			continue
+		}
+		cur, ok := into[k]
+		if !ok {
+			nc := *v
+			into[k] = &nc
+			continue
+		}
+		cur.Requests += v.Requests
+		cur.Successes += v.Successes
+		cur.Tokens += v.Tokens
+		cur.Cost += v.Cost
+		cur.SumDurationMS += v.SumDurationMS
+		cur.CacheHitTokens += v.CacheHitTokens
+		cur.CacheMissTokens += v.CacheMissTokens
+	}
+}
+
+func (a *RangeAgg) mergeDay(ds *DayStats) {
+	if ds == nil {
+		return
+	}
+	a.Requests += ds.Requests
+	a.Successes += ds.Successes
+	a.Tokens += ds.Tokens
+	a.PromptTokens += ds.PromptTokens
+	a.CompletionTokens += ds.CompletionTokens
+	a.CacheHitTokens += ds.CacheHitTokens
+	a.CacheMissTokens += ds.CacheMissTokens
+	a.Cost += ds.Cost
+	a.SumDurationMS += ds.SumDurationMS
+	mergeDim(a.ByUpstream, ds.ByUpstream)
+	mergeDim(a.ByAPIKey, ds.ByAPIKey)
+	mergeDim(a.ByModel, ds.ByModel)
+	a.Days = append(a.Days, DayPoint{Date: ds.Date, Requests: ds.Requests, Successes: ds.Successes, Tokens: ds.Tokens, Cost: ds.Cost})
+}
+
+// AggregateDay 实时聚合某东八区日期（YYYY-MM-DD）的全部请求。
+// 用 strftime('%Y-%m-%d', ts, '+8 hours')=? 按东八区日期过滤，与 MetricsDaily 口径一致。
+func (s *Store) AggregateDay(date string) (*DayStats, error) {
+	ds := &DayStats{
+		Date:       date,
+		ByUpstream: map[string]*DimStat{},
+		ByAPIKey:   map[string]*DimStat{},
+		ByModel:    map[string]*DimStat{},
+	}
+	const dayFilter = `strftime('%Y-%m-%d', rl.ts, '+8 hours') = ?`
+	// 全局
+	if err := s.db.QueryRow(`
+		SELECT COUNT(*),
+		       COALESCE(SUM(CASE WHEN rl.status < 400 THEN 1 ELSE 0 END), 0),
+		       COALESCE(SUM(rl.tokens), 0),
+		       COALESCE(SUM(rl.prompt_tokens), 0),
+		       COALESCE(SUM(rl.completion_tokens), 0),
+		       COALESCE(SUM(rl.prompt_cache_hit_tokens), 0),
+		       COALESCE(SUM(rl.prompt_cache_miss_tokens), 0),
+		       COALESCE(SUM(CASE WHEN u.billing_exempt = 1 THEN 0 ELSE rl.cost END), 0),
+		       COALESCE(SUM(rl.duration_ms), 0)
+		FROM request_log rl LEFT JOIN upstreams u ON u.name = rl.upstream
+		WHERE `+dayFilter, date).Scan(
+		&ds.Requests, &ds.Successes, &ds.Tokens, &ds.PromptTokens, &ds.CompletionTokens,
+		&ds.CacheHitTokens, &ds.CacheMissTokens, &ds.Cost, &ds.SumDurationMS); err != nil {
+		return nil, err
+	}
+	// by_upstream
+	if err := s.scanDim(`
+		SELECT rl.upstream,
+		       COUNT(*),
+		       COALESCE(SUM(CASE WHEN rl.status < 400 THEN 1 ELSE 0 END), 0),
+		       COALESCE(SUM(rl.tokens), 0),
+		       COALESCE(SUM(CASE WHEN u.billing_exempt = 1 THEN 0 ELSE rl.cost END), 0),
+		       COALESCE(SUM(rl.duration_ms), 0),
+		       COALESCE(SUM(rl.prompt_cache_hit_tokens), 0),
+		       COALESCE(SUM(rl.prompt_cache_miss_tokens), 0)
+		FROM request_log rl LEFT JOIN upstreams u ON u.name = rl.upstream
+		WHERE `+dayFilter+` GROUP BY rl.upstream`, date, ds.ByUpstream); err != nil {
+		return nil, err
+	}
+	// by_api_key
+	if err := s.scanDim(`
+		SELECT COALESCE(NULLIF(rl.api_key, ''), (SELECT name FROM api_tokens WHERE enabled=1 ORDER BY id LIMIT 1), '(未标识)'),
+		       COUNT(*),
+		       COALESCE(SUM(CASE WHEN rl.status < 400 THEN 1 ELSE 0 END), 0),
+		       COALESCE(SUM(rl.tokens), 0),
+		       COALESCE(SUM(CASE WHEN u.billing_exempt = 1 THEN 0 ELSE rl.cost END), 0),
+		       COALESCE(SUM(rl.duration_ms), 0),
+		       COALESCE(SUM(rl.prompt_cache_hit_tokens), 0),
+		       COALESCE(SUM(rl.prompt_cache_miss_tokens), 0)
+		FROM request_log rl LEFT JOIN upstreams u ON u.name = rl.upstream
+		WHERE `+dayFilter+` GROUP BY 1`, date, ds.ByAPIKey); err != nil {
+		return nil, err
+	}
+	// by_model（按 upstream_model，与费用接口一致）
+	if err := s.scanDim(`
+		SELECT COALESCE(NULLIF(rl.upstream_model, ''), '(未知)'),
+		       COUNT(*),
+		       COALESCE(SUM(CASE WHEN rl.status < 400 THEN 1 ELSE 0 END), 0),
+		       COALESCE(SUM(rl.tokens), 0),
+		       COALESCE(SUM(CASE WHEN u.billing_exempt = 1 THEN 0 ELSE rl.cost END), 0),
+		       COALESCE(SUM(rl.duration_ms), 0),
+		       COALESCE(SUM(rl.prompt_cache_hit_tokens), 0),
+		       COALESCE(SUM(rl.prompt_cache_miss_tokens), 0)
+		FROM request_log rl LEFT JOIN upstreams u ON u.name = rl.upstream
+		WHERE `+dayFilter+` GROUP BY 1`, date, ds.ByModel); err != nil {
+		return nil, err
+	}
+	ds.ComputedAt = time.Now().Format(time.RFC3339)
+	return ds, nil
+}
+
+// scanDim 执行按维度聚合查询，把结果填入 out map。
+func (s *Store) scanDim(q string, date string, out map[string]*DimStat) error {
+	rows, err := s.db.Query(q, date)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var k string
+		d := &DimStat{}
+		if err := rows.Scan(&k, &d.Requests, &d.Successes, &d.Tokens, &d.Cost, &d.SumDurationMS, &d.CacheHitTokens, &d.CacheMissTokens); err != nil {
+			continue
+		}
+		out[k] = d
+	}
+	return rows.Err()
+}
+
+// UpsertDayStats 写入/覆盖某天的预聚合结果。
+func (s *Store) UpsertDayStats(ds *DayStats) error {
+	bu, _ := json.Marshal(ds.ByUpstream)
+	bk, _ := json.Marshal(ds.ByAPIKey)
+	bm, _ := json.Marshal(ds.ByModel)
+	_, err := s.db.Exec(`
+		INSERT INTO daily_stats (date, requests, successes, tokens, prompt_tokens, completion_tokens,
+		                        cache_hit_tokens, cache_miss_tokens, cost, sum_duration_ms,
+		                        by_upstream, by_api_key, by_model, computed_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(date) DO UPDATE SET
+			requests=excluded.requests, successes=excluded.successes, tokens=excluded.tokens,
+			prompt_tokens=excluded.prompt_tokens, completion_tokens=excluded.completion_tokens,
+			cache_hit_tokens=excluded.cache_hit_tokens, cache_miss_tokens=excluded.cache_miss_tokens,
+			cost=excluded.cost, sum_duration_ms=excluded.sum_duration_ms,
+			by_upstream=excluded.by_upstream, by_api_key=excluded.by_api_key,
+			by_model=excluded.by_model, computed_at=excluded.computed_at`,
+		ds.Date, ds.Requests, ds.Successes, ds.Tokens, ds.PromptTokens, ds.CompletionTokens,
+		ds.CacheHitTokens, ds.CacheMissTokens, ds.Cost, ds.SumDurationMS,
+		string(bu), string(bk), string(bm), ds.ComputedAt)
+	return err
+}
+
+// GetDayStats 按日期列表批量读取预聚合结果（缺的日期不返回）。
+func (s *Store) GetDayStats(dates []string) ([]*DayStats, error) {
+	if len(dates) == 0 {
+		return nil, nil
+	}
+	ph := strings.Repeat("?,", len(dates))
+	ph = ph[:len(ph)-1]
+	args := make([]any, len(dates))
+	for i, d := range dates {
+		args[i] = d
+	}
+	rows, err := s.db.Query(`SELECT date, requests, successes, tokens, prompt_tokens, completion_tokens,
+		cache_hit_tokens, cache_miss_tokens, cost, sum_duration_ms, by_upstream, by_api_key, by_model, computed_at
+		FROM daily_stats WHERE date IN (`+ph+`)`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*DayStats
+	for rows.Next() {
+		ds := &DayStats{ByUpstream: map[string]*DimStat{}, ByAPIKey: map[string]*DimStat{}, ByModel: map[string]*DimStat{}}
+		var bu, bk, bm string
+		if err := rows.Scan(&ds.Date, &ds.Requests, &ds.Successes, &ds.Tokens, &ds.PromptTokens, &ds.CompletionTokens,
+			&ds.CacheHitTokens, &ds.CacheMissTokens, &ds.Cost, &ds.SumDurationMS, &bu, &bk, &bm, &ds.ComputedAt); err != nil {
+			continue
+		}
+		_ = json.Unmarshal([]byte(bu), &ds.ByUpstream)
+		_ = json.Unmarshal([]byte(bk), &ds.ByAPIKey)
+		_ = json.Unmarshal([]byte(bm), &ds.ByModel)
+		out = append(out, ds)
+	}
+	return out, rows.Err()
+}
+
+// EarliestLogDate 返回 request_log 中东八区最早日期（YYYY-MM-DD），无数据返回 ""。
+func (s *Store) EarliestLogDate() string {
+	var d string
+	if err := s.db.QueryRow(`SELECT MIN(strftime('%Y-%m-%d', ts, '+8 hours')) FROM request_log`).Scan(&d); err != nil || d == "" {
+		return ""
+	}
+	return d
+}
+
+// EarliestStatDate 返回统计可覆盖的最早日期（东八区 YYYY-MM-DD）。
+// 优先取 daily_stats 已聚合的最早天（即使 request_log 明细已按保留期清理，
+// 历史统计仍完整可见）；无 daily_stats 时回退 request_log 最早记录。
+// 用于 AggregateRange("all") 的范围起点。
+func (s *Store) EarliestStatDate() string {
+	var d string
+	if err := s.db.QueryRow(`SELECT MIN(date) FROM daily_stats`).Scan(&d); err == nil && d != "" {
+		return d
+	}
+	return s.EarliestLogDate()
+}
+
+// RebuildDailyStats 全量重算历史每一天的预聚合（幂等 upsert），供后台/手动刷新调用。
+func (s *Store) RebuildDailyStats() error {
+	ed := s.EarliestLogDate()
+	if ed == "" {
+		return nil
+	}
+	loc := time.FixedZone("CST", 8*3600)
+	start, err := time.ParseInLocation("2006-01-02", ed, loc)
+	if err != nil {
+		return err
+	}
+	today := time.Now().In(loc)
+	n := 0
+	for d := start; !d.After(today); d = d.AddDate(0, 0, 1) {
+		ds, err := s.AggregateDay(d.Format("2006-01-02"))
+		if err != nil {
+			slog.Error("rebuild daily stats", "date", d.Format("2006-01-02"), "error", err)
+			continue
+		}
+		if err := s.UpsertDayStats(ds); err != nil {
+			slog.Error("upsert daily stats", "date", d.Format("2006-01-02"), "error", err)
+			continue
+		}
+		n++
+	}
+	slog.Info("rebuild daily stats done", "days", n)
+	return nil
+}
+
+// AggregateRange 聚合某个 range（today|3d|7d|30d|all）的全部请求。
+// 历史天从 daily_stats 按主键取（快）；缺失的天回退实时聚合（保证正确）；今天始终实时聚合。
+func (s *Store) AggregateRange(rangeStr string, loc *time.Location) (*RangeAgg, error) {
+	now := time.Now().In(loc)
+	var start time.Time
+	switch rangeStr {
+	case "today":
+		start = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
+	case "3d":
+		start = now.AddDate(0, 0, -3)
+	case "7d":
+		start = now.AddDate(0, 0, -7)
+	case "30d":
+		start = now.AddDate(0, 0, -30)
+	case "all", "":
+		ed := s.EarliestStatDate()
+		if ed == "" {
+			return newRangeAgg(), nil
+		}
+		st, err := time.ParseInLocation("2006-01-02", ed, loc)
+		if err != nil {
+			return nil, err
+		}
+		start = st
+	default:
+		start = now.AddDate(0, 0, -7)
+	}
+	var dates []string
+	for d := start; !d.After(now); d = d.AddDate(0, 0, 1) {
+		dates = append(dates, d.Format("2006-01-02"))
+	}
+	if len(dates) == 0 {
+		return newRangeAgg(), nil
+	}
+	histDates := dates[:len(dates)-1]
+	todayOnly := dates[len(dates)-1]
+
+	agg := newRangeAgg()
+	have := map[string]*DayStats{}
+	if len(histDates) > 0 {
+		if hist, err := s.GetDayStats(histDates); err == nil {
+			for _, ds := range hist {
+				have[ds.Date] = ds
+			}
+		}
+	}
+	for _, d := range histDates {
+		var ds *DayStats
+		if h, ok := have[d]; ok {
+			ds = h
+		} else {
+			ds, _ = s.AggregateDay(d)
+		}
+		agg.mergeDay(ds)
+	}
+	todayDS, err := s.AggregateDay(todayOnly)
+	if err != nil {
+		return nil, err
+	}
+	agg.mergeDay(todayDS)
+	return agg, nil
 }

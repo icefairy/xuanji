@@ -26,16 +26,20 @@ func testCfg(upstreams ...config.Upstream) *config.Config {
 	return &config.Config{Upstreams: upstreams}
 }
 
-// startModelsServer 启动一个 /models 端点，是否返回失败由 fail 原子标志控制。
-// 兼容 /models 与 /v1/models 两种探测路径（base_url 不带 /v1 时探测 /v1/models）。
-func startModelsServer(t *testing.T, fail *atomic.Bool) *httptest.Server {
+// startChatServer 启动一个 OpenAI 兼容探测端点：POST /v1/chat/completions（2xx=健康），
+// 由 fail 原子标志控制返回 200/503。断言探测请求为 POST 且不携带 Authorization
+// （无凭证探测，2026-08-24 统一）。
+func startChatServer(t *testing.T, fail *atomic.Bool) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/models" && r.URL.Path != "/v1/models" {
-			t.Errorf("path = %q, want /models or /v1/models", r.URL.Path)
+		if r.URL.Path != "/chat/completions" && r.URL.Path != "/v1/chat/completions" {
+			t.Errorf("path = %q, want /chat/completions or /v1/chat/completions", r.URL.Path)
 		}
-		if got := r.Header.Get("Authorization"); got != "Bearer sk-test" {
-			t.Errorf("Authorization = %q, want Bearer sk-test", got)
+		if r.Method != http.MethodPost {
+			t.Errorf("method = %q, want POST", r.Method)
+		}
+		if got := r.Header.Get("Authorization"); got != "" {
+			t.Errorf("Authorization = %q, want empty (无凭证探测)", got)
 		}
 		if fail.Load() {
 			w.WriteHeader(http.StatusServiceUnavailable)
@@ -45,8 +49,8 @@ func startModelsServer(t *testing.T, fail *atomic.Bool) *httptest.Server {
 	}))
 }
 
-// TestPingPathVariants 验证探测路径拼接：base_url 不带 /v1 → 拼 /v1/models；
-// 带 /v1 → 拼 /models（两者最终都打到 /v1/models 路径）；Ollama → /api/tags。
+// TestPingPathVariants 验证探测路径拼接：OpenAI 兼容 → POST {base}/chat/completions
+// （不带 /v1 时拼 /chat/completions，带 /v1 时拼 /v1/chat/completions）；Ollama → GET /api/tags。
 func TestPingPathVariants(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -54,20 +58,24 @@ func TestPingPathVariants(t *testing.T) {
 		upType string
 		want   string
 	}{
-		{name: "带v1标准", suffix: "/v1", want: "/v1/models"},
-		{name: "带v1", suffix: "/v1", want: "/v1/models"},
+		{name: "openai带v1", suffix: "/v1", want: "/v1/chat/completions"},
+		{name: "openai裸", suffix: "", want: "/chat/completions"},
 		{name: "ollama", upType: "ollama", want: "/api/tags"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			var gotPath string
+			var gotPath, gotMethod string
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				gotPath = r.URL.Path
+				gotMethod = r.Method
 				w.WriteHeader(http.StatusOK)
 			}))
 			defer srv.Close()
 			up := config.Upstream{Name: "x", BaseURL: srv.URL + c.suffix, APIKey: "sk-test", Type: c.upType}
-
+			if c.upType != "ollama" {
+				// openai 探测需要模型名（chatProbe 无模型名会直接返回失败不发请求）
+				up.ModelMapping = map[string]string{"client": "server-model"}
+			}
 			ck := New(testCfg(up))
 			defer ck.Close()
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -77,13 +85,132 @@ func TestPingPathVariants(t *testing.T) {
 			if gotPath != c.want {
 				t.Errorf("probe path = %q, want %q", gotPath, c.want)
 			}
+			expMethod := http.MethodGet
+			if c.upType != "ollama" {
+				expMethod = http.MethodPost
+			}
+			if gotMethod != expMethod {
+				t.Errorf("probe method = %q, want %q", gotMethod, expMethod)
+			}
+		})
+	}
+}
+
+// TestChatProbe_OpenAIUpstream 验证 OpenAI 兼容上游（openai 类型）走 POST /chat/completions 探测：
+// 模拟微信端点行为——GET /models 一律 400 "missing required parameter: model"，
+// 但 chat 探测 2xx → healthy；探测请求不带 Authorization（无凭证模式）；
+// 连续 chat 5xx 失败 → degraded；模型名取映射第一个 value。
+func TestChatProbe_OpenAIUpstream(t *testing.T) {
+	var chatFail atomic.Bool
+	var gotPath, gotModel, gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/chat/completions" {
+			gotPath = r.URL.Path
+			gotAuth = r.Header.Get("Authorization")
+			var req chatProbeReq
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			gotModel = req.Model
+			if chatFail.Load() {
+				w.WriteHeader(http.StatusInternalServerError)
+				_, _ = w.Write([]byte(`{"error":{"message":"internal error"}}`))
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id": "x", "object": "chat.completion",
+				"choices": []any{map[string]any{"message": map[string]any{"role": "assistant", "content": "ok"}}},
+			})
+			return
+		}
+		// 模拟微信：对未知 GET（含 /models）一律 400
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"message":"missing required parameter: model","code":400}}`))
+	}))
+	defer srv.Close()
+
+	up := config.Upstream{
+		Name:         "wechat-up",
+		BaseURL:      srv.URL + "/v1",
+		APIKey:       "sk-wx",
+		ModelMapping: map[string]string{"deepseek-v4-flash": "Deepseek-v4-flash"},
+	}
+	ck := New(testCfg(up))
+	defer ck.Close()
+	st := ck.states[up.Name] // 用 Checker 内部 state，保证 checkOnce 与 Status 操作同一对象
+	if st == nil {
+		t.Fatalf("state for %q not found", up.Name)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	// 成功路径：探测应打 POST /v1/chat/completions（而非 GET /models），带映射后真实模型名，
+	// 且不携带 Authorization（无凭证探测）
+	ck.checkOnce(ctx, st)
+	if gotPath != "/v1/chat/completions" {
+		t.Errorf("probe path = %q, want /v1/chat/completions", gotPath)
+	}
+	if gotModel != "Deepseek-v4-flash" {
+		t.Errorf("probe model = %q, want Deepseek-v4-flash (映射第一个 value)", gotModel)
+	}
+	if gotAuth != "" {
+		t.Errorf("Authorization = %q, want empty (无凭证探测)", gotAuth)
+	}
+	if ck.Status("wechat-up") != StateHealthy {
+		t.Errorf("status = %q, want healthy after successful chat probe", ck.Status("wechat-up"))
+	}
+
+	// 失败路径：chat 返回 500，连续两次失败应进入 degraded
+	chatFail.Store(true)
+	ck.checkOnce(ctx, st)
+	ck.checkOnce(ctx, st)
+	if ck.Status("wechat-up") != StateDegraded {
+		t.Errorf("status = %q, want degraded after 2 failed chat probes", ck.Status("wechat-up"))
+	}
+}
+
+// TestAuthRejectedIsHealthy 验证无凭证探测核心语义：上游对探测请求返回 401/403
+// （鉴权拒绝）视为健康——证明服务在线且鉴权层正常，零 token 消耗。
+func TestAuthRejectedIsHealthy(t *testing.T) {
+	cases := []struct {
+		name string
+		code int
+		want State
+	}{
+		{name: "401视为健康", code: http.StatusUnauthorized, want: StateHealthy},
+		{name: "403视为健康", code: http.StatusForbidden, want: StateHealthy},
+		{name: "400仍失败", code: http.StatusBadRequest, want: StateDegraded},
+		{name: "500仍失败", code: http.StatusInternalServerError, want: StateDegraded},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tc.code)
+				_, _ = w.Write([]byte(`{"error":{"message":"x"}}`))
+			}))
+			defer srv.Close()
+
+			up := config.Upstream{Name: "auth-up", BaseURL: srv.URL + "/v1", APIKey: "sk-real"}
+			ck := New(testCfg(up))
+			defer ck.Close()
+			st := ck.states[up.Name]
+			if st == nil {
+				t.Fatalf("state not found")
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			// 连续两次达到 degraded 阈值，验证稳定判定
+			ck.checkOnce(ctx, st)
+			ck.checkOnce(ctx, st)
+			if got := ck.Status("auth-up"); got != tc.want {
+				t.Errorf("code %d: status = %q, want %q", tc.code, got, tc.want)
+			}
 		})
 	}
 }
 
 func TestStateTransitions_HealthyToDegradedToDeadAndRecover(t *testing.T) {
 	var fail atomic.Bool
-	srv := startModelsServer(t, &fail)
+	srv := startChatServer(t, &fail)
 	defer srv.Close()
 
 	c := New(testCfg(config.Upstream{
@@ -164,11 +291,11 @@ func TestStateTransitions_TimeoutDirectlyDead(t *testing.T) {
 
 func TestHealthyUpstreams_FiltersDeadKeepsOrder(t *testing.T) {
 	var failA, failB, failC atomic.Bool
-	srvA := startModelsServer(t, &failA)
+	srvA := startChatServer(t, &failA)
 	defer srvA.Close()
-	srvB := startModelsServer(t, &failB)
+	srvB := startChatServer(t, &failB)
 	defer srvB.Close()
-	srvC := startModelsServer(t, &failC)
+	srvC := startChatServer(t, &failC)
 	defer srvC.Close()
 
 	upA := config.Upstream{Name: "a", BaseURL: srvA.URL, APIKey: "sk-test"}
@@ -225,8 +352,8 @@ func TestHealthyUpstreams_UnknownUpstreamKept(t *testing.T) {
 func TestPingFallback405ToEmbeddings(t *testing.T) {
 	cases := []struct {
 		name      string
-		getStatus int    // GET /models 状态码
-		embStatus int    // POST /embeddings 状态码（0 表示服务端不应收到 POST）
+		getStatus int // GET /models 状态码
+		embStatus int // POST /embeddings 状态码（0 表示服务端不应收到 POST）
 		modelMap  map[string]string
 		models    []string
 		wantOK    bool
@@ -279,12 +406,12 @@ func TestPingFallback405ToEmbeddings(t *testing.T) {
 			var embReqBody []byte
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				switch r.URL.Path {
-				case "/models":
-					if got := r.Header.Get("Authorization"); got != "Bearer sk-test" {
-						t.Errorf("Authorization = %q, want Bearer sk-test", got)
+				case "/chat/completions":
+					if got := r.Header.Get("Authorization"); got != "" {
+						t.Errorf("Authorization = %q, want empty (无凭证探测)", got)
 					}
 					w.WriteHeader(c.getStatus)
-					_, _ = io.WriteString(w, `{"code":7001,"message":"GET not supported for requested URI."}`)
+					_, _ = io.WriteString(w, `{"code":7001,"message":"chat endpoint not supported"}`)
 				case "/embeddings":
 					if c.embStatus == 0 {
 						t.Errorf("unexpected POST /embeddings, path = %q", r.URL.Path)
@@ -315,15 +442,15 @@ func TestPingFallback405ToEmbeddings(t *testing.T) {
 				t.Errorf("ok = %v, want %v (out=%+v)", out.ok, c.wantOK, out)
 			}
 			if c.embStatus != 0 {
-				// 验证回退请求的姿势：POST + JSON + 同一 key
+				// 验证回退请求的姿势：POST + JSON + 无凭证（2026-08-24 统一）
 				if embReqMethod != http.MethodPost {
 					t.Errorf("embeddings method = %q, want POST", embReqMethod)
 				}
 				if embReqCT != "application/json" {
 					t.Errorf("Content-Type = %q, want application/json", embReqCT)
 				}
-				if embReqAuth != "Bearer sk-test" {
-					t.Errorf("Authorization = %q, want Bearer sk-test", embReqAuth)
+				if embReqAuth != "" {
+					t.Errorf("Authorization = %q, want empty (无凭证探测)", embReqAuth)
 				}
 				// 验证请求体：真实模型名 + input=ping
 				var payload struct {
@@ -379,7 +506,7 @@ func TestMarkFailure_AdvancesState(t *testing.T) {
 
 func TestChecker_StartPeriodicCheckAndRecovery(t *testing.T) {
 	var fail atomic.Bool
-	srv := startModelsServer(t, &fail)
+	srv := startChatServer(t, &fail)
 	defer srv.Close()
 
 	c := New(testCfg(config.Upstream{
