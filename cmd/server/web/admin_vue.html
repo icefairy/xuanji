@@ -1283,6 +1283,14 @@
           <span style="color: #909399; font-size: 13px"
             >{{ metricsRangeLabel }}</span
           >
+          <button
+            class="btn"
+            :disabled="rebuilding"
+            @click="rebuildStats()"
+            style="margin-left: auto; padding: 4px 12px; font-size: 13px"
+          >
+            {{ rebuilding ? '重算中…' : '刷新统计缓存' }}
+          </button>
         </div>
         <div class="metrics">
           <div class="metric-card">
@@ -2339,7 +2347,7 @@
               <option value="anthropic">anthropic</option>
               <option value="ollama">ollama</option>
               <option value="gemini">gemini（自动转换）</option>
-              <option value="dots">dots（Dots 开放平台，api-key 头认证）</option>
+              <option value="dots">dots（api-key头认证）</option>
             </select>
           </div>
           <div class="form-group">
@@ -2384,7 +2392,7 @@
               <option value="anthropic">anthropic</option>
               <option value="ollama">ollama</option>
               <option value="gemini">gemini（自动转换）</option>
-              <option value="dots">dots（Dots 开放平台，api-key 头认证）</option>
+              <option value="dots">dots（api-key头认证）</option>
             </select>
           </div>
           <div class="form-group">
@@ -3105,6 +3113,7 @@
             logStatusFilter: "",
             logFilters: { upstreams: [], models: [], endpoints: [] },
             metricsRange: "7d",
+            rebuilding: false,
             showAddDialog: false,
             addForm: {
               name: "",
@@ -4342,6 +4351,45 @@
                   });
                 })
                 .catch(function () {});
+            },
+            // 刷新历史统计：触发后台全量重算 daily_stats，完成后自动重载统计面板。
+            rebuildStats: function () {
+              var self = this;
+              if (self.rebuilding) return;
+              self.rebuilding = true;
+              self
+                .api("/admin/metrics/rebuild", { method: "POST" })
+                .then(function (r) {
+                  if (r.data && r.data.status === "queued") {
+                    // 后台异步重算，轮询直到 daily_stats 重建完成再刷新面板。
+                    var tries = 0;
+                    var timer = setInterval(function () {
+                      tries++;
+                      self
+                        .api("/admin/metrics/daily?range=all")
+                        .then(function () {
+                          if (tries >= 30) {
+                            clearInterval(timer);
+                            self.rebuilding = false;
+                            self.loadMetrics();
+                          }
+                        })
+                        .catch(function () {
+                          if (tries >= 30) {
+                            clearInterval(timer);
+                            self.rebuilding = false;
+                          }
+                        });
+                    }, 2000);
+                  } else {
+                    self.rebuilding = false;
+                    self.loadMetrics();
+                  }
+                })
+                .catch(function () {
+                  self.rebuilding = false;
+                  alert("刷新统计缓存失败");
+                });
             },
             // 绘制费用饼图（纯 canvas 手绘，零依赖）；items=[{label,value}]
             // 模型价格

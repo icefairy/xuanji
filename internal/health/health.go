@@ -1,8 +1,13 @@
 // Package health 实现上游健康检查与状态维护。
 //
-// 每个上游独立定时探测 GET {base_url}/models（带 Authorization），
-// 状态机为 healthy → degraded（连续 2 次失败）→ dead（连续 5 次失败或检查超时），
-// dead 后以一半间隔继续探测，成功一次即回 healthy。
+// 每个上游独立定时探测，状态机为 healthy → degraded（连续 2 次失败）→ dead（连续 5 次失败
+// 或检查超时），dead 后以一半间隔继续探测，成功一次即回 healthy。
+//
+// 无凭证探测（2026-08-24 统一）：所有探测请求均不携带 Authorization；
+// OpenAI 兼容上游统一 POST /chat/completions 最小请求（Ollama 为 GET /api/tags），
+// 上游返回 2xx 或 401/403 均视为健康——401/403 恰好证明网络通、端点存在、服务进程活着、
+// 鉴权层正常，且探测零 token 消耗、免真实推理等待。key 有效性与推理链路由 proxy 层
+// fastfail 探测（带真实 key 的最小 chat 请求）负责，分层互补。
 package health
 
 import (
@@ -242,28 +247,24 @@ func (c *Checker) logProbeFailure(st *upstreamState, out probeOutcome) {
 	c.log.Warn("health check failed", attrs...)
 }
 
-// ping 探测上游：GET {base_url}/models（OpenAI）或 /api/tags（Ollama），2xx 视为健康。
+// ping 探测上游：Ollama 走 GET {base_url}/api/tags，其余（openai/openai-compatible 等）
+// 统一走 POST {base_url}/chat/completions 最小无凭证请求（见 chatProbe）；2xx/401/403 视为健康。
 // 返回探测结果（probeOutcome），失败时携带具体原因：
 //   - 超时：reason="timeout"，timedOut=true
 //   - 连接错误：reason=连接错误信息
 //   - 非 2xx：status=状态码，reason="non-2xx response"，respBody=响应体摘要（截断）
-//
-// 回退探测（2026-09 新增）：GET 探测返回 405/404 时不立即判失败，改为尝试
-// POST {base_url}/embeddings 最小探测（见 embeddingsProbe），POST 2xx 视为健康。
-// 背景：Cloudflare Workers AI 的 OpenAI 兼容端点（…/ai/v1）不支持 GET，
-// GET .../ai/v1/models 返回 405 {"code":7001,...}，仅 POST .../ai/v1/embeddings 可用
-// （实测 200 + 正常向量）；无回退时 cfcdn 等上游健康检查永远失败 → 被判 dead → 路由跳过。
-// 其余非 2xx（401/403/500 等）不触发回退，连接错误/超时也不触发，避免掩盖真正的鉴权/服务错误。
-//
-// ⚠ base_url 不带 /v1 时探测路径必须拼 /v1/models：部分上游（商汤日日新、基元律动）
-// 只认 /v1/ 前缀，打 {base_url}/models 会 404 导致误判 dead（与 chatPath 同源坑，2026-08 修复）。
 func (c *Checker) ping(ctx context.Context, st *upstreamState) probeOutcome {
-	target := strings.TrimRight(st.up.BaseURL, "/")
 	if st.up.IsOllama() {
-		target += "/api/tags"
-	} else {
-		target += "/models"
+		return c.ollamaProbe(ctx, st)
 	}
+	// OpenAI 兼容上游统一走 POST /chat/completions 无凭证探测（见 chatProbe），
+	// 不再依赖 GET /models——部分端点不提供该路径（微信小程序大赛端点对其返回 400）。
+	return c.chatProbe(ctx, st)
+}
+
+// ollamaProbe 探测 Ollama 原生服务：GET {base_url}/api/tags，无凭证，2xx/401/403 视为健康。
+func (c *Checker) ollamaProbe(ctx context.Context, st *upstreamState) probeOutcome {
+	target := strings.TrimRight(st.up.BaseURL, "/") + "/api/tags"
 	reqCtx, cancel := context.WithTimeout(ctx, st.timeout)
 	defer cancel()
 
@@ -272,7 +273,6 @@ func (c *Checker) ping(ctx context.Context, st *upstreamState) probeOutcome {
 	if err != nil {
 		return probeOutcome{reason: "build request: " + err.Error()}
 	}
-	req.Header.Set("Authorization", "Bearer "+st.up.APIKey)
 
 	resp, err := c.client.Do(req)
 	latency := time.Since(start)
@@ -283,15 +283,10 @@ func (c *Checker) ping(ctx context.Context, st *upstreamState) probeOutcome {
 		return probeOutcome{latency: latency, reason: err.Error()}
 	}
 	defer resp.Body.Close()
-	// 读取响应体：2xx 时消费以复用连接；非 2xx 时截断摘要供排障日志
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		// 仅 405/404 触发 POST /embeddings 回退（部分上游不支持 GET /models 但支持 POST embeddings）；
-		// 其余非 2xx（401/403/500 等）直接判失败，避免掩盖真正的鉴权/服务错误。
-		if resp.StatusCode == http.StatusMethodNotAllowed || resp.StatusCode == http.StatusNotFound {
-			if out, ok := c.embeddingsProbe(ctx, st); ok {
-				return out
-			}
+		if authRejected(resp.StatusCode) {
+			return probeOutcome{ok: true, latency: latency}
 		}
 		return probeOutcome{
 			latency:  latency,
@@ -305,7 +300,7 @@ func (c *Checker) ping(ctx context.Context, st *upstreamState) probeOutcome {
 
 // embeddingsProbe 是 405/404 回退探测：POST {base_url}/embeddings 最小探测。
 // 请求体 {"model": <上游真实模型名>, "input": "ping"}，Content-Type: application/json，
-// Authorization 与 GET 探测同一 key，超时复用 st.timeout。
+// 不携带凭证（无凭证探测，见 ping），超时复用 st.timeout。
 // 返回 (结果, ok)：POST 2xx → ok=true（视为健康，latency 为 POST 往返延迟）；
 // 否则 ok=false（调用方保持原 GET 探测的失败判定）。
 //
@@ -340,7 +335,6 @@ func (c *Checker) embeddingsProbe(ctx context.Context, st *upstreamState) (probe
 		return probeOutcome{}, false
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+st.up.APIKey)
 
 	resp, err := c.client.Do(req)
 	latency := time.Since(start)
@@ -351,7 +345,7 @@ func (c *Checker) embeddingsProbe(ctx context.Context, st *upstreamState) (probe
 	defer resp.Body.Close()
 	// 消费响应体以复用连接
 	_, _ = io.Copy(io.Discard, resp.Body)
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+	if (resp.StatusCode >= 200 && resp.StatusCode < 300) || authRejected(resp.StatusCode) {
 		return probeOutcome{ok: true, latency: latency}, true
 	}
 	return probeOutcome{}, false
@@ -361,6 +355,105 @@ func (c *Checker) embeddingsProbe(ctx context.Context, st *upstreamState) (probe
 type embeddingsProbeReq struct {
 	Model string `json:"model"`
 	Input string `json:"input"`
+}
+
+// chatProbeMsg / chatProbeReq 是 chat 探测（POST /chat/completions）的最小请求体。
+// max_tokens 压到 1：探测只验证端点可用性，不关心回答内容，最小化 token 消耗。
+type chatProbeMsg struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+type chatProbeReq struct {
+	Model     string         `json:"model"`
+	Messages  []chatProbeMsg `json:"messages"`
+	MaxTokens int            `json:"max_tokens"`
+}
+
+// chatProbe 是所有 OpenAI 兼容上游的统一探测方式（2026-08-24）：POST {base_url}/chat/completions
+// 最小对话请求，2xx 或 401/403 视为健康。不再依赖 GET /models——部分端点不提供该路径
+// （微信小程序大赛 OpenAI 端点对未知 GET 一律返回 400 "missing required parameter: model",
+// 且 400 无法用作回退信号，真鉴权失败同为 4xx），而 chat/completions 是所有 OpenAI 兼容
+// 端点的最小公共面。
+//
+// 无凭证探测（2026-08-24 统一）：请求不携带 Authorization，服务端在鉴权层直接拒绝
+// （实测微信端点无凭证/假 key 均返回 401 "Authentication failed"），零 token 消耗、
+// 免真实推理等待；key 与推理链路的有效性由 fastfail 真实请求探测负责，分层互补。
+//
+// 上游真实模型名取 st.up.ModelMapping 的第一个 value（map 无序，配置通常仅一个映射），
+// ModelMapping 为空时取 st.up.Models 的第一个元素；都为空则退回占位名 "probe"——
+// 无凭证探测下端点通常在鉴权层就拒绝（401），根本不会走到模型名校验，故无模型名也可探测。
+func (c *Checker) chatProbe(ctx context.Context, st *upstreamState) probeOutcome {
+	var model string
+	for _, v := range st.up.ModelMapping {
+		model = v
+		break
+	}
+	if model == "" && len(st.up.Models) > 0 {
+		model = st.up.Models[0]
+	}
+	if model == "" {
+		model = "probe"
+	}
+	payload, err := json.Marshal(chatProbeReq{
+		Model:     model,
+		Messages:  []chatProbeMsg{{Role: "user", Content: "ping"}},
+		MaxTokens: 1,
+	})
+	if err != nil {
+		return probeOutcome{reason: "chat probe: build payload: " + err.Error()}
+	}
+
+	target := strings.TrimRight(st.up.BaseURL, "/") + "/chat/completions"
+	reqCtx, cancel := context.WithTimeout(ctx, st.timeout)
+	defer cancel()
+
+	start := time.Now()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, target, bytes.NewReader(payload))
+	if err != nil {
+		return probeOutcome{reason: "chat probe: build request: " + err.Error()}
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.client.Do(req)
+	latency := time.Since(start)
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(reqCtx.Err(), context.DeadlineExceeded) {
+			return probeOutcome{timedOut: true, latency: latency, reason: "timeout"}
+		}
+		return probeOutcome{latency: latency, reason: err.Error()}
+	}
+	defer resp.Body.Close()
+	// 读取响应体：2xx 时消费以复用连接；非 2xx 时截断摘要供排障日志
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		// 无凭证探测：401/403 = 服务在线且鉴权层正常工作，视为健康（见 authRejected）。
+		if authRejected(resp.StatusCode) {
+			return probeOutcome{ok: true, latency: latency}
+		}
+		// chat 端点不可用（404/405，典型于仅提供 embeddings 的端点）→ 回退 POST /embeddings，
+		// 避免把仅支持 embeddings 的上游误判为 dead；其余非 2xx（400/500 等）直接判失败。
+		if resp.StatusCode == http.StatusMethodNotAllowed || resp.StatusCode == http.StatusNotFound {
+			if out, ok := c.embeddingsProbe(ctx, st); ok {
+				return out
+			}
+		}
+		return probeOutcome{
+			latency:  latency,
+			status:   resp.StatusCode,
+			reason:   "non-2xx response",
+			respBody: truncateStr(string(body), maxRespBodyLog),
+		}
+	}
+	return probeOutcome{ok: true, latency: latency}
+}
+
+// authRejected 报告状态码是否为鉴权拒绝（401/403）。
+// 无凭证探测模式下，探测请求不携带任何凭证，上游返回 401/403 恰好证明
+// 「网络通、端点存在、服务进程活着、鉴权层正常」，因此视为健康。
+// key 有效性与真实推理链路由 fastfail（带真实 key 的最小 chat 请求）负责，分层互补。
+func authRejected(status int) bool {
+	return status == http.StatusUnauthorized || status == http.StatusForbidden
 }
 
 // truncateStr 截断字符串到 max 字节，超出时末尾加省略号标记。

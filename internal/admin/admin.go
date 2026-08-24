@@ -7,7 +7,6 @@ package admin
 import (
 	"bytes"
 	"crypto/rand"
-	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -15,6 +14,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"sort"
+	"sync"
 	"strconv"
 	"strings"
 	"time"
@@ -44,6 +44,10 @@ type Handler struct {
 	rt     *router.Router       // 路由探测器（对话调试 routing 展示用）；nil 时不展示路由信息
 
 	quotaReload func() // 配额策略刷新回调（管理端改动组/分组后调用）；nil 时不刷新
+
+	metricsCache    map[string]cacheEntry // 统计接口结果缓存（key=path?query）
+	metricsCacheMu  sync.RWMutex
+	metricsCacheTTL time.Duration
 }
 
 // SetAuth 注入下游 key 鉴权器（api_tokens CRUD 后刷新内存缓存）。
@@ -76,7 +80,13 @@ func upstreamTestTimeout(cfg *config.Config) time.Duration {
 // New 基于配置与健康检查器构建管理 Handler。start 记录服务启动时刻，
 // 供 /admin/status 计算 uptime。
 func New(cfg *config.Config, hc *health.Checker) *Handler {
-	return &Handler{cfg: cfg, hc: hc, start: time.Now()}
+	return &Handler{
+		cfg:             cfg,
+		hc:              hc,
+		start:           time.Now(),
+		metricsCache:    map[string]cacheEntry{},
+		metricsCacheTTL: 60 * time.Second,
+	}
 }
 
 // SetFastFail 注入快速失败缓存（用于上游列表显示临时禁用状态）。
@@ -458,6 +468,31 @@ func writeJSON(w http.ResponseWriter, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
+// ---- 统计接口缓存与按天预聚合辅助 ----
+
+type cacheEntry struct {
+	data []byte
+	exp  time.Time
+}
+
+// writeCached 写 JSON 响应，并缓存到 metricsCache（TTL 内后续请求直接命中）。
+func (h *Handler) writeCached(w http.ResponseWriter, r *http.Request, payload any) {
+	key := r.URL.Path + "?" + r.URL.RawQuery
+	if b, ok := h.cacheGet(key); ok {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(b)
+		return
+	}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		writeJSON(w, payload)
+		return
+	}
+	h.cacheSet(key, b)
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(b)
+}
+
 // metricsSummaryResponse 是 GET /admin/metrics/summary 的响应体。
 type metricsSummaryResponse struct {
 	TotalRequests   int64   `json:"total_requests"`
@@ -490,44 +525,114 @@ func metricsSince(r *http.Request) string {
 	}
 }
 
+// cacheGet 从 metricsCache 读取（TTL 内命中）。
+
+func (h *Handler) cacheGet(key string) ([]byte, bool) {
+	h.metricsCacheMu.RLock()
+	e, ok := h.metricsCache[key]
+	h.metricsCacheMu.RUnlock()
+	if ok && time.Now().Before(e.exp) {
+		return e.data, true
+	}
+	return nil, false
+}
+
+func (h *Handler) cacheSet(key string, data []byte) {
+	h.metricsCacheMu.Lock()
+	h.metricsCache[key] = cacheEntry{data: data, exp: time.Now().Add(h.metricsCacheTTL)}
+	h.metricsCacheMu.Unlock()
+}
+
+// clearMetricsCache 清空统计缓存（重算完成后调用，避免旧数据滞留）。
+func (h *Handler) clearMetricsCache() {
+	h.metricsCacheMu.Lock()
+	h.metricsCache = map[string]cacheEntry{}
+	h.metricsCacheMu.Unlock()
+}
+
+// MetricsRebuild 全量重算历史每日预聚合（daily_stats）。立即返回 queued，后台异步执行，
+// 重算完成后清空统计缓存。用于纠正历史统计不一致或首次填充预聚合表。
+func (h *Handler) MetricsRebuild(w http.ResponseWriter, r *http.Request) {
+	if h.store == nil {
+		writeJSON(w, map[string]any{"status": "skipped", "reason": "store not available"})
+		return
+	}
+	go func() {
+		if err := h.store.RebuildDailyStats(); err != nil {
+			return
+		}
+		h.clearMetricsCache()
+	}()
+	writeJSON(w, map[string]any{"status": "queued"})
+}
+
+// metricsRangeStr 返回 range 参数，默认 7d（与前端一致）。
+func metricsRangeStr(r *http.Request) string {
+	if v := r.URL.Query().Get("range"); v != "" {
+		return v
+	}
+	return "7d"
+}
+
+// rangeStart 返回某 range 的起始东八区时间（用于趋势图补零）。
+func rangeStart(rangeStr string, loc *time.Location) time.Time {
+	now := time.Now().In(loc)
+	switch rangeStr {
+	case "today":
+		return time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
+	case "3d":
+		return now.AddDate(0, 0, -3)
+	case "7d":
+		return now.AddDate(0, 0, -7)
+	case "30d":
+		return now.AddDate(0, 0, -30)
+	default: // all 或未知：返回很早，由调用方从最早数据日覆盖
+		return now.AddDate(0, 0, -3650)
+	}
+}
+
+// dimToCostRows 把维度聚合 map 转成费用接口所需的 CostRow 列表（按 cost 降序）。
+func dimToCostRows(m map[string]*store.DimStat) []store.CostRow {
+	out := make([]store.CostRow, 0, len(m))
+	for name, d := range m {
+		if d == nil {
+			continue
+		}
+		out = append(out, store.CostRow{Name: name, Cost: d.Cost, Requests: int(d.Requests), Tokens: d.Tokens})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Cost > out[j].Cost })
+	return out
+}
+
 // MetricsSummary 返回全局统计（支持 ?range=today|3d|7d|30d|all）。
+// MetricsSummary 返回全局统计（支持 ?range=today|3d|7d|30d|all）。
+// 历史天走 daily_stats 预聚合，今天实时聚合，结果缓存 60s。
 func (h *Handler) MetricsSummary(w http.ResponseWriter, r *http.Request) {
 	if h.store == nil {
-		writeJSON(w, metricsSummaryResponse{})
+	h.writeCached(w, r, metricsSummaryResponse{})
 		return
 	}
-	var resp metricsSummaryResponse
-	var err error
-	if since := metricsSince(r); since != "" {
-		err = h.store.DB().QueryRow(`
-			SELECT COUNT(*) as total,
-			       COALESCE(SUM(CASE WHEN status < 400 THEN 1 ELSE 0 END), 0) as successes,
-			       COALESCE(SUM(tokens), 0) as tokens,
-			       COALESCE(AVG(duration_ms), 0) as avg_ms
-			FROM request_log WHERE ts >= ?
-		`, since).Scan(&resp.TotalRequests, &resp.TotalSuccesses, &resp.TotalTokens, &resp.AvgLatencyMS)
-	} else {
-		err = h.store.DB().QueryRow(`
-			SELECT COUNT(*) as total,
-			       COALESCE(SUM(CASE WHEN status < 400 THEN 1 ELSE 0 END), 0) as successes,
-			       COALESCE(SUM(tokens), 0) as tokens,
-			       COALESCE(AVG(duration_ms), 0) as avg_ms
-			FROM request_log
-		`).Scan(&resp.TotalRequests, &resp.TotalSuccesses, &resp.TotalTokens, &resp.AvgLatencyMS)
-	}
+	loc := time.FixedZone("CST", 8*3600)
+	agg, err := h.store.AggregateRange(metricsRangeStr(r), loc)
 	if err != nil {
-		writeJSON(w, metricsSummaryResponse{})
+	h.writeCached(w, r, metricsSummaryResponse{})
 		return
 	}
-	if resp.TotalRequests > 0 {
-		resp.SuccessRate = float64(resp.TotalSuccesses) / float64(resp.TotalRequests)
+	resp := metricsSummaryResponse{
+		TotalRequests: agg.Requests,
+		TotalSuccesses: agg.Successes,
+		TotalTokens:    agg.Tokens,
+	}
+	if agg.Requests > 0 {
+		resp.SuccessRate = float64(agg.Successes) / float64(agg.Requests)
+		resp.AvgLatencyMS = float64(agg.SumDurationMS) / float64(agg.Requests)
 	}
 	for _, up := range h.cfg.Upstreams {
-		if h.hc.Status(up.Name) == health.StateHealthy {
+		if h.hc != nil && h.hc.Status(up.Name) == health.StateHealthy {
 			resp.ActiveUpstreams++
 		}
 	}
-	writeJSON(w, resp)
+h.writeCached(w, r, resp)
 }
 
 // upstreamMetrics 是 GET /admin/metrics/upstreams 的单个元素。
@@ -547,53 +652,44 @@ type upstreamMetrics struct {
 }
 
 // MetricsUpstreams 返回每上游统计（支持 ?range=today|3d|7d|30d|all）。
+// MetricsUpstreams 返回每上游统计（支持 ?range=today|3d|7d|30d|all）。
+// 历史天走 daily_stats 预聚合，今天实时聚合，结果缓存 60s。
 func (h *Handler) MetricsUpstreams(w http.ResponseWriter, r *http.Request) {
 	if h.store == nil {
-		writeJSON(w, []upstreamMetrics{})
+	h.writeCached(w, r, []upstreamMetrics{})
 		return
 	}
-	var rows *sql.Rows
-	var err error
-	if since := metricsSince(r); since != "" {
-		rows, err = h.store.DB().Query(`
-			SELECT upstream, COUNT(*) as requests,
-			       COALESCE(SUM(CASE WHEN status < 400 THEN 1 ELSE 0 END), 0) as successes,
-			       COUNT(*) - COALESCE(SUM(CASE WHEN status < 400 THEN 1 ELSE 0 END), 0) as failures,
-			       COALESCE(AVG(duration_ms), 0) as avg_ms,
-			       COALESCE(SUM(tokens), 0) as tokens
-			FROM request_log WHERE ts >= ?
-			GROUP BY upstream ORDER BY tokens DESC
-		`, since)
-	} else {
-		rows, err = h.store.DB().Query(`
-			SELECT upstream, COUNT(*) as requests,
-			       COALESCE(SUM(CASE WHEN status < 400 THEN 1 ELSE 0 END), 0) as successes,
-			       COUNT(*) - COALESCE(SUM(CASE WHEN status < 400 THEN 1 ELSE 0 END), 0) as failures,
-			       COALESCE(AVG(duration_ms), 0) as avg_ms,
-			       COALESCE(SUM(tokens), 0) as tokens
-			FROM request_log
-			GROUP BY upstream ORDER BY tokens DESC
-		`)
-	}
+	rangeStr := metricsRangeStr(r)
+	loc := time.FixedZone("CST", 8*3600)
+	agg, err := h.store.AggregateRange(rangeStr, loc)
 	if err != nil {
-		writeJSON(w, []upstreamMetrics{})
+	h.writeCached(w, r, []upstreamMetrics{})
 		return
 	}
-	defer rows.Close()
-
-	var out []upstreamMetrics
-	for rows.Next() {
-		var m upstreamMetrics
-		if err := rows.Scan(&m.Name, &m.Requests, &m.Successes, &m.Failures, &m.AvgLatencyMS, &m.TotalTokens); err != nil {
+	since := metricsSince(r)
+	// 过滤已在上游管理中删除的上游（DB 现存 ∪ 内存配置并集视为"仍存在"），
+	// 避免统计页展示僵尸上游。
+	existing := h.existingUpstreamSet()
+	// 一次性取所有上游探针统计（避免对每个上游串行扫百万行探针表）
+	probeAll := h.store.ProbeStatsAll(since)
+	out := make([]upstreamMetrics, 0, len(agg.ByUpstream))
+	for name, d := range agg.ByUpstream {
+		if !existing[name] {
 			continue
 		}
-		if m.Requests > 0 {
-			m.SuccessRate = float64(m.Successes) / float64(m.Requests)
+		m := upstreamMetrics{
+			Name:        name,
+			Requests:    d.Requests,
+			Successes:   d.Successes,
+			TotalTokens: d.Tokens,
 		}
-		// 补充健康状态与定时探测统计。
-		// 探测统计优先从 DB 按 range 聚合（重启保留历史），无 store 数据时回退到内存计数。
+		m.Failures = d.Requests - d.Successes
+		if d.Requests > 0 {
+			m.SuccessRate = float64(d.Successes) / float64(d.Requests)
+			m.AvgLatencyMS = float64(d.SumDurationMS) / float64(d.Requests)
+		}
 		if h.hc != nil {
-			switch h.hc.Status(m.Name) {
+			switch h.hc.Status(name) {
 			case health.StateHealthy:
 				m.State = "healthy"
 			case health.StateDegraded:
@@ -603,25 +699,40 @@ func (h *Handler) MetricsUpstreams(w http.ResponseWriter, r *http.Request) {
 			default:
 				m.State = "unknown"
 			}
-			// 从 health_probe_log 按 range 统计（与请求日志同一时间窗口）
 			var ps, pf int64
-			if since := metricsSince(r); since != "" {
-				ps, pf = h.store.ProbeStats(m.Name, since)
-			} else {
-				ps, pf = h.store.ProbeStats(m.Name, "")
-			}
-			if ps+pf > 0 {
+			if v, ok := probeAll[name]; ok && v[0]+v[1] > 0 {
+				ps, pf = v[0], v[1]
 				m.ProbeSuccess, m.ProbeFail = ps, pf
 				m.HealthRate = float64(ps) / float64(ps+pf)
 			} else {
-				// 无持久化记录（新表/未开启），回退到内存计数
-				m.ProbeSuccess, m.ProbeFail = h.hc.ProbeStats(m.Name)
-				m.HealthRate = h.hc.ProbeRate(m.Name)
+				m.ProbeSuccess, m.ProbeFail = h.hc.ProbeStats(name)
+				m.HealthRate = h.hc.ProbeRate(name)
 			}
 		}
 		out = append(out, m)
 	}
-	writeJSON(w, out)
+	sort.Slice(out, func(i, j int) bool { return out[i].TotalTokens > out[j].TotalTokens })
+	h.writeCached(w, r, out)
+}
+
+// existingUpstreamSet 返回当前"仍存在于上游管理"的上游名集合：
+// DB 现存（上游已 DB 化，权威来源）∪ 内存配置，二者并集视为"仍存在"。
+// 查询 DB 失败时降级为空集（不过滤），避免误吞全部数据。
+func (h *Handler) existingUpstreamSet() map[string]bool {
+	set := make(map[string]bool)
+	if h.store != nil {
+		if rows, err := h.store.ListUpstreams(); err == nil {
+			for _, u := range rows {
+				set[u.Name] = true
+			}
+		}
+	}
+	if h.cfg != nil {
+		for i := range h.cfg.Upstreams {
+			set[h.cfg.Upstreams[i].Name] = true
+		}
+	}
+	return set
 }
 
 // hourlyBucket 是 GET /admin/metrics/hourly 的单个元素。
@@ -654,30 +765,37 @@ type apiKeyMetrics struct {
 
 // MetricsByAPIKey 返回按下游 API Key 聚合的统计（支持 ?range=...）。
 // 用于区分不同 AI 程序/客户端的使用量，看哪个 Key 用得多。
+// MetricsByAPIKey 返回按下游 API Key 聚合的统计（支持 ?range=...）。
+// 历史天走 daily_stats 预聚合，今天实时聚合，结果缓存 60s。
 func (h *Handler) MetricsByAPIKey(w http.ResponseWriter, r *http.Request) {
 	if h.store == nil {
-		writeJSON(w, []apiKeyMetrics{})
+	h.writeCached(w, r, []apiKeyMetrics{})
 		return
 	}
-	since := metricsSince(r)
-	rows := h.store.MetricsByAPIKey(since)
-	out := make([]apiKeyMetrics, 0, len(rows))
-	for _, row := range rows {
+	loc := time.FixedZone("CST", 8*3600)
+	agg, err := h.store.AggregateRange(metricsRangeStr(r), loc)
+	if err != nil {
+	h.writeCached(w, r, []apiKeyMetrics{})
+		return
+	}
+	out := make([]apiKeyMetrics, 0, len(agg.ByAPIKey))
+	for name, d := range agg.ByAPIKey {
 		m := apiKeyMetrics{
-			Name:         row.Name,
-			Requests:     row.Requests,
-			Successes:    row.Successes,
-			AvgLatencyMS: row.AvgLatencyMS,
-			TotalTokens:  row.TotalTokens,
-			CacheHit:     row.CacheHit,
-			CacheMiss:    row.CacheMiss,
+			Name:         name,
+			Requests:     d.Requests,
+			Successes:    d.Successes,
+			TotalTokens:  d.Tokens,
+			CacheHit:     d.CacheHitTokens,
+			CacheMiss:    d.CacheMissTokens,
 		}
-		if m.Requests > 0 {
-			m.SuccessRate = float64(m.Successes) / float64(m.Requests)
+		if d.Requests > 0 {
+			m.SuccessRate = float64(d.Successes) / float64(d.Requests)
+			m.AvgLatencyMS = float64(d.SumDurationMS) / float64(d.Requests)
 		}
 		out = append(out, m)
 	}
-	writeJSON(w, out)
+	sort.Slice(out, func(i, j int) bool { return out[i].TotalTokens > out[j].TotalTokens })
+h.writeCached(w, r, out)
 }
 
 // APIKeyModelUsage 是单个 API Key 的模型使用分布。
@@ -722,10 +840,10 @@ func (h *Handler) MetricsByAPIKeyModels(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, out)
 }
 
-// MetricsHourly 返回 24h 逐小时趋势。
-func (h *Handler) MetricsHourly(w http.ResponseWriter, _ *http.Request) {
+// MetricsHourly 返回 24h 逐小时趋势（固定查最近 24h，加 60s 缓存）。
+func (h *Handler) MetricsHourly(w http.ResponseWriter, r *http.Request) {
 	if h.store == nil {
-		writeJSON(w, []hourlyBucket{})
+	h.writeCached(w, r, []hourlyBucket{})
 		return
 	}
 	rows, err := h.store.DB().Query(`
@@ -737,7 +855,7 @@ func (h *Handler) MetricsHourly(w http.ResponseWriter, _ *http.Request) {
 		GROUP BY hour ORDER BY hour ASC
 	`)
 	if err != nil {
-		writeJSON(w, []hourlyBucket{})
+	h.writeCached(w, r, []hourlyBucket{})
 		return
 	}
 	defer rows.Close()
@@ -750,86 +868,48 @@ func (h *Handler) MetricsHourly(w http.ResponseWriter, _ *http.Request) {
 		}
 		out = append(out, b)
 	}
-	writeJSON(w, out)
+h.writeCached(w, r, out)
 }
 
 // MetricsDaily 返回按天聚合的趋势（支持 ?range=today|3d|7d|30d|all）。
-// 无请求的日期也会补零返回，保证折线图连续完整。
+// 历史天走 daily_stats 预聚合，今天实时聚合，缺失天补零保证折线图连续，结果缓存 60s。
 func (h *Handler) MetricsDaily(w http.ResponseWriter, r *http.Request) {
 	if h.store == nil {
-		writeJSON(w, []dailyBucket{})
+	h.writeCached(w, r, []dailyBucket{})
 		return
 	}
-	since := metricsSince(r)
+	rangeStr := metricsRangeStr(r)
 	loc := time.FixedZone("CST", 8*3600)
-	now := time.Now().In(loc)
-
-	// 查询按天聚合（ts 存 UTC，转本地日期分组）
-	q := `SELECT strftime('%Y-%m-%d', ts, '+8 hours') as day,
-	             COUNT(*) as requests,
-	             COALESCE(SUM(CASE WHEN status < 400 THEN 1 ELSE 0 END), 0) as successes,
-	             COALESCE(SUM(tokens), 0) as tokens
-	      FROM request_log`
-	var args []any
-	if since != "" {
-		q += ` WHERE ts >= ?`
-		args = append(args, since)
-	}
-	q += ` GROUP BY day ORDER BY day ASC`
-	rows, err := h.store.DB().Query(q, args...)
+	agg, err := h.store.AggregateRange(rangeStr, loc)
 	if err != nil {
-		writeJSON(w, []dailyBucket{})
+	h.writeCached(w, r, []dailyBucket{})
 		return
 	}
-	defer rows.Close()
-
-	agg := map[string]dailyBucket{}
-	for rows.Next() {
-		var b dailyBucket
-		if err := rows.Scan(&b.Date, &b.Requests, &b.Successes, &b.Tokens); err != nil {
-			continue
-		}
-		agg[b.Date] = b
+	dayMap := map[string]dailyBucket{}
+	for _, dp := range agg.Days {
+		dayMap[dp.Date] = dailyBucket{Date: dp.Date, Requests: dp.Requests, Successes: dp.Successes, Tokens: dp.Tokens}
 	}
-
-	// 确定起始日期：since 对应那天（today 取今天）；all 取最早有数据的日期
-	var start time.Time
-	switch r.URL.Query().Get("range") {
-	case "today":
-		start = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
-	case "all":
-		if len(agg) == 0 {
-			writeJSON(w, []dailyBucket{})
-			return
-		}
-		first := ""
-		for d := range agg {
-			if first == "" || d < first {
-				first = d
+	now := time.Now().In(loc)
+	start := rangeStart(rangeStr, loc)
+	if rangeStr == "all" {
+		if len(agg.Days) > 0 {
+			if t, e := time.ParseInLocation("2006-01-02", agg.Days[0].Date, loc); e == nil {
+				start = t
 			}
-		}
-		t, _ := time.ParseInLocation("2006-01-02", first, loc)
-		start = t
-	default:
-		start = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
-		if since != "" {
-			if t, err := time.Parse(time.RFC3339, since); err == nil {
-				start = time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, loc)
-			}
+		} else {
+			start = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
 		}
 	}
-
-	// 从 start 到 now 逐天补零
 	var out []dailyBucket
 	for d := start; !d.After(now); d = d.AddDate(0, 0, 1) {
 		key := d.Format("2006-01-02")
-		if b, ok := agg[key]; ok {
+		if b, ok := dayMap[key]; ok {
 			out = append(out, b)
 		} else {
 			out = append(out, dailyBucket{Date: key})
 		}
 	}
-	writeJSON(w, out)
+h.writeCached(w, r, out)
 }
 func (h *Handler) GetRetryConfig(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, map[string]interface{}{
@@ -1967,22 +2047,25 @@ type costMetricsResponse struct {
 }
 
 // MetricsCost 返回费用统计（GET /admin/metrics/cost，支持 ?range=today|3d|7d|30d|all）。
+// 历史天走 daily_stats 预聚合，今天实时聚合，结果缓存 60s。
 func (h *Handler) MetricsCost(w http.ResponseWriter, r *http.Request) {
 	if h.store == nil {
-		writeJSON(w, costMetricsResponse{})
+	h.writeCached(w, r, costMetricsResponse{})
 		return
 	}
-	since := metricsSince(r)
-	until := ""
-	if since != "" {
-		until = time.Now().UTC().Format(time.RFC3339)
+	loc := time.FixedZone("CST", 8*3600)
+	agg, err := h.store.AggregateRange(metricsRangeStr(r), loc)
+	if err != nil {
+	h.writeCached(w, r, costMetricsResponse{})
+		return
 	}
-	var resp costMetricsResponse
-	resp.TotalCost, _ = h.store.TotalCost(since, until)
-	resp.ByUpstream = h.store.CostByUpstream(since, until)
-	resp.ByAPIKey = h.store.CostByAPIKey(since, until)
-	resp.ByModel = h.store.CostByModel(since, until)
-	writeJSON(w, resp)
+	resp := costMetricsResponse{
+		TotalCost:  agg.Cost,
+		ByUpstream: dimToCostRows(agg.ByUpstream),
+		ByAPIKey:   dimToCostRows(agg.ByAPIKey),
+		ByModel:    dimToCostRows(agg.ByModel),
+	}
+h.writeCached(w, r, resp)
 }
 
 // TestUpstream 直接使用上游自己的 API Key 测试（POST /admin/upstreams/{name}/test）。
