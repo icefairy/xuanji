@@ -12,7 +12,8 @@ go build -ldflags "-X main.buildDate=$DATE" -o /tmp/xuanji-deploy ./cmd/server
 echo "==> 部署"
 supervisorctl stop xuanji
 cp /tmp/xuanji-deploy /data/xuanji/xuanji-server
-cp cmd/server/web/admin_vue.html /data/xuanji/web/admin_vue.html
+# 注意：web 静态资源已嵌入二进制（go:embed），部署目录不再保留 web/ 目录，
+# 否则会遮蔽嵌入资源。改 HTML 后需重编二进制，不要 cp 到磁盘 web。
 rm -f /tmp/xuanji-deploy
 supervisorctl start xuanji
 
