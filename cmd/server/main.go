@@ -242,6 +242,11 @@ func main() {
 		}()
 	}
 
+	// 每日统计预聚合：启动后后台全量重算一次（填充历史 daily_stats），之后每天 00:05 聚合前一天。
+	if storeInst != nil {
+		go dailyStatsTicker(storeInst)
+	}
+
 	slog.Info("xuanji gateway listening",
 		"addr", addr,
 		"upstreams", len(cfg.Upstreams),
@@ -252,6 +257,56 @@ func main() {
 		os.Exit(1)
 	}
 	hc.Close()
+}
+
+// dailyStatsTicker 后台维护每日统计预聚合表（daily_stats）。
+// 启动后立即全量重算一次（填充历史），之后每天东八区 00:05 聚合前一天，保证趋势数据最新且轻量。
+func dailyStatsTicker(s *store.Store) {
+	loc := time.FixedZone("CST", 8*3600)
+	// 启动后后台全量重算，填充历史 daily_stats（幂等 upsert）。
+	go func() {
+		if err := s.RebuildDailyStats(); err != nil {
+			slog.Error("initial daily stats rebuild failed", "error", err)
+		}
+		// 启动时清一次过期探针（把存量压到保留期内）
+		if n, err := s.PruneHealthProbeLog(store.ProbeRetainDays); err != nil {
+			slog.Error("initial prune health probe log failed", "error", err)
+		} else if n > 0 {
+			slog.Info("pruned health probe log", "rows", n, "retain_days", store.ProbeRetainDays)
+		}
+		// 启动时清一次过期请求明细（历史统计已由 daily_stats 兜底）
+		if n, err := s.PruneRequestLog(store.RequestLogRetainDays); err != nil {
+			slog.Error("initial prune request log failed", "error", err)
+		} else if n > 0 {
+			slog.Info("pruned request log", "rows", n, "retain_days", store.RequestLogRetainDays)
+		}
+	}()
+	for {
+		now := time.Now().In(loc)
+		// 下一个 00:05
+		next := time.Date(now.Year(), now.Month(), now.Day(), 0, 5, 0, 0, loc).Add(24 * time.Hour)
+		timer := time.NewTimer(time.Until(next))
+		<-timer.C
+		y := time.Now().In(loc).AddDate(0, 0, -1).Format("2006-01-02")
+		ds, err := s.AggregateDay(y)
+		if err != nil {
+			slog.Error("aggregate yesterday failed", "date", y, "error", err)
+			continue
+		}
+		if err := s.UpsertDayStats(ds); err != nil {
+			slog.Error("upsert daily stats failed", "date", y, "error", err)
+		}
+		if n, err := s.PruneHealthProbeLog(store.ProbeRetainDays); err != nil {
+			slog.Error("prune health probe log failed", "error", err)
+		} else if n > 0 {
+			slog.Info("pruned health probe log", "rows", n, "retain_days", store.ProbeRetainDays)
+		}
+		if n, err := s.PruneRequestLog(store.RequestLogRetainDays); err != nil {
+			slog.Error("prune request log failed", "error", err)
+		} else if n > 0 {
+			slog.Info("pruned request log", "rows", n, "retain_days", store.RequestLogRetainDays)
+		}
+	}
 }
 
 // backupOnce 执行一次自动备份并轮转保留最近 10 个，失败只记日志不影响主流程。
@@ -375,6 +430,7 @@ func buildServeMux(cfg *config.Config, rt *router.Router, hc *health.Checker, re
 	mux.HandleFunc("GET /admin/metrics/daily", adminAuth(admHandler.MetricsDaily))
 	mux.HandleFunc("GET /admin/metrics/keys", adminAuth(admHandler.MetricsByAPIKey))
 	mux.HandleFunc("GET /admin/metrics/keys/{name}/models", adminAuth(admHandler.MetricsByAPIKeyModels))
+	mux.HandleFunc("POST /admin/metrics/rebuild", adminAuth(admHandler.MetricsRebuild))
 	mux.HandleFunc("GET /admin/config/retry", adminAuth(admHandler.GetRetryConfig))
 	mux.HandleFunc("GET /admin/logs", adminAuth(admHandler.RequestLogs))
 	mux.HandleFunc("POST /admin/logs/recalc-cost", adminAuth(admHandler.RecalcCost))
