@@ -134,6 +134,12 @@ func (h *Handler) probeUpstream(name, model string) {
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		h.fastFail.MarkSuccess(name, model)
 		h.log.Info("fastfail probe recovered", "upstream", name, "model", model)
+	} else if resp.StatusCode == http.StatusTooManyRequests {
+		// 429 = 上游在线但因探测频率被限流：保留冷却不顺延，等冷却自然到期后
+		// 由真实流量验证恢复（真实请求成功即 MarkSuccess）。与 health 探测
+		// 对 429 的容错语义一致（tokenrhythm.studio/基元律动系上游常见）。
+		reason := fmt.Sprintf("status=%d (rate limited)", resp.StatusCode)
+		h.fastFail.MarkKeepCooldown(name, model, reason)
 	} else {
 		reason := fmt.Sprintf("status=%d", resp.StatusCode)
 		h.log.Warn("fastfail probe failed",
