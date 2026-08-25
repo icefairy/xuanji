@@ -63,6 +63,19 @@ func (f *FastFailCache) MarkFailedWithReason(name, model, reason string) {
 	f.log.Warn("fastfail mark_failed", attrs...)
 }
 
+// MarkKeepCooldown 探测遇 429（限流）时调用：上游在线但暂时被限流。
+// 保留原失败时间戳（不刷新），使冷却自然到期后由真实流量验证恢复；
+// 避免探测自身高频请求触发限流、每次探测顺延导致永续黑名单
+// （tokenrhythm.studio/基元律动系上游对高频/无凭证探测直接返回 429）。
+// 与 health 包对 429 的容错语义一致，分层互补。
+func (f *FastFailCache) MarkKeepCooldown(name, model, reason string) {
+	attrs := []any{"upstream", name, "reason", reason}
+	if model != "" {
+		attrs = append(attrs, "model", model)
+	}
+	f.log.Info("fastfail probe rate-limited(429), keep cooldown", attrs...)
+}
+
 // MarkSuccess 清除上游（或上游+模型）的失败标记（成功恢复后调用）。
 func (f *FastFailCache) MarkSuccess(name, model string) {
 	f.mu.Lock()

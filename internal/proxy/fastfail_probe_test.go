@@ -24,8 +24,31 @@ func TestFastFailProbe_Recover(t *testing.T) {
 	}
 }
 
-// TestFastFailProbe_StillDown 验证：探测仍失败（429）时保持黑名单并顺延冷却。
-func TestFastFailProbe_StillDown(t *testing.T) {
+// TestFastFailProbe_ServerErrorExtendsCooldown 验证：5xx 探测仍失败时刷新冷却（顺延）。
+func TestFastFailProbe_ServerErrorExtendsCooldown(t *testing.T) {
+	upstream, h := newTestHandler(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	})
+	defer upstream.Close()
+
+	h.fastFail = NewFastFailCache(time.Hour)
+	h.fastFail.MarkFailed("up", "deepseek-v4-flash")
+	failTime := h.fastFail.entries[ffKey("up", "deepseek-v4-flash")]
+
+	h.probeFastFailOnce()
+
+	after := h.fastFail.entries[ffKey("up", "deepseek-v4-flash")]
+	if after.Before(failTime) || after.Equal(failTime) {
+		t.Errorf("503 probe should extend cooldown (refresh timestamp): %v -> %v", failTime, after)
+	}
+	if !h.fastFail.IsBlacklisted("up", "deepseek-v4-flash") {
+		t.Error("upstream should stay blacklisted after 503 probe")
+	}
+}
+
+// TestFastFailProbe_RateLimitedKeepsCooldown 验证：429 保留原冷却时间戳（不顺延）。
+// tokenrhythm/基元律动系上游高频探测返回 429 时，不应刷新冷却导致永续黑名单。
+func TestFastFailProbe_RateLimitedKeepsCooldown(t *testing.T) {
 	upstream, h := newTestHandler(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusTooManyRequests)
 	})
@@ -33,10 +56,17 @@ func TestFastFailProbe_StillDown(t *testing.T) {
 
 	h.fastFail = NewFastFailCache(time.Hour)
 	h.fastFail.MarkFailed("up", "deepseek-v4-flash")
+	failTime := h.fastFail.entries[ffKey("up", "deepseek-v4-flash")]
+
 	h.probeFastFailOnce()
 
+	after := h.fastFail.entries[ffKey("up", "deepseek-v4-flash")]
+	if !after.Equal(failTime) {
+		t.Errorf("cooldown timestamp refreshed on 429 (should keep): %v -> %v", failTime, after)
+	}
+	// 仍在冷却期（1h 未到）→ 保持黑名单
 	if !h.fastFail.IsBlacklisted("up", "deepseek-v4-flash") {
-		t.Error("upstream should stay blacklisted after failed probe")
+		t.Error("still in cooldown, should stay blacklisted")
 	}
 }
 
