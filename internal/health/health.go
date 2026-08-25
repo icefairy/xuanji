@@ -431,6 +431,12 @@ func (c *Checker) chatProbe(ctx context.Context, st *upstreamState) probeOutcome
 		if authRejected(resp.StatusCode) {
 			return probeOutcome{ok: true, latency: latency}
 		}
+		// 429 = 限流：服务在线，只是探测太频繁。部分上游（如 tokenrhythm.studio / 基元律动）
+		// 对无凭证/高频探测直接返回 429，但真实带 key 请求是 200 成功，故 chat 探测中视为健康，
+		// 避免误判 dead。注意：仅 chatProbe 容错 429，ollama/embeddings 探测仍按 authRejected 判定。
+		if resp.StatusCode == http.StatusTooManyRequests {
+			return probeOutcome{ok: true, latency: latency}
+		}
 		// chat 端点不可用（404/405，典型于仅提供 embeddings 的端点）→ 回退 POST /embeddings，
 		// 避免把仅支持 embeddings 的上游误判为 dead；其余非 2xx（400/500 等）直接判失败。
 		if resp.StatusCode == http.StatusMethodNotAllowed || resp.StatusCode == http.StatusNotFound {
