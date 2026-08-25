@@ -2100,6 +2100,11 @@ func (h *Handler) TestUpstream(w http.ResponseWriter, r *http.Request) {
 	if len(up.ModelMapping) > 0 {
 		if v, ok := up.ModelMapping[req.Model]; ok && v != "" {
 			realModel = v
+			// 竖线多模型映射(如 "mimo-v2.5-free|hy3-free")：测试仅取第一个真实模型，
+			// 与真实转发路径 router.MapModel 的随机选择保持语义一致，避免把含 "|" 的串发给上游。
+			if i := strings.Index(realModel, "|"); i >= 0 {
+				realModel = realModel[:i]
+			}
 		}
 	}
 
