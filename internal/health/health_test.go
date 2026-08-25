@@ -551,3 +551,38 @@ func names(ups []*config.Upstream) []string {
 	}
 	return out
 }
+
+// TestChatProbe_429TreatedAsHealthy 验证 chat 探测对 429（限流）视为健康：
+// 部分上游（如 tokenrhythm.studio / 基元律动）对无凭证/高频探测直接返回 429，
+// 但真实带 key 请求是 200 成功，故不应误判 dead。仅 chatProbe 容错 429，
+// ollama/embeddings 探测不受影响（见 authRejected）。
+func TestChatProbe_429TreatedAsHealthy(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = io.WriteString(w, `{"error":{"message":"rate limit"}}`)
+	}))
+	defer srv.Close()
+
+	up := config.Upstream{Name: "limit-up", BaseURL: srv.URL + "/v1", APIKey: "sk-real"}
+	ck := New(testCfg(up))
+	defer ck.Close()
+	st := ck.states[up.Name]
+	if st == nil {
+		t.Fatalf("state not found")
+	}
+
+	// 1) 直接断言探测结果：429 → ok=true（视为健康）
+	out := ck.ping(context.Background(), &upstreamState{up: &up, timeout: 2 * time.Second})
+	if !out.ok {
+		t.Fatalf("429 probe ok = false, want true (out=%+v)", out)
+	}
+
+	// 2) 状态机视角：连续两次探测仍保持 healthy（不降级为 degraded/dead）
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	ck.checkOnce(ctx, st)
+	ck.checkOnce(ctx, st)
+	if got := ck.Status("limit-up"); got != StateHealthy {
+		t.Errorf("status after 429 probes = %q, want healthy", got)
+	}
+}
