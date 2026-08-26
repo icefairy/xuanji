@@ -107,7 +107,7 @@ func (h *Handler) probeUpstream(name, model string) {
 
 	target := strings.TrimRight(up.BaseURL, "/") + "/chat/completions"
 
-	ctx, cancel := context.WithTimeout(context.Background(), upstreamTimeoutFor(h.cfg))
+	ctx, cancel := context.WithTimeout(context.Background(), upstreamTimeoutForUp(up, h.cfg))
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewReader(payload))

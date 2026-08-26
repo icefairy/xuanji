@@ -37,6 +37,17 @@ func upstreamTimeoutFor(cfg *config.Config) time.Duration {
 	return upstreamTimeout
 }
 
+// upstreamTimeoutForUp 返回单个上游的请求超时：上游自己配置了 timeout（秒）优先使用，
+// 未配置时跟随全局 retry.upstream_timeout（默认 60s）。
+// 目的：慢速兜底上游（如本地一体机）单独调大超时，避免响应稍慢就被全局 60s 超时
+// 误判失败、一路切换到最后仍全部失败返回 502（2026-08-26 修复）。
+func upstreamTimeoutForUp(up *config.Upstream, cfg *config.Config) time.Duration {
+	if up != nil && up.Timeout > 0 {
+		return time.Duration(up.Timeout) * time.Second
+	}
+	return upstreamTimeoutFor(cfg)
+}
+
 // chatPath 拼接在 upstream.BaseURL 之后，构成 chat/completions 转发端点。
 // 用 /v1/ 前缀兼容 OpenAI 标准；部分上游（如硅基流动）双兼容，部分（如基元律动、商汤）只认 /v1/。
 const chatPath = "/v1/chat/completions"
@@ -746,6 +757,11 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 	if nb, changed := normalizeMaxTokens(reqBody, up); changed {
 		reqBody = nb
 	}
+	// prompt_cache_key 剥离：DeepSeek 官方私有缓存字段，OpenAI 兼容上游不认（收到即 400 UNKNOWN_FIELD）。
+	// 客户端（pi 等 agent 框架）常自动携带，转发前统一删除（上游仍走自动前缀缓存，功能无损失）。
+	if nb, changed := stripPromptCacheKey(reqBody); changed {
+		reqBody = nb
+	}
 	if nb, changed := applyBestEffort(reqBody, model, h.cfg); changed {
 		reqBody = nb
 	}
@@ -792,7 +808,7 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 	reqCtx := r.Context()
 	if !stream {
 		var cancel context.CancelFunc
-		reqCtx, cancel = context.WithTimeout(reqCtx, upstreamTimeoutFor(h.cfg))
+		reqCtx, cancel = context.WithTimeout(reqCtx, upstreamTimeoutForUp(up, h.cfg))
 		defer cancel()
 	}
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, target, bytes.NewReader(reqBody))
@@ -856,25 +872,9 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 				}
 			}
 		}
-		// 详细错误日志：记录上游名、状态码、请求体、上游错误体（均在 shouldRetry 判断后打，可重试+不可重试都覆盖）
-		{
-			respBodyStr := string(respBody)
-			reqBodyStr := string(reqBody)
-			const maxLen = 800
-			if len(respBodyStr) > maxLen {
-				respBodyStr = respBodyStr[:maxLen] + "...(truncated)"
-			}
-			if len(reqBodyStr) > maxLen {
-				reqBodyStr = reqBodyStr[:maxLen] + "...(truncated)"
-			}
-			h.log.Warn("upstream 4xx/5xx detail",
-				"upstream", up.Name,
-				"model", model,
-				"upstream_model", upstreamModel,
-				"status", resp.StatusCode,
-				"request_body", reqBodyStr,
-				"upstream_body", respBodyStr)
-		}
+		// 详细错误日志：结构化摘要（请求关键字段 + 最近消息 + 图片打码 + 上游 error.message），
+		// 避免 messages/base64 巨大时盲截前 800 字符看不到有用信息（可重试+不可重试都打）。
+		LogUpstreamErrorDetail(h.log, up, model, upstreamModel, resp.StatusCode, reqBody, respBody)
 		if shouldRetry {
 			// 返回可重试；带原因标记 fastfail：status + 响应体摘要（截断 500 字符防刷屏）
 			if h.fastFail != nil {
@@ -1336,7 +1336,7 @@ func (h *Handler) forwardRerank(w http.ResponseWriter, r *http.Request, body []b
 	}
 
 	target := strings.TrimRight(up.BaseURL, "/") + "/rerank"
-	reqCtx, cancel := context.WithTimeout(r.Context(), upstreamTimeoutFor(h.cfg))
+	reqCtx, cancel := context.WithTimeout(r.Context(), upstreamTimeoutForUp(up, h.cfg))
 	defer cancel()
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, target, bytes.NewReader(reqBody))
 	if err != nil {
@@ -1370,6 +1370,7 @@ func (h *Handler) forwardRerank(w http.ResponseWriter, r *http.Request, body []b
 			}
 			return false, true, fmt.Errorf("rerank upstream error: %s", resp.Status)
 		}
+		h.consumeUpstreamError(resp, up, model, upstreamModel, reqBody)
 		h.writeUpstreamError(w, resp)
 		return true, false, fmt.Errorf("rerank upstream error: %s", resp.Status)
 	}
@@ -1504,7 +1505,7 @@ func (h *Handler) forwardEmbedding(w http.ResponseWriter, r *http.Request, body 
 	}
 
 	target := strings.TrimRight(up.BaseURL, "/") + "/embeddings"
-	reqCtx, cancel := context.WithTimeout(r.Context(), upstreamTimeoutFor(h.cfg))
+	reqCtx, cancel := context.WithTimeout(r.Context(), upstreamTimeoutForUp(up, h.cfg))
 	defer cancel()
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, target, bytes.NewReader(reqBody))
 	if err != nil {
@@ -1538,6 +1539,7 @@ func (h *Handler) forwardEmbedding(w http.ResponseWriter, r *http.Request, body 
 			}
 			return false, true, fmt.Errorf("embedding upstream error: %s", resp.Status)
 		}
+		h.consumeUpstreamError(resp, up, model, upstreamModel, reqBody)
 		h.writeUpstreamError(w, resp)
 		return true, false, fmt.Errorf("embedding upstream error: %s", resp.Status)
 	}

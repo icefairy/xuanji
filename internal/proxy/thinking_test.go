@@ -257,3 +257,22 @@ func TestNormalizeThinkingEffort_KeepsOtherFields(t *testing.T) {
 		t.Fatalf("output_config.effort=%q, want low", got)
 	}
 }
+
+// TestNormalizeThinkingEffort_Opencode 验证 opencode zen 的 x-preview* 系列走默认 OpenAI 协议：
+// reasoning_effort 各档位原样透传（上游偶发 503 是远端稳定性问题，与思考参数无关，
+// 不做参数映射适配——2026-08-26 修正：此前误把远端 503 归因于 low/medium 档位）。
+func TestNormalizeThinkingEffort_Opencode(t *testing.T) {
+	for _, effort := range []string{"none", "minimal", "low", "medium", "high", "xhigh", "max"} {
+		body := `{"model":"x-preview-f-free","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"` + effort + `"}`
+		nb, changed := normalizeThinkingEffort([]byte(body), "x-preview-f-free")
+		if changed {
+			t.Errorf("effort=%s 应默认透传不修改, got %s", effort, nb)
+		}
+		if string(nb) != body {
+			t.Errorf("effort=%s body 应原样, got %s", effort, nb)
+		}
+		if matchThinkingProfile("x-preview-f-free") != "" {
+			t.Error("x-preview 系列不应匹配任何 profile")
+		}
+	}
+}

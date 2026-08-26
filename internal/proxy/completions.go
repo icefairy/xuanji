@@ -216,7 +216,7 @@ func (h *Handler) forwardCompletion(w http.ResponseWriter, r *http.Request, body
 
 	// 与 forwardOnce 一致：BaseURL 末尾已是完整版本前缀（如 /v1），直接拼 /chat/completions
 	target := strings.TrimRight(up.BaseURL, "/") + "/chat/completions"
-	reqCtx, cancel := context.WithTimeout(r.Context(), upstreamTimeoutFor(h.cfg))
+	reqCtx, cancel := context.WithTimeout(r.Context(), upstreamTimeoutForUp(up, h.cfg))
 	defer cancel()
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, target, bytes.NewReader(reqBody))
 	if err != nil {
@@ -250,6 +250,7 @@ func (h *Handler) forwardCompletion(w http.ResponseWriter, r *http.Request, body
 			return false, true, fmt.Errorf("completions upstream error: %s", resp.Status)
 		}
 		// 不可重试：上游错误本身已是 OpenAI 错误格式，直接透传
+		h.consumeUpstreamError(resp, up, model, upstreamModel, reqBody)
 		h.writeUpstreamError(w, resp)
 		return true, false, fmt.Errorf("completions upstream error: %s", resp.Status)
 	}

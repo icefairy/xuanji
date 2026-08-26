@@ -1,7 +1,13 @@
 // Package proxy 思考深度归一化：客户端统一用 OpenAI 标准 reasoning_effort，
 // 网关按目标上游模型自动转换为该模型实际支持的思考控制参数。
 //
-// OpenAI 标准档位：none | minimal | low | medium | high | xhigh | max
+// 默认假设：所有上游都走 OpenAI 标准协议 —— reasoning_effort（none|minimal|low|medium|high|xhigh|max）
+// 原样透传即可。只有在「实测确认与 OpenAI 标准不同」的模型上才通过下方 profile 单独适配
+// （如商汤不认识顶层 reasoning_effort、MiMo 不支持 xhigh/max 等）。
+// 注意：上游偶发 5xx（如 opencode zen 的 503 Endpoint unavailable）是远端稳定性问题，
+// 与思考参数无关，不要据此添加参数映射适配。
+//
+// # OpenAI 标准档位：none | minimal | low | medium | high | xhigh | max
 //
 // 各模型差异（2026-08-03 资料确认 + 实测）：
 //   - DeepSeek V4 (flash/pro)：顶层 reasoning_effort 原生支持（low/high/xhigh/max），
@@ -54,13 +60,15 @@ func normalizeThinkingEffort(body []byte, upstreamModel string) ([]byte, bool) {
 	case "qwen":
 		return applyQwen(body, effort)
 	default:
-		// openai-native（o3/o4/gpt-5 等）与未知模型：原生支持 reasoning_effort，透传
+		// openai-native（o3/o4/gpt-5 等）与未知模型：默认按 OpenAI 标准协议透传
 		return body, false
 	}
 }
 
 // matchThinkingProfile 根据模型名识别思考控制参数族。
-// 规则：前缀/包含匹配，越具体越靠前。
+// 规则：前缀/包含匹配，越具体越靠前；未命中返回 ""（表示默认走 OpenAI 标准协议，直接透传）。
+// 注意：只有「实测确认与 OpenAI 标准不同」的模型才需要在这里识别，
+// 反之则不需添加（保持默认透传，避免污染 OpenAI 语义）。
 func matchThinkingProfile(model string) string {
 	m := strings.ToLower(model)
 	switch {
@@ -242,10 +250,11 @@ func applySwitchOnly(body []byte, effort string) ([]byte, bool) {
 
 // applyQwen Qwen3 系列（Qwen3/3.5/3.6/3.7）：顶层 enable_thinking 开关 + thinking_budget 限思考长度。
 // 无 reasoning_effort 档位 → 档位映射为 enable_thinking + thinking_budget 分档：
-//   none/off → enable_thinking=false（关闭思考）
-//   minimal/low → enable_thinking=true + thinking_budget=1024（短思考，快响应）
-//   medium → enable_thinking=true + thinking_budget=4096（中等）
-//   high/xhigh/max → enable_thinking=true + thinking_budget=8192（深度思考）
+//
+//	none/off → enable_thinking=false（关闭思考）
+//	minimal/low → enable_thinking=true + thinking_budget=1024（短思考，快响应）
+//	medium → enable_thinking=true + thinking_budget=4096（中等）
+//	high/xhigh/max → enable_thinking=true + thinking_budget=8192（深度思考）
 //
 // 说明：
 //   - Qwen3.5 开源小模型默认禁用思考，high 档显式开启

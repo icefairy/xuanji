@@ -160,7 +160,7 @@ func (h *Handler) forwardVideoJSON(w http.ResponseWriter, r *http.Request, ctx c
 	}
 
 	target := strings.TrimRight(up.BaseURL, "/") + "/videos"
-	reqCtx, cancel := context.WithTimeout(ctx, upstreamTimeoutFor(h.cfg))
+	reqCtx, cancel := context.WithTimeout(ctx, upstreamTimeoutForUp(up, h.cfg))
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, target, bytes.NewReader(reqBody))
@@ -187,12 +187,14 @@ func (h *Handler) forwardVideoJSON(w http.ResponseWriter, r *http.Request, ctx c
 	switch {
 	case resp.StatusCode >= 500 || resp.StatusCode == http.StatusTooManyRequests:
 		if last {
+			h.consumeUpstreamError(resp, up, model, model, body)
 			h.writeUpstreamError(w, resp)
 			return true, false, fmt.Errorf("upstream error: %s", resp.Status)
 		}
 		_, _ = io.Copy(io.Discard, resp.Body)
 		return false, true, fmt.Errorf("upstream error: %s", resp.Status)
 	case resp.StatusCode >= 400:
+		h.consumeUpstreamError(resp, up, model, model, body)
 		h.writeUpstreamError(w, resp)
 		return true, false, nil
 	default:
@@ -237,7 +239,7 @@ func (h *Handler) forwardVideoQuery(w http.ResponseWriter, r *http.Request, vide
 		base = strings.TrimSuffix(base, "/v1")
 	}
 	target := base + "/agnesapi?video_id=" + url.QueryEscape(videoID)
-	reqCtx, cancel := context.WithTimeout(r.Context(), upstreamTimeoutFor(h.cfg))
+	reqCtx, cancel := context.WithTimeout(r.Context(), upstreamTimeoutForUp(up, h.cfg))
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, target, nil)
@@ -263,12 +265,14 @@ func (h *Handler) forwardVideoQuery(w http.ResponseWriter, r *http.Request, vide
 	switch {
 	case resp.StatusCode >= 500 || resp.StatusCode == http.StatusTooManyRequests:
 		if last {
+			h.consumeUpstreamError(resp, up, model, model, nil)
 			h.writeUpstreamError(w, resp)
 			return true, false, fmt.Errorf("upstream error: %s", resp.Status)
 		}
 		_, _ = io.Copy(io.Discard, resp.Body)
 		return false, true, fmt.Errorf("upstream error: %s", resp.Status)
 	case resp.StatusCode >= 400:
+		h.consumeUpstreamError(resp, up, model, model, nil)
 		h.writeUpstreamError(w, resp)
 		return true, false, nil
 	default:

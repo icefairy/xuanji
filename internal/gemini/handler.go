@@ -16,6 +16,7 @@ import (
 
 	"github.com/icefairy/xuanji/internal/config"
 	"github.com/icefairy/xuanji/internal/health"
+	"github.com/icefairy/xuanji/internal/proxy"
 	"github.com/icefairy/xuanji/internal/router"
 	"github.com/icefairy/xuanji/internal/store"
 )
@@ -232,12 +233,23 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 		return true, false, nil
 	case resp.StatusCode >= 500 || resp.StatusCode == http.StatusTooManyRequests:
 		if last {
+			respBody, rerr := io.ReadAll(resp.Body)
+			if rerr == nil {
+				resp.Body = io.NopCloser(bytes.NewReader(respBody))
+				proxy.LogUpstreamErrorDetail(h.log, up, model, upModel, resp.StatusCode, reqBody, respBody)
+			}
 			h.writeUpstreamOpenAIError(w, resp)
 			return true, false, fmt.Errorf("upstream error: %s", resp.Status)
 		}
 		_, _ = io.Copy(io.Discard, resp.Body)
 		return false, true, fmt.Errorf("upstream error: %s", resp.Status)
 	case resp.StatusCode >= 400:
+		// 打精简错误日志（请求摘要 + 上游响应，messages 过长自动裁剪、图片打码）
+		respBody, rerr := io.ReadAll(resp.Body)
+		if rerr == nil {
+			resp.Body = io.NopCloser(bytes.NewReader(respBody))
+			proxy.LogUpstreamErrorDetail(h.log, up, model, upModel, resp.StatusCode, reqBody, respBody)
+		}
 		h.writeUpstreamOpenAIError(w, resp)
 		return true, false, nil
 	default:
