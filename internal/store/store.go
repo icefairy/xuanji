@@ -52,6 +52,13 @@ type UpstreamRow struct {
 	Enabled         int    `json:"enabled"`          // 1=启用 0=禁用（禁用的不参与转发路由）
 	BillingExempt   int    `json:"billing_exempt"`   // 1=不参与计费（统计费用记 0，路由不受影响）
 	RequestOverride string `json:"request_override"` // 请求体复写（JSON 字符串）：转发前强制覆盖请求体部分字段，空=不启用
+	// Timeout 上游请求超时秒数（连接+非流式整体）；0=跟随全局 retry.upstream_timeout（默认 60）。
+	// 慢速兜底上游（如本地一体机）建议单独调大（如 300），避免响应稍慢被全局超时误判失败导致 502。
+	Timeout int `json:"timeout"`
+	// TimeoutPtr 区分 JSON body 中 timeout 字段"未传"(nil) 与"显式传 0"。
+	// UpdateUpstream 用它避免旧客户端未传 timeout 时把已配置的上游超时清零。
+	TimeoutPtr *int `json:"-"`
+
 	// EnabledPtr 区分 JSON body 中 enabled 字段"未传"(nil) 与"显式传 0/1"。
 	// UpdateUpstream 用它避免未传时误禁用上游。
 	EnabledPtr *int `json:"-"`
@@ -413,6 +420,8 @@ func (s *Store) init() error {
 	ensureColumn(s.db, "upstreams", "billing_exempt", "billing_exempt INTEGER NOT NULL DEFAULT 0")
 	// 迁移：upstreams 加 request_override 列（请求体复写：转发前强制覆盖请求体部分字段）
 	ensureColumn(s.db, "upstreams", "request_override", "request_override TEXT NOT NULL DEFAULT ''")
+	// 迁移：upstreams 加 timeout 列（上游请求超时秒数；0=跟随全局 retry.upstream_timeout）
+	ensureColumn(s.db, "upstreams", "timeout", "timeout INTEGER NOT NULL DEFAULT 0")
 	// 迁移：routing_rules 加 vision / vision_fallback 列（多模态兜底，老库自动补列）
 	ensureColumn(s.db, "routing_rules", "vision", "vision INTEGER NOT NULL DEFAULT 0")
 	ensureColumn(s.db, "routing_rules", "vision_fallback", "vision_fallback TEXT NOT NULL DEFAULT ''")
@@ -992,7 +1001,7 @@ func (r *Recorder) Close() {
 
 // ListUpstreams 返回所有上游。
 func (s *Store) ListUpstreams() ([]UpstreamRow, error) {
-	rows, err := s.db.Query(`SELECT id, name, type, base_url, api_key, tier, priority, weight, models, model_mapping, enabled, billing_exempt, request_override, created_at, updated_at FROM upstreams ORDER BY id`)
+	rows, err := s.db.Query(`SELECT id, name, type, base_url, api_key, tier, priority, weight, models, model_mapping, enabled, billing_exempt, request_override, timeout, created_at, updated_at FROM upstreams ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -1001,7 +1010,7 @@ func (s *Store) ListUpstreams() ([]UpstreamRow, error) {
 	var out []UpstreamRow
 	for rows.Next() {
 		var u UpstreamRow
-		if err := rows.Scan(&u.ID, &u.Name, &u.Type, &u.BaseURL, &u.APIKey, &u.Tier, &u.Priority, &u.Weight, &u.Models, &u.ModelMapping, &u.Enabled, &u.BillingExempt, &u.RequestOverride, &u.CreatedAt, &u.UpdatedAt); err != nil {
+		if err := rows.Scan(&u.ID, &u.Name, &u.Type, &u.BaseURL, &u.APIKey, &u.Tier, &u.Priority, &u.Weight, &u.Models, &u.ModelMapping, &u.Enabled, &u.BillingExempt, &u.RequestOverride, &u.Timeout, &u.CreatedAt, &u.UpdatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, u)
@@ -1012,8 +1021,8 @@ func (s *Store) ListUpstreams() ([]UpstreamRow, error) {
 // GetUpstream 按名称查询上游。
 func (s *Store) GetUpstream(name string) (*UpstreamRow, error) {
 	var u UpstreamRow
-	err := s.db.QueryRow(`SELECT id, name, type, base_url, api_key, tier, priority, weight, models, model_mapping, enabled, billing_exempt, request_override, created_at, updated_at FROM upstreams WHERE name = ?`, name).
-		Scan(&u.ID, &u.Name, &u.Type, &u.BaseURL, &u.APIKey, &u.Tier, &u.Priority, &u.Weight, &u.Models, &u.ModelMapping, &u.Enabled, &u.BillingExempt, &u.RequestOverride, &u.CreatedAt, &u.UpdatedAt)
+	err := s.db.QueryRow(`SELECT id, name, type, base_url, api_key, tier, priority, weight, models, model_mapping, enabled, billing_exempt, request_override, timeout, created_at, updated_at FROM upstreams WHERE name = ?`, name).
+		Scan(&u.ID, &u.Name, &u.Type, &u.BaseURL, &u.APIKey, &u.Tier, &u.Priority, &u.Weight, &u.Models, &u.ModelMapping, &u.Enabled, &u.BillingExempt, &u.RequestOverride, &u.Timeout, &u.CreatedAt, &u.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -1032,8 +1041,8 @@ func (s *Store) CreateUpstream(u *UpstreamRow) error {
 		billingExempt = *u.BillingExemptPtr
 	}
 	_, err := s.db.Exec(
-		`INSERT INTO upstreams (name, type, base_url, api_key, tier, priority, weight, models, model_mapping, enabled, billing_exempt, request_override) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		u.Name, u.Type, u.BaseURL, u.APIKey, u.Tier, u.Priority, u.Weight, u.Models, u.ModelMapping, enabled, billingExempt, u.RequestOverride,
+		`INSERT INTO upstreams (name, type, base_url, api_key, tier, priority, weight, models, model_mapping, enabled, billing_exempt, request_override, timeout) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		u.Name, u.Type, u.BaseURL, u.APIKey, u.Tier, u.Priority, u.Weight, u.Models, u.ModelMapping, enabled, billingExempt, u.RequestOverride, u.Timeout,
 	)
 	return err
 }
@@ -1053,6 +1062,10 @@ func (s *Store) UpdateUpstream(name string, u *UpstreamRow) error {
 	if u.BillingExemptPtr != nil {
 		setExpr += ", billing_exempt=?"
 		args = append(args, *u.BillingExemptPtr)
+	}
+	if u.TimeoutPtr != nil {
+		setExpr += ", timeout=?"
+		args = append(args, *u.TimeoutPtr)
 	}
 	args = append(args, name)
 	_, err := s.db.Exec(

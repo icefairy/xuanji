@@ -324,3 +324,25 @@ func TestParseUsageCacheFallback(t *testing.T) {
 		t.Errorf("scenario4: expected false, got ok=%v", ok)
 	}
 }
+
+// TestUpstreamTimeoutForUp 验证 per-upstream 超时优先级：
+// 上游自配 timeout（秒）优先，未配时回退全局 retry.upstream_timeout，再回退内置 60s。
+func TestUpstreamTimeoutForUp(t *testing.T) {
+	if got := upstreamTimeoutForUp(nil, nil); got != 60*time.Second {
+		t.Errorf("nil/nil = %v, want 60s", got)
+	}
+	cfg := &config.Config{}
+	cfg.Retry.UpstreamTimeout = 120
+	if got := upstreamTimeoutForUp(nil, cfg); got != 120*time.Second {
+		t.Errorf("nil/global120 = %v, want 120s", got)
+	}
+	up := &config.Upstream{Timeout: 300}
+	if got := upstreamTimeoutForUp(up, cfg); got != 300*time.Second {
+		t.Errorf("up300 = %v, want 300s", got)
+	}
+	// 上游配置 0 = 跟随全局
+	up0 := &config.Upstream{Timeout: 0}
+	if got := upstreamTimeoutForUp(up0, cfg); got != 120*time.Second {
+		t.Errorf("up0/global120 = %v, want 120s", got)
+	}
+}

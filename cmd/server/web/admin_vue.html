@@ -2498,6 +2498,18 @@
               覆盖转发给上游的请求参数（空=不启用）。仅填部分字段即可，嵌套对象逐层合并覆盖，未填的子键保留客户端原值。常用于关闭思考、固定采样参数。
             </div>
           </div>
+          <div class="form-group">
+            <label>请求超时（秒，0=跟随全局 retry.upstream_timeout，默认 60）</label
+            ><input
+              type="number"
+              min="0"
+              v-model="editForm.timeout"
+              placeholder="0"
+            />
+            <div style="margin-top: 2px; font-size: 12px; color: #909399">
+              慢速兜底上游（如本地一体机）建议单独调大（如 300），避免响应稍慢就被全局超时误判失败导致 502；流式请求不受该超时影响。
+            </div>
+          </div>
           <div class="modal-footer">
             <button class="btn" @click="showEditDialog=false">取消</button
             ><button class="btn btn-primary" @click="doEditUpstream">
@@ -2647,7 +2659,7 @@
         v-if="showTestDialog"
       >
         <div class="modal-content" style="max-width: 600px">
-          <h3>测试上游</h3>
+          <h3>测试上游：{{ testRow && testRow.name ? testRow.name : '' }}</h3>
           <div class="form-group">
             <label>选择模型</label>
             <select
@@ -4665,16 +4677,19 @@
                 subscription: "订阅",
                 payg: "付费",
               };
-              self.ruleUpstreamOptions = (self.upstreams || []).map(
-                function (u) {
-                  return {
-                    name: u.name,
-                    tier_label: tierMap[u.tier] || u.tier || "",
-                    weight: u.weight,
-                    enabled: u.enabled !== false,
-                  };
-                },
-              );
+              // 上游列表按名称排序（中文按拼音，兼容多文种），让用户在路由规则里更容易定位
+              var opts = (self.upstreams || []).map(function (u) {
+                return {
+                  name: u.name,
+                  tier_label: tierMap[u.tier] || u.tier || "",
+                  weight: u.weight,
+                  enabled: u.enabled !== false,
+                };
+              });
+              opts.sort(function (a, b) {
+                return String(a.name).localeCompare(String(b.name), "zh-Hans-CN");
+              });
+              self.ruleUpstreamOptions = opts;
             },
             ruleUpstreamChecked: function (name) {
               return this.ruleSelectedUpstreams.indexOf(name) >= 0;
@@ -4839,6 +4854,7 @@
                     models: self.normalizeModels(f.models),
                     model_mapping: f.model_mapping || "{}",
                     request_override: f.request_override || "",
+                    timeout: parseInt(f.timeout) || 0,
                     billing_exempt: f.billing_exempt ? 1 : 0,
                   },
                 })

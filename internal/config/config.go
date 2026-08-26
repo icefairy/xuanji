@@ -139,8 +139,11 @@ type Upstream struct {
 	RequestOverride string            `yaml:"request_override"` // 请求体复写（JSON 字符串）：转发前强制覆盖请求体部分字段，空=不启用
 	Enabled         bool              `yaml:"enabled"`          // 禁用（false）时不参与转发路由
 	MaxTokensCap    int               `yaml:"max_tokens_cap"`   // 上游 max_tokens 上限；0=不限制（客户端传超范围值时 clamp 到该值，防 400）
-	Quota           *Quota            `yaml:"quota"`
-	HealthCheck     *HealthCheck      `yaml:"health_check"`
+	// Timeout 上游请求超时秒数（连接+非流式整体）；0=跟随全局 retry.upstream_timeout（默认 60）。
+	// 慢速兜底上游（如本地一体机）建议单独调大（如 300），避免响应稍慢就被全局超时误判失败导致 502。
+	Timeout     int          `yaml:"timeout"`
+	Quota       *Quota       `yaml:"quota"`
+	HealthCheck *HealthCheck `yaml:"health_check"`
 }
 
 // IsOllama 判断上游是否为 Ollama 原生协议。
@@ -521,6 +524,7 @@ func LoadFromDB(s *store.Store) (*Config, error) {
 			json.Unmarshal([]byte(u.ModelMapping), &up.ModelMapping)
 		}
 		up.RequestOverride = u.RequestOverride
+		up.Timeout = u.Timeout
 		// 每上游 max_tokens 上限：config 表键 upstream.<name>.max_tokens_cap
 		// （不落 upstreams 表，避免动表结构；0=不限制，默认行为不变）
 		if v, ok := all["upstream."+u.Name+".max_tokens_cap"]; ok {
