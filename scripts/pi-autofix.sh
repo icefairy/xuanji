@@ -17,13 +17,16 @@ if [ -z "$ERRLOG" ]; then
 fi
 echo "[autofix] 日志源: $ERRLOG"
 
-# 优先 ERROR/panic/fatal（真问题）；没有再退回 WARN 尾部（可能是上游噪音）
-grep -aE '\b(ERROR|panic|fatal)\b' "$ERRLOG" | tail -60 > "$OUT/errors.txt" || true
+# 只处理非 429 的警告和 error：先剔除 429 行（上游限流噪音，非网关自身问题），
+# 再抓 ERROR/panic/fatal；无则退回 WARN 尾部（已滤掉 429，剩下的 WARN 才值得关注）
+grep -aE '\b(ERROR|panic|fatal)\b|\bWARN\b' "$ERRLOG" \
+  | grep -av 'status=429' \
+  | grep -av 'RATE_LIMITED' \
+  | grep -avE '429.*(Rate limit|RATE_LIMITED|FreeUsageLimit)' \
+  | tail -60 > "$OUT/errors.txt" || true
+# 若滤掉 429 后只剩空,视为无需修复
 if [ ! -s "$OUT/errors.txt" ]; then
-  grep -aE '\bWARN\b' "$ERRLOG" | tail -30 > "$OUT/errors.txt" || true
-fi
-if [ ! -s "$OUT/errors.txt" ]; then
-  echo "[autofix] 最近日志无错误，无需修复 ($(date '+%F %T'))"
+  echo "[autofix] 最近日志无非429的错误/警告，无需修复 ($(date '+%F %T'))"
   exit 0
 fi
 cp "$OUT/errors.txt" "$OUT/errors-recent.txt"
