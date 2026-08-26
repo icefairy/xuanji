@@ -165,33 +165,22 @@ func (s *Store) BackupDir() string {
 
 // Open 打开（或创建）SQLite 数据库文件，启用 WAL，建表。
 func Open(path string) (*Store, error) {
-	db, err := sql.Open("sqlite", path)
+	// 关键：PRAGMA 通过 DSN 的 _pragma 参数设置，而不是对 db 执行 Exec。
+	// busy_timeout / journal_mode / cache_size / mmap_size / synchronous 都是
+	// 【每连接】生效；而 database/sql 维护连接池。若用 db.Exec 设置 PRAGMA，
+	// 只作用于池中被拿到的第一条连接，随后并发新建的连接仍保留默认值
+	// busy_timeout=0，写锁冲突（WAL 下并发写、rebuild/prune/备份等）会立即返回
+	// SQLITE_BUSY——正是线上 daily_stats upsert 频繁 “database is locked (5)” 的
+	// 根因。modernc.org/sqlite 会把 DSN 中的 _pragma 应用到每一个新建的连接，
+	// 且 busy_timeout 排序最先执行。
+	dsn := path +
+		"?_pragma=busy_timeout(5000)" + // 写锁冲突时等待 5s 而非立即失败
+		"&_pragma=journal_mode(WAL)" +  // WAL：读不阻塞写，写不阻塞读
+		"&_pragma=cache_size(-20000)" + // 页缓存 20MB，热数据常驻内存
+		"&_pragma=mmap_size(67108864)" + // 读走内存映射，免磁盘 IO
+		"&_pragma=synchronous(NORMAL)" // WAL 下不丢已提交数据，换写入吞吐
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
-		return nil, err
-	}
-	// WAL 模式：读不阻塞写，写不阻塞读，适合网关并发写入场景。
-	if _, err := db.Exec(`PRAGMA journal_mode=WAL;`); err != nil {
-		db.Close()
-		return nil, err
-	}
-	// busy_timeout：写锁冲突时等待而非立即报错。
-	if _, err := db.Exec(`PRAGMA busy_timeout=5000;`); err != nil {
-		db.Close()
-		return nil, err
-	}
-	// 页缓存 + mmap：整个库（~百 KB）热数据常驻内存，查询无需磁盘 IO。
-	// cache_size=-20000 = 20MB；mmap_size=64MB 让读走内存映射。
-	if _, err := db.Exec(`PRAGMA cache_size=-20000;`); err != nil {
-		db.Close()
-		return nil, err
-	}
-	if _, err := db.Exec(`PRAGMA mmap_size=67108864;`); err != nil {
-		db.Close()
-		return nil, err
-	}
-	// synchronous=NORMAL：WAL 模式下崩溃最多丢最近提交，换取批量写入吞吐。
-	if _, err := db.Exec(`PRAGMA synchronous=NORMAL;`); err != nil {
-		db.Close()
 		return nil, err
 	}
 	s := &Store{db: db, path: path}
