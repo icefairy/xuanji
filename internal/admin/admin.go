@@ -2343,8 +2343,22 @@ func mimeForImage(name string) string {
 }
 
 // extractChatReply 从 OpenAI chat 响应提取模型回复文本（content 可能为数组，拼接 text 部分）。
+// 2026-08-26 增强：同时提取思考内容（兼容 reasoning_content / reasoning /
+// thinking_content / thinking 等上游字段名），并按「thinking + response」包裹返回，
+// 供对话调试页直观观察模型是否真实产出思考（deepseek-v4-flash 等思考型模型）。
+// 无思考时输出保持原状（纯内容）。
 func extractChatReply(data []byte) string {
-	content := gjson.GetBytes(data, "choices.0.message.content")
+	msg := gjson.GetBytes(data, "choices.0.message")
+	// 思考部分：按常见字段名依次尝试，取第一个非空
+	thinking := ""
+	for _, k := range []string{"reasoning_content", "reasoning", "thinking_content", "thinking"} {
+		if v := msg.Get(k).String(); v != "" {
+			thinking = v
+			break
+		}
+	}
+	content := msg.Get("content")
+	var text string
 	if content.IsArray() {
 		var sb strings.Builder
 		content.ForEach(func(_, part gjson.Result) bool {
@@ -2353,9 +2367,24 @@ func extractChatReply(data []byte) string {
 			}
 			return true
 		})
-		return sb.String()
+		text = sb.String()
+	} else {
+		text = content.String()
 	}
-	return content.String()
+	if thinking == "" {
+		return text
+	}
+	// 用户约定格式：thinking 换行包裹思考，再换行显示 response 内容
+	var sb strings.Builder
+	sb.WriteString("thinking\n")
+	sb.WriteString(thinking)
+	if text != "" {
+		sb.WriteString("\n\nresponse\n")
+		sb.WriteString(text)
+	} else {
+		sb.WriteString("\n\nresponse\n（上游未返回内容——思考写完即结束或 max_tokens 被思考耗尽）")
+	}
+	return sb.String()
 }
 
 // extractChatUsage 从 OpenAI chat 响应提取 token 用量（含前缀缓存命中/未命中）。

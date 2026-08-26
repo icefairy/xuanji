@@ -885,7 +885,18 @@
               <div v-if="m.images && m.images.length" class="thumbs">
                 <img v-for="(im, j) in m.images" :key="j" :src="im.preview" alt="" />
               </div>
-              <div>{{ m.content }}</div>
+              <template v-if="m.thinking">
+                <div style="color:#b8860b;font-weight:600;font-size:12px;margin-bottom:2px">
+                  thinking
+                </div>
+                <div
+                  style="color:#909399;font-size:13px;white-space:pre-wrap;word-break:break-word;border-left:3px solid #e6a23c;padding-left:8px;margin-bottom:8px"
+                  >{{ m.thinking }}</div
+                >
+                <div style="color:#67c23a;font-weight:600;font-size:12px;margin-bottom:2px">response</div>
+                <div style="white-space:pre-wrap;word-break:break-word">{{ m.content }}</div>
+              </template>
+              <div v-else>{{ m.content }}</div>
               <div v-if="m.routing" class="routing">
                 <template v-if="m.routing.upstream"
                   >上游：{{ m.routing.upstream }}（{{ m.routing.upstream_model || '?' }}）</template
@@ -3902,9 +3913,25 @@
                       content: "发送失败：" + d.error,
                     });
                   } else {
+                    // 拆解 thinking/response 包裹的回执：以 \"thinking\\n\" 开头且含 \"\\n\nresponse\\n\"
+                    var raw = d.reply || "";
+                    var thinking = null;
+                    var answer = raw;
+                    if (raw.indexOf("thinking\n") === 0) {
+                      var rest = raw.slice(9); // 去掉前缀 thinking\n
+                      var sep = rest.indexOf("\n\nresponse\n");
+                      if (sep >= 0) {
+                        thinking = rest.slice(0, sep);
+                        answer = rest.slice(sep + 11);
+                      } else {
+                        thinking = rest;
+                        answer = "";
+                      }
+                    }
                     self.chatMessages.push({
                       role: "assistant",
-                      content: d.reply || "（空回复）",
+                      content: thinking ? answer : (answer || "（空回复）"),
+                      thinking: thinking,
                       routing: d.routing || null,
                       usage: d.usage || null,
                     });
