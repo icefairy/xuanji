@@ -20,9 +20,15 @@ func init() {
 }
 
 // testCfg 构造一个含指定上游的配置；未给上游时使用一个占位上游。
+// Enabled 统一强制为 true：健康探测只对启用中的上游进行，零值 Enabled=false
+// 会被 checkOnce 跳过（见 TestDisabledUpstream_NoProbeAndUnknown），
+// 这里保持既有测试「默认视为可探测」的语义。
 func testCfg(upstreams ...config.Upstream) *config.Config {
 	if len(upstreams) == 0 {
 		upstreams = []config.Upstream{{Name: "up", BaseURL: "http://unused", APIKey: "k"}}
+	}
+	for i := range upstreams {
+		upstreams[i].Enabled = true
 	}
 	return &config.Config{Upstreams: upstreams}
 }
@@ -50,6 +56,56 @@ func startChatServer(t *testing.T, fail *atomic.Bool) *httptest.Server {
 	}))
 }
 
+// TestDisabledUpstream_NoProbeAndUnknown 验证禁用（Enabled=false）的上游被健康检查跳过：
+// 不发起任何探测请求（命中计数保持零），状态置 unknown（不参与 healthy/degraded/dead 计数）；
+// 重新启用后恢复正常探测（一次 checkOnce 即回 healthy 并产生一次真实探测）。
+func TestDisabledUpstream_NoProbeAndUnknown(t *testing.T) {
+	var hits atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	// Enabled 默认 false（零值）＝「禁用」上游；不经 testCfg（那里会强制启用），
+	// 探测配置齐全，若未跳过会产生真实请求
+	ck := New(&config.Config{Upstreams: []config.Upstream{{
+		Name:         "disabled-up",
+		BaseURL:      srv.URL,
+		APIKey:       "sk-test",
+		ModelMapping: map[string]string{"client": "server-model"},
+		HealthCheck: &config.HealthCheck{
+			Interval: config.Duration(10 * time.Millisecond),
+			Timeout:  config.Duration(time.Second),
+		},
+	}}})
+	defer ck.Close()
+
+	ctx := context.Background()
+	// 禁用状态连续多个周期：零命中、状态始终保持 unknown
+	for i := 0; i < 5; i++ {
+		ck.checkOnce(ctx, ck.states["disabled-up"])
+	}
+	if got := hits.Load(); got != 0 {
+		t.Fatalf("disabled upstream got %d probe hits, want 0", got)
+	}
+	if got := ck.Status("disabled-up"); got != StateUnknown {
+		t.Fatalf("disabled upstream status = %q, want unknown", got)
+	}
+
+	// 重新启用：下一次 checkOnce 走真实探测 → healthy，且命中计数 +1
+	ck.mu.Lock()
+	ck.states["disabled-up"].up.Enabled = true
+	ck.mu.Unlock()
+	ck.checkOnce(ctx, ck.states["disabled-up"])
+	if got := hits.Load(); got != 1 {
+		t.Fatalf("re-enabled upstream got %d probe hits, want 1", got)
+	}
+	if got := ck.Status("disabled-up"); got != StateHealthy {
+		t.Fatalf("re-enabled upstream status = %q, want healthy", got)
+	}
+}
+
 // TestPingPathVariants 验证探测路径拼接：OpenAI 兼容 → POST {base}/chat/completions
 // （不带 /v1 时拼 /chat/completions，带 /v1 时拼 /v1/chat/completions）；Ollama → GET /api/tags。
 func TestPingPathVariants(t *testing.T) {
@@ -72,7 +128,7 @@ func TestPingPathVariants(t *testing.T) {
 				w.WriteHeader(http.StatusOK)
 			}))
 			defer srv.Close()
-			up := config.Upstream{Name: "x", BaseURL: srv.URL + c.suffix, APIKey: "sk-test", Type: c.upType}
+			up := config.Upstream{Name: "x", BaseURL: srv.URL + c.suffix, APIKey: "sk-test", Type: c.upType, Enabled: true}
 			if c.upType != "ollama" {
 				// openai 探测需要模型名（chatProbe 无模型名会直接返回失败不发请求）
 				up.ModelMapping = map[string]string{"client": "server-model"}
