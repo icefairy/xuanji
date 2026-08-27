@@ -658,7 +658,13 @@
               </td>
               <td>
                 <span
-                  v-if="!u.enabled"
+                  v-if="u.arrears"
+                  class="badge badge-red"
+                  title="欠费标记：已停路由与健康检查，充值后点「测试」成功即自动恢复"
+                  >欠费</span
+                >
+                <span
+                  v-else-if="!u.enabled"
                   class="badge badge-gray"
                   title="已手动禁用，不参与转发"
                   >禁用</span

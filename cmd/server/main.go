@@ -553,6 +553,21 @@ func buildServeMux(cfg *config.Config, rt *router.Router, hc *health.Checker, re
 	}
 	// 模型单价查询：按上游真实模型名定价（默认价兜底在 store.PriceFor 内部）
 	pxHandler.SetPriceFor(storeInst.PriceFor)
+	// 欠费标记回调：上游命中余额不足类错误时自动写库 + 热重载。
+	// 幂等：已欠费则不再写库/reload（防并发重复重建）。
+	pxHandler.SetArrearsMarker(func(name string) {
+		if storeInst == nil || storeInst.IsArrears(name) {
+			return
+		}
+		if err := storeInst.SetUpstreamArrears(name, 1); err != nil {
+			slog.Error("mark upstream arrears failed", "upstream", name, "error", err)
+			return
+		}
+		slog.Warn("upstream marked as arrear, reloading", "upstream", name)
+		if err := reloadConfig(storeInst, rec); err != nil {
+			slog.Error("reload after arrear mark failed", "upstream", name, "error", err)
+		}
+	})
 	// 计费初始化：所有模型默认按 deepseek-v4-flash 定价
 	// （输入缓存命中 0.02 元/M，输入缓存未命中 1 元/M，输出 2 元/M）
 	storeInst.EnsureDefaultPrice()
