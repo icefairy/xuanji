@@ -785,9 +785,10 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 	if nb, changed := normalizeMaxTokens(reqBody, up); changed {
 		reqBody = nb
 	}
-	// prompt_cache_key 剥离：DeepSeek 官方私有缓存字段，OpenAI 兼容上游不认（收到即 400 UNKNOWN_FIELD）。
-	// 客户端（pi 等 agent 框架）常自动携带，转发前统一删除（上游仍走自动前缀缓存，功能无损失）。
-	if nb, changed := stripPromptCacheKey(reqBody); changed {
+	// prompt 缓存私有参数剥离（对所有上游无条件生效）：prompt_cache_key（DeepSeek 私有）与
+	// prompt_cache_retention（OpenAI 较新参数，聚合上游普遍不认），pi 等 agent 自动携带，
+	// 转发前统一删除（上游仍走自动前缀缓存，功能无损失）。
+	if nb, changed := stripPromptCacheParams(reqBody); changed {
 		reqBody = nb
 	}
 	if nb, changed := applyBestEffort(reqBody, model, h.cfg); changed {
