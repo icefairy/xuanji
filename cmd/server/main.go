@@ -568,6 +568,25 @@ func buildServeMux(cfg *config.Config, rt *router.Router, hc *health.Checker, re
 			slog.Error("reload after arrear mark failed", "upstream", name, "error", err)
 		}
 	})
+	// 模型级欠费标记回调（per_model_billing 上游）：写 upstream_model_arrears 表。
+	// 内存缓存已在 markModelArrear 中先行更新（路由立即跳过），无需热重载；
+	// reload/重启后的新 Handler 由下方 LoadModelArrears 从 DB 重建缓存。
+	pxHandler.SetArrearsModelMarker(func(upstream, model, reason string) {
+		if storeInst == nil {
+			return
+		}
+		if err := storeInst.SetModelArrears(upstream, model, reason); err != nil {
+			slog.Error("mark model arrears failed", "upstream", upstream, "model", model, "error", err)
+			return
+		}
+		slog.Warn("upstream model marked as arrear", "upstream", upstream, "model", model)
+	})
+	// 启动/reload 后从 DB 加载模型级欠费缓存
+	if rows, lerr := storeInst.ListModelArrears(); lerr == nil {
+		pxHandler.LoadModelArrears(rows)
+	} else {
+		slog.Error("load model arrears failed", "error", lerr)
+	}
 	// 计费初始化：所有模型默认按 deepseek-v4-flash 定价
 	// （输入缓存命中 0.02 元/M，输入缓存未命中 1 元/M，输出 2 元/M）
 	storeInst.EnsureDefaultPrice()

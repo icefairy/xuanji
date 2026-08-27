@@ -2439,6 +2439,18 @@
             </label>
           </div>
           <div class="form-group">
+            <label
+              style="display: flex; align-items: center; gap: 8px; cursor: pointer"
+            >
+              <input
+                type="checkbox"
+                v-model="editForm.per_model_billing"
+                style="cursor: pointer"
+              />
+              模型独立计费（欠费按模型隔离：某模型免费额度耗尽仅停用该模型，同上游其它模型继续可用；适合阿里云百炼等每模型独立额度的平台。不勾选时欠费整条上游停用）
+            </label>
+          </div>
+          <div class="form-group">
             <label>模型列表（逗号分隔，如 glm4:9b, qwen2.5:7b）</label
             ><input v-model="editForm.models" />
           </div>
@@ -3154,7 +3166,7 @@
               model_mapping: "{}",
             },
             showEditDialog: false,
-            editForm: { billing_exempt: false, request_override: "" },
+            editForm: { billing_exempt: false, per_model_billing: false, request_override: "" },
             fetchingModels: false,
             showCloneDialog: false,
             cloneForm: { name: "", api_key: "" },
@@ -4826,6 +4838,9 @@
               }
               if (!this.editForm.request_override)
                 this.editForm.request_override = "";
+              // per_model_billing 开关：上游列表 API 返回布尔 arrears 同层的 per_model_billing
+              //（config 表键 upstream.<name>.per_model_billing，后端读取后随 upstreamResponse 返回）
+              this.editForm.per_model_billing = !!this.editForm.per_model_billing;
               // models 统一成逗号分隔字符串（兼容数组与历史 JSON 字符串两种来源）
               if (Array.isArray(this.editForm.models)) {
                 this.editForm.models = this.editForm.models.join(", ");
@@ -4862,6 +4877,9 @@
                     request_override: f.request_override || "",
                     timeout: parseInt(f.timeout) || 0,
                     billing_exempt: f.billing_exempt ? 1 : 0,
+                    // 注意必须发布尔而非 0/1：后端 raw["per_model_billing"] 用 json.Unmarshal 到 bool，
+                    // 数字会解析失败导致开关静默不生效
+                    per_model_billing: !!f.per_model_billing,
                   },
                 })
                 .then(function () {
