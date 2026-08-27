@@ -347,7 +347,9 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 		up := candidates[i]
 		handled, retryable, ferr, _, _, _, _ := h.forwardOnce(rec, r, body, up, model, stream, false)
-		if ferr != nil && h.health != nil {
+		// 429 限流不是上游故障（几秒后可自愈），不降低健康状态；
+		// 只有真实故障（5xx/连接错误）才触发 MarkFailure 影响健康等级。
+		if ferr != nil && h.health != nil && !strings.Contains(ferr.Error(), "rate limited") {
 			h.health.MarkFailure(up.Name)
 		}
 		// 连接类错误（网络不可达/超时/连接拒绝）说明可能是本地网络问题而非上游故障
@@ -917,7 +919,18 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 		// 避免 messages/base64 巨大时盲截前 800 字符看不到有用信息（可重试+不可重试都打）。
 		LogUpstreamErrorDetail(h.log, up, model, upstreamModel, resp.StatusCode, reqBody, respBody)
 		if shouldRetry {
-			// 返回可重试；带原因标记 fastfail：status + 响应体摘要（截断 500 字符防刷屏）
+			// 429 限流 ≠ 故障：不进 fastfail 黑名单（避免标红/5 分钟禁用），
+			// 改走秒级 cooldown（由 cooldown_upstreams + cooldown_seconds 控制），
+			// 冷却到期后自动恢复再试；当前请求仍切下一个上游重试。
+			// 5xx 真实故障继续走 fastfail 标记（分钟级黑名单），由 probe 恢复。
+			if resp.StatusCode == http.StatusTooManyRequests {
+				if h.needCooldownForUpstream(up.Name) {
+					h.markCooldown(up.Name, upstreamModel)
+				}
+				h.log.Info("upstream rate limited (429), cooldown instead of fastfail",
+					"upstream", up.Name, "model", upstreamModel)
+				return false, true, fmt.Errorf("upstream rate limited: %s", resp.Status), 0, 0, 0, 0
+			}
 			if h.fastFail != nil {
 				h.fastFail.MarkFailedWithReason(up.Name, upstreamModel,
 					fmt.Sprintf("status=%d body=%s", resp.StatusCode, truncateLogStr(string(respBody), 500)))

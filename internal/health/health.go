@@ -56,7 +56,7 @@ const (
 // 默认健康检查参数。
 const (
 	// DefaultInterval 是健康检查间隔的默认值。
-	DefaultInterval = 30 * time.Second
+	DefaultInterval = 120 * time.Second
 	// DefaultTimeout 是单次健康检查超时的默认值。
 	// 2026-08-25 5s→15s：基元律动/tokenrhythm 等上游无凭证探测响应较慢（限流排队/慢生成），
 	// 5s 易超时误判 dead；15s 在 30s 探测间隔内仍留有充足冗余且不会拖慢整体节奏。
