@@ -428,3 +428,56 @@ func TestOpen_OldDBAddsVisionColumns(t *testing.T) {
 		t.Fatalf("rules count = %d, want 2", len(all))
 	}
 }
+
+// TestOpen_OldDBAddsKindColumn 验证旧库（无 kind 列的 upstreams 表）自动迁移：
+// Open 时 ensureColumn 幂等补上 kind 列，旧数据读取正常（Kind 为空串，LoadFromDB 会补默认 chat）。
+func TestOpen_OldDBAddsKindColumn(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "old.db")
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open raw: %v", err)
+	}
+	// 用旧版建表语句模拟老库（无 kind 列）
+	if _, err := raw.Exec(`CREATE TABLE upstreams (
+		id            INTEGER PRIMARY KEY AUTOINCREMENT,
+		name          TEXT    NOT NULL UNIQUE,
+		type          TEXT    NOT NULL DEFAULT '',
+		base_url      TEXT    NOT NULL DEFAULT '',
+		api_key       TEXT    NOT NULL DEFAULT '',
+		tier          TEXT    NOT NULL DEFAULT '',
+		priority      INTEGER NOT NULL DEFAULT 0,
+		weight        INTEGER NOT NULL DEFAULT 0,
+		models        TEXT    NOT NULL DEFAULT '[]',
+		model_mapping TEXT    NOT NULL DEFAULT '{}',
+		created_at    TEXT    NOT NULL DEFAULT (datetime('now')),
+		updated_at    TEXT    NOT NULL DEFAULT (datetime('now'))
+	);`); err != nil {
+		t.Fatalf("create old table: %v", err)
+	}
+	if _, err := raw.Exec(`INSERT INTO upstreams (name, type, base_url, api_key, models) VALUES ('legacy-up', 'openai', 'http://x/v1', 'k', '["m1"]')`); err != nil {
+		t.Fatalf("insert old row: %v", err)
+	}
+	raw.Close()
+
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open old db: %v", err)
+	}
+	defer s.Close()
+
+	// kind 列已自动补上
+	cols := columnNames(t, s, "upstreams")
+	if !contains(cols, "kind") {
+		t.Fatalf("migration missing kind column, got %v", cols)
+	}
+
+	// 旧数据读取正常，kind 为默认空串
+	u, err := s.GetUpstream("legacy-up")
+	if err != nil {
+		t.Fatalf("GetUpstream(legacy-up): %v", err)
+	}
+	if u.Kind != "" {
+		t.Errorf("old row kind = %q, want empty (加载时补默认 chat)", u.Kind)
+	}
+}

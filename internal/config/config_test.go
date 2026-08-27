@@ -173,6 +173,18 @@ routing:
 `,
 			wantErr: "upstreams must not be empty",
 		},
+		{
+			name: "invalid kind",
+			config: `
+upstreams:
+  - name: u1
+    base_url: http://example.com/v1
+    api_key: k
+    models: [m1]
+    kind: video-gen
+`,
+			wantErr: `kind "video-gen" is invalid`,
+		},
 	}
 
 	for _, tc := range cases {
@@ -433,5 +445,36 @@ func TestLoadFromDB_ClientAnalysis(t *testing.T) {
 	}
 	if cfg.Proxy.ClientAnalysisInterval != 600 {
 		t.Errorf("ClientAnalysisInterval = %d, want 600 (invalid falls back)", cfg.Proxy.ClientAnalysisInterval)
+	}
+}
+
+// TestLoad_KindDefaults 验证上游能力字段（kind）：留空默认 chat；显式配置各合法值原样保留。
+func TestLoad_KindDefaults(t *testing.T) {
+	dir := writeFiles(t, map[string]string{"config.yaml": `
+upstreams:
+  - name: chat-up
+    base_url: http://example.com/v1
+    api_key: k
+    models: [m1]
+  - name: tts-up
+    base_url: http://example.com/v1
+    api_key: k
+    models: [tts-1]
+    kind: tts
+  - name: emb-up
+    base_url: http://example.com/v1
+    api_key: k
+    models: [bge-m3]
+    kind: emb
+`})
+	cfg, err := Load(filepath.Join(dir, "config.yaml"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := map[string]string{"chat-up": "chat", "tts-up": "tts", "emb-up": "emb"}
+	for _, up := range cfg.Upstreams {
+		if got := want[up.Name]; up.Kind != got {
+			t.Errorf("upstream %q kind = %q, want %q", up.Name, up.Kind, got)
+		}
 	}
 }
