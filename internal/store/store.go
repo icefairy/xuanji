@@ -39,18 +39,24 @@ type Record struct {
 
 // UpstreamRow 是 upstreams 表的行映射。
 type UpstreamRow struct {
-	ID              uint   `json:"id"`
-	Name            string `json:"name"`
-	Type            string `json:"type"`
-	BaseURL         string `json:"base_url"`
-	APIKey          string `json:"api_key"`
-	Tier            string `json:"tier"`
-	Priority        int    `json:"priority"`
-	Weight          int    `json:"weight"`
-	Models          string `json:"models"`
-	ModelMapping    string `json:"model_mapping"`
-	Enabled         int    `json:"enabled"`          // 1=启用 0=禁用（禁用的不参与转发路由）
-	BillingExempt   int    `json:"billing_exempt"`   // 1=不参与计费（统计费用记 0，路由不受影响）
+	ID   uint   `json:"id"`
+	Name string `json:"name"`
+	Type string `json:"type"`
+	// Kind 能力类型：chat（默认）| emb | rerank | tts | asr | image；空 = chat。
+	// 健康检查按 Kind 选探测端点，避免把纯 TTS/embedding 等上游用 chat 探测误判 dead。
+	Kind          string `json:"kind"`
+	BaseURL       string `json:"base_url"`
+	APIKey        string `json:"api_key"`
+	Tier          string `json:"tier"`
+	Priority      int    `json:"priority"`
+	Weight        int    `json:"weight"`
+	Models        string `json:"models"`
+	ModelMapping  string `json:"model_mapping"`
+	Enabled       int    `json:"enabled"`        // 1=启用 0=禁用（禁用的不参与转发路由）
+	BillingExempt int    `json:"billing_exempt"` // 1=不参与计费（统计费用记 0，路由不受影响）
+	// Arrears 欠费标记：1=该上游已因「余额不足」类错误被自动标记。
+	// 标记后停止路由与健康检查，等待人工充值后经「测试上游」成功自动清除。
+	Arrears         int    `json:"arrears"`
 	RequestOverride string `json:"request_override"` // 请求体复写（JSON 字符串）：转发前强制覆盖请求体部分字段，空=不启用
 	// Timeout 上游请求超时秒数（连接+非流式整体）；0=跟随全局 retry.upstream_timeout（默认 60）。
 	// 慢速兜底上游（如本地一体机）建议单独调大（如 300），避免响应稍慢被全局超时误判失败导致 502。
@@ -58,6 +64,9 @@ type UpstreamRow struct {
 	// TimeoutPtr 区分 JSON body 中 timeout 字段"未传"(nil) 与"显式传 0"。
 	// UpdateUpstream 用它避免旧客户端未传 timeout 时把已配置的上游超时清零。
 	TimeoutPtr *int `json:"-"`
+	// KindPtr 区分 JSON body 中 kind 字段"未传"(nil) 与"显式传空串"。
+	// UpdateUpstream 用它避免旧客户端未传 kind 时把已配置的能力类型清空回默认 chat。
+	KindPtr *string `json:"-"`
 
 	// EnabledPtr 区分 JSON body 中 enabled 字段"未传"(nil) 与"显式传 0/1"。
 	// UpdateUpstream 用它避免未传时误禁用上游。
@@ -175,7 +184,7 @@ func Open(path string) (*Store, error) {
 	// 且 busy_timeout 排序最先执行。
 	dsn := path +
 		"?_pragma=busy_timeout(5000)" + // 写锁冲突时等待 5s 而非立即失败
-		"&_pragma=journal_mode(WAL)" +  // WAL：读不阻塞写，写不阻塞读
+		"&_pragma=journal_mode(WAL)" + // WAL：读不阻塞写，写不阻塞读
 		"&_pragma=cache_size(-20000)" + // 页缓存 20MB，热数据常驻内存
 		"&_pragma=mmap_size(67108864)" + // 读走内存映射，免磁盘 IO
 		"&_pragma=synchronous(NORMAL)" // WAL 下不丢已提交数据，换写入吞吐
@@ -283,6 +292,7 @@ func (s *Store) init() error {
 		weight       INTEGER NOT NULL DEFAULT 0,
 		models       TEXT    NOT NULL DEFAULT '[]',
 		model_mapping TEXT   NOT NULL DEFAULT '{}',
+		kind         TEXT    NOT NULL DEFAULT '',    -- 能力类型：chat/emb/rerank/tts/asr/image，空=chat
 		created_at   TEXT    NOT NULL DEFAULT (datetime('now')),
 		updated_at   TEXT    NOT NULL DEFAULT (datetime('now'))
 	);
@@ -409,8 +419,12 @@ func (s *Store) init() error {
 	ensureColumn(s.db, "upstreams", "billing_exempt", "billing_exempt INTEGER NOT NULL DEFAULT 0")
 	// 迁移：upstreams 加 request_override 列（请求体复写：转发前强制覆盖请求体部分字段）
 	ensureColumn(s.db, "upstreams", "request_override", "request_override TEXT NOT NULL DEFAULT ''")
+	// 迁移：upstreams 加 arrears 列（欠费标记：停路由+停健康检查，测试通过后自动清除）
+	ensureColumn(s.db, "upstreams", "arrears", "arrears INTEGER NOT NULL DEFAULT 0")
 	// 迁移：upstreams 加 timeout 列（上游请求超时秒数；0=跟随全局 retry.upstream_timeout）
 	ensureColumn(s.db, "upstreams", "timeout", "timeout INTEGER NOT NULL DEFAULT 0")
+	// 迁移：upstreams 加 kind 列（能力类型 chat|emb|rerank|tts|asr|image，健康检查按此选探测端点；空=chat）
+	ensureColumn(s.db, "upstreams", "kind", "kind TEXT NOT NULL DEFAULT ''")
 	// 迁移：routing_rules 加 vision / vision_fallback 列（多模态兜底，老库自动补列）
 	ensureColumn(s.db, "routing_rules", "vision", "vision INTEGER NOT NULL DEFAULT 0")
 	ensureColumn(s.db, "routing_rules", "vision_fallback", "vision_fallback TEXT NOT NULL DEFAULT ''")
@@ -990,7 +1004,7 @@ func (r *Recorder) Close() {
 
 // ListUpstreams 返回所有上游。
 func (s *Store) ListUpstreams() ([]UpstreamRow, error) {
-	rows, err := s.db.Query(`SELECT id, name, type, base_url, api_key, tier, priority, weight, models, model_mapping, enabled, billing_exempt, request_override, timeout, created_at, updated_at FROM upstreams ORDER BY id`)
+	rows, err := s.db.Query(`SELECT id, name, type, kind, base_url, api_key, tier, priority, weight, models, model_mapping, enabled, billing_exempt, request_override, timeout, arrears, created_at, updated_at FROM upstreams ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -999,7 +1013,7 @@ func (s *Store) ListUpstreams() ([]UpstreamRow, error) {
 	var out []UpstreamRow
 	for rows.Next() {
 		var u UpstreamRow
-		if err := rows.Scan(&u.ID, &u.Name, &u.Type, &u.BaseURL, &u.APIKey, &u.Tier, &u.Priority, &u.Weight, &u.Models, &u.ModelMapping, &u.Enabled, &u.BillingExempt, &u.RequestOverride, &u.Timeout, &u.CreatedAt, &u.UpdatedAt); err != nil {
+		if err := rows.Scan(&u.ID, &u.Name, &u.Type, &u.Kind, &u.BaseURL, &u.APIKey, &u.Tier, &u.Priority, &u.Weight, &u.Models, &u.ModelMapping, &u.Enabled, &u.BillingExempt, &u.RequestOverride, &u.Timeout, &u.Arrears, &u.CreatedAt, &u.UpdatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, u)
@@ -1010,8 +1024,8 @@ func (s *Store) ListUpstreams() ([]UpstreamRow, error) {
 // GetUpstream 按名称查询上游。
 func (s *Store) GetUpstream(name string) (*UpstreamRow, error) {
 	var u UpstreamRow
-	err := s.db.QueryRow(`SELECT id, name, type, base_url, api_key, tier, priority, weight, models, model_mapping, enabled, billing_exempt, request_override, timeout, created_at, updated_at FROM upstreams WHERE name = ?`, name).
-		Scan(&u.ID, &u.Name, &u.Type, &u.BaseURL, &u.APIKey, &u.Tier, &u.Priority, &u.Weight, &u.Models, &u.ModelMapping, &u.Enabled, &u.BillingExempt, &u.RequestOverride, &u.Timeout, &u.CreatedAt, &u.UpdatedAt)
+	err := s.db.QueryRow(`SELECT id, name, type, kind, base_url, api_key, tier, priority, weight, models, model_mapping, enabled, billing_exempt, request_override, timeout, arrears, created_at, updated_at FROM upstreams WHERE name = ?`, name).
+		Scan(&u.ID, &u.Name, &u.Type, &u.Kind, &u.BaseURL, &u.APIKey, &u.Tier, &u.Priority, &u.Weight, &u.Models, &u.ModelMapping, &u.Enabled, &u.BillingExempt, &u.RequestOverride, &u.Timeout, &u.Arrears, &u.CreatedAt, &u.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -1030,8 +1044,8 @@ func (s *Store) CreateUpstream(u *UpstreamRow) error {
 		billingExempt = *u.BillingExemptPtr
 	}
 	_, err := s.db.Exec(
-		`INSERT INTO upstreams (name, type, base_url, api_key, tier, priority, weight, models, model_mapping, enabled, billing_exempt, request_override, timeout) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		u.Name, u.Type, u.BaseURL, u.APIKey, u.Tier, u.Priority, u.Weight, u.Models, u.ModelMapping, enabled, billingExempt, u.RequestOverride, u.Timeout,
+		`INSERT INTO upstreams (name, type, kind, base_url, api_key, tier, priority, weight, models, model_mapping, enabled, billing_exempt, request_override, timeout) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		u.Name, u.Type, u.Kind, u.BaseURL, u.APIKey, u.Tier, u.Priority, u.Weight, u.Models, u.ModelMapping, enabled, billingExempt, u.RequestOverride, u.Timeout,
 	)
 	return err
 }
@@ -1043,7 +1057,7 @@ func (s *Store) CreateUpstream(u *UpstreamRow) error {
 func (s *Store) UpdateUpstream(name string, u *UpstreamRow) error {
 	var setExpr string
 	var args []any
-	args = append(args, u.Name, u.Type, u.BaseURL, u.APIKey, u.Tier, u.Priority, u.Weight, u.Models, u.ModelMapping, u.RequestOverride)
+	args = append(args, u.Name, u.Type, u.Kind, u.BaseURL, u.APIKey, u.Tier, u.Priority, u.Weight, u.Models, u.ModelMapping, u.RequestOverride)
 	if u.EnabledPtr != nil {
 		setExpr += ", enabled=?"
 		args = append(args, *u.EnabledPtr)
@@ -1056,9 +1070,13 @@ func (s *Store) UpdateUpstream(name string, u *UpstreamRow) error {
 		setExpr += ", timeout=?"
 		args = append(args, *u.TimeoutPtr)
 	}
+	if u.KindPtr != nil {
+		setExpr += ", kind=?"
+		args = append(args, *u.KindPtr)
+	}
 	args = append(args, name)
 	_, err := s.db.Exec(
-		`UPDATE upstreams SET name=?, type=?, base_url=?, api_key=?, tier=?, priority=?, weight=?, models=?, model_mapping=?, request_override=?`+setExpr+`, updated_at=datetime('now') WHERE name=?`,
+		`UPDATE upstreams SET name=?, type=?, kind=?, base_url=?, api_key=?, tier=?, priority=?, weight=?, models=?, model_mapping=?, request_override=?`+setExpr+`, updated_at=datetime('now') WHERE name=?`,
 		args...,
 	)
 	return err
@@ -1071,6 +1089,22 @@ func (s *Store) SetUpstreamEnabled(name string, enabled int) error {
 	}
 	_, err := s.db.Exec(`UPDATE upstreams SET enabled=?, updated_at=datetime('now') WHERE name=?`, enabled, name)
 	return err
+}
+
+// SetUpstreamArrears 写入欠费标记（1=标记停路由停健康检查，0=恢复）。
+func (s *Store) SetUpstreamArrears(name string, arrears int) error {
+	if arrears != 0 {
+		arrears = 1
+	}
+	_, err := s.db.Exec(`UPDATE upstreams SET arrears=?, updated_at=datetime('now') WHERE name=?`, arrears, name)
+	return err
+}
+
+// IsArrears 返回上游是否处于欠费标记中；查询失败视为 false（不阻断转发）。
+func (s *Store) IsArrears(name string) bool {
+	var n int
+	err := s.db.QueryRow(`SELECT arrears FROM upstreams WHERE name = ?`, name).Scan(&n)
+	return err == nil && n == 1
 }
 
 // DeleteUpstream 删除上游，并同步清理所有路由规则中对该上游的引用

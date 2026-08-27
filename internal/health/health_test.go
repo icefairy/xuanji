@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -99,7 +100,8 @@ func TestPingPathVariants(t *testing.T) {
 // TestChatProbe_OpenAIUpstream 验证 OpenAI 兼容上游（openai 类型）走 POST /chat/completions 探测：
 // 模拟微信端点行为——GET /models 一律 400 "missing required parameter: model"，
 // 但 chat 探测 2xx → healthy；探测请求不带 Authorization（无凭证模式）；
-// 连续 chat 5xx 失败 → degraded；模型名取映射第一个 value。
+// 连续 chat 5xx 失败 → degraded；模型名用占位名 xuanji-probe（2026-08-26 起，
+// 不再取 ModelMapping 真实模型：无鉴权上游下真实名会每 30s 真实推理一次）。
 func TestChatProbe_OpenAIUpstream(t *testing.T) {
 	var chatFail atomic.Bool
 	var gotPath, gotModel, gotAuth string
@@ -149,8 +151,8 @@ func TestChatProbe_OpenAIUpstream(t *testing.T) {
 	if gotPath != "/v1/chat/completions" {
 		t.Errorf("probe path = %q, want /v1/chat/completions", gotPath)
 	}
-	if gotModel != "Deepseek-v4-flash" {
-		t.Errorf("probe model = %q, want Deepseek-v4-flash (映射第一个 value)", gotModel)
+	if gotModel != probeModelName {
+		t.Errorf("probe model = %q, want %q (占位模型名，零推理消耗)", gotModel, probeModelName)
 	}
 	if gotAuth != "" {
 		t.Errorf("Authorization = %q, want empty (无凭证探测)", gotAuth)
@@ -168,8 +170,10 @@ func TestChatProbe_OpenAIUpstream(t *testing.T) {
 	}
 }
 
-// TestAuthRejectedIsHealthy 验证无凭证探测核心语义：上游对探测请求返回 401/403
-// （鉴权拒绝）视为健康——证明服务在线且鉴权层正常，零 token 消耗。
+// TestAuthRejectedIsHealthy 验证无凭证探活核心语义（2026-08-26 统一）：上游对探测请求返回
+// 任意 4xx（400/401/403/404/405/429）均视为健康——请求已穿透到应用层被业务逻辑处理，
+// 恰好证明网络通、端点存在、服务进程活。典型如纯 TTS 模型对 chat 探测返回 400
+// "no chat template"：此前误判 dead，现在正确判健康。仅 5xx 判定失败。
 func TestAuthRejectedIsHealthy(t *testing.T) {
 	cases := []struct {
 		name string
@@ -178,8 +182,12 @@ func TestAuthRejectedIsHealthy(t *testing.T) {
 	}{
 		{name: "401视为健康", code: http.StatusUnauthorized, want: StateHealthy},
 		{name: "403视为健康", code: http.StatusForbidden, want: StateHealthy},
-		{name: "400仍失败", code: http.StatusBadRequest, want: StateDegraded},
+		{name: "400视为健康", code: http.StatusBadRequest, want: StateHealthy},
+		{name: "404视为健康", code: http.StatusNotFound, want: StateHealthy},
+		{name: "405视为健康", code: http.StatusMethodNotAllowed, want: StateHealthy},
+		{name: "429视为健康", code: http.StatusTooManyRequests, want: StateHealthy},
 		{name: "500仍失败", code: http.StatusInternalServerError, want: StateDegraded},
+		{name: "502仍失败", code: http.StatusBadGateway, want: StateDegraded},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -346,58 +354,44 @@ func TestHealthyUpstreams_UnknownUpstreamKept(t *testing.T) {
 	}
 }
 
-// TestPingFallback405ToEmbeddings 验证 GET /models 返回 405/404 时回退 POST /embeddings：
-// POST 2xx → ok=true（健康）；POST 非 2xx → ok=false（保持原失败判定）。
-// 模拟 Cloudflare Workers AI：GET 不支持（405 7001），仅 POST /embeddings 可用。
+// TestPingFallback405ToEmbeddings 验证 chat 探测遇 404/405（chat 端点不存在，典型于
+// 仅提供 embeddings 的网关如 Cloudflare Workers AI）时回退 POST /embeddings：
+// 回退 2xx → 健康且取得 embeddings 端点延迟；回退失败（500）也保持 4xx 豁免的健康判定
+// （2026-08-26 起，404/405 本身已是健康信号，不再误判 dead）。探测一律用占位模型名。
 func TestPingFallback405ToEmbeddings(t *testing.T) {
 	cases := []struct {
-		name      string
-		getStatus int // GET /models 状态码
-		embStatus int // POST /embeddings 状态码（0 表示服务端不应收到 POST）
-		modelMap  map[string]string
-		models    []string
-		wantOK    bool
+		name        string
+		chatStatus  int  // POST /chat/completions 状态码
+		embStatus   int  // POST /embeddings 状态码（0 表示服务端不应收到 POST）
+		wantOK      bool // 最终探测结果
+		wantEmbFall bool // 是否发生 embeddings 回退请求
 	}{
 		{
-			name:      "405+POST200→健康",
-			getStatus: http.StatusMethodNotAllowed,
-			embStatus: http.StatusOK,
-			modelMap:  map[string]string{"bge-m3": "bge-m3"},
-			wantOK:    true,
+			name:        "405+emb200→健康且取emb延迟",
+			chatStatus:  http.StatusMethodNotAllowed,
+			embStatus:   http.StatusOK,
+			wantOK:      true,
+			wantEmbFall: true,
 		},
 		{
-			name:      "405+POST500→失败",
-			getStatus: http.StatusMethodNotAllowed,
-			embStatus: http.StatusInternalServerError,
-			modelMap:  map[string]string{"bge-m3": "bge-m3"},
-			wantOK:    false,
+			name:        "405+emb500→仍健康（4xx豁免）",
+			chatStatus:  http.StatusMethodNotAllowed,
+			embStatus:   http.StatusInternalServerError,
+			wantOK:      true,
+			wantEmbFall: true,
 		},
 		{
-			name:      "404+POST200→健康",
-			getStatus: http.StatusNotFound,
-			embStatus: http.StatusOK,
-			modelMap:  map[string]string{"bge-m3": "bge-m3"},
-			wantOK:    true,
+			name:        "404+emb200→健康",
+			chatStatus:  http.StatusNotFound,
+			embStatus:   http.StatusOK,
+			wantOK:      true,
+			wantEmbFall: true,
 		},
 		{
-			name:      "500不触发回退",
-			getStatus: http.StatusInternalServerError,
-			embStatus: 0,
-			modelMap:  map[string]string{"bge-m3": "bge-m3"},
-			wantOK:    false,
-		},
-		{
-			name:      "ModelMapping空取Models首元素",
-			getStatus: http.StatusMethodNotAllowed,
-			embStatus: http.StatusOK,
-			models:    []string{"@cf/baai/bge-m3"},
-			wantOK:    true,
-		},
-		{
-			name:      "模型名都为空不触发回退",
-			getStatus: http.StatusMethodNotAllowed,
-			embStatus: 0,
-			wantOK:    false,
+			name:       "500不触发回退→失败",
+			chatStatus: http.StatusInternalServerError,
+			embStatus:  0,
+			wantOK:     false,
 		},
 	}
 	for _, c := range cases {
@@ -410,7 +404,7 @@ func TestPingFallback405ToEmbeddings(t *testing.T) {
 					if got := r.Header.Get("Authorization"); got != "" {
 						t.Errorf("Authorization = %q, want empty (无凭证探测)", got)
 					}
-					w.WriteHeader(c.getStatus)
+					w.WriteHeader(c.chatStatus)
 					_, _ = io.WriteString(w, `{"code":7001,"message":"chat endpoint not supported"}`)
 				case "/embeddings":
 					if c.embStatus == 0 {
@@ -427,19 +421,16 @@ func TestPingFallback405ToEmbeddings(t *testing.T) {
 			}))
 			defer srv.Close()
 
-			up := config.Upstream{
-				Name:         "cfcdn",
-				BaseURL:      srv.URL,
-				APIKey:       "sk-test",
-				ModelMapping: c.modelMap,
-				Models:       c.models,
-			}
+			up := config.Upstream{Name: "cfcdn", BaseURL: srv.URL, APIKey: "sk-test"}
 			ck := New(testCfg(up))
 			defer ck.Close()
 
 			out := ck.ping(context.Background(), &upstreamState{up: &up, timeout: 2 * time.Second})
 			if out.ok != c.wantOK {
 				t.Errorf("ok = %v, want %v (out=%+v)", out.ok, c.wantOK, out)
+			}
+			if (embReqMethod != "") != c.wantEmbFall {
+				t.Errorf("embeddings fallback happened = %v, want %v", embReqMethod != "", c.wantEmbFall)
 			}
 			if c.embStatus != 0 {
 				// 验证回退请求的姿势：POST + JSON + 无凭证（2026-08-24 统一）
@@ -452,7 +443,7 @@ func TestPingFallback405ToEmbeddings(t *testing.T) {
 				if embReqAuth != "" {
 					t.Errorf("Authorization = %q, want empty (无凭证探测)", embReqAuth)
 				}
-				// 验证请求体：真实模型名 + input=ping
+				// 验证请求体：占位模型名 + input=ping
 				var payload struct {
 					Model string `json:"model"`
 					Input string `json:"input"`
@@ -460,12 +451,8 @@ func TestPingFallback405ToEmbeddings(t *testing.T) {
 				if err := json.Unmarshal(embReqBody, &payload); err != nil {
 					t.Fatalf("decode embeddings body: %v", err)
 				}
-				wantModel := "bge-m3"
-				if len(c.models) > 0 {
-					wantModel = c.models[0]
-				}
-				if payload.Model != wantModel || payload.Input != "ping" {
-					t.Errorf("embeddings payload = %+v, want {model:%s input:ping}", payload, wantModel)
+				if payload.Model != probeModelName || payload.Input != "ping" {
+					t.Errorf("embeddings payload = %+v, want {model:%s input:ping}", payload, probeModelName)
 				}
 			}
 		})
@@ -584,5 +571,137 @@ func TestChatProbe_429TreatedAsHealthy(t *testing.T) {
 	ck.checkOnce(ctx, st)
 	if got := ck.Status("limit-up"); got != StateHealthy {
 		t.Errorf("status after 429 probes = %q, want healthy", got)
+	}
+}
+
+// TestKindProbes 按 Upstream.Kind 分派探测端点（2026-08-26 新增）：
+//
+//	chat → /chat/completions, emb → /embeddings, rerank → /rerank,
+//	tts → /audio/speech, asr → /audio/transcriptions, image → /images/generations
+//
+// 验证各 kind 请求打对路径、body 携带占位模型名 probeModelName、且对应用层业务拒绝
+// （4xx，如 TTS 模型无 chat template 返回 400 "no chat template"）判健康不误判 dead。
+func TestKindProbes(t *testing.T) {
+	cases := []struct {
+		name     string
+		kind     string // 上游 kind；"" 为默认 chat
+		wantPath string
+		// JSON 请求体验证（asr 为 multipart 由 handler 内另行断言）；nil 跳过
+		verifyBody func(t *testing.T, body []byte)
+	}{
+		{
+			name: "chat默认", kind: "", wantPath: "/chat/completions",
+			verifyBody: func(t *testing.T, body []byte) {
+				var p chatProbeReq
+				mustDecode(t, body, &p)
+				if p.Model != probeModelName || p.MaxTokens != 1 || len(p.Messages) != 1 {
+					t.Errorf("chat payload = %+v, want model=%s max_tokens=1", p, probeModelName)
+				}
+			},
+		},
+		{
+			name: "emb", kind: "emb", wantPath: "/embeddings",
+			verifyBody: func(t *testing.T, body []byte) {
+				var p embeddingsProbeReq
+				mustDecode(t, body, &p)
+				if p.Model != probeModelName || p.Input != "ping" {
+					t.Errorf("emb payload = %+v", p)
+				}
+			},
+		},
+		{
+			name: "rerank", kind: "rerank", wantPath: "/rerank",
+			verifyBody: func(t *testing.T, body []byte) {
+				var p rerankProbeReq
+				mustDecode(t, body, &p)
+				if p.Model != probeModelName || p.Query != "ping" || len(p.Documents) == 0 {
+					t.Errorf("rerank payload = %+v", p)
+				}
+			},
+		},
+		{
+			name: "tts", kind: "tts", wantPath: "/audio/speech",
+			verifyBody: func(t *testing.T, body []byte) {
+				var p ttsProbeReq
+				mustDecode(t, body, &p)
+				if p.Model != probeModelName || p.Input != "ping" {
+					t.Errorf("tts payload = %+v", p)
+				}
+			},
+		},
+		{
+			name: "image", kind: "image", wantPath: "/images/generations",
+			verifyBody: func(t *testing.T, body []byte) {
+				var p imageProbeReq
+				mustDecode(t, body, &p)
+				if p.Model != probeModelName || p.Prompt != "ping" {
+					t.Errorf("image payload = %+v", p)
+				}
+			},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name+"/400判健康(回归gpustack_tts误判)", func(t *testing.T) {
+			var gotPath string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotPath = r.URL.Path
+				if r.Method != http.MethodPost {
+					t.Errorf("method = %q, want POST", r.Method)
+				}
+				body, _ := io.ReadAll(r.Body)
+				if c.kind != "asr" && c.verifyBody != nil {
+					c.verifyBody(t, body)
+				} else if c.kind == "asr" {
+					// multipart：验证能解析出占位模型名
+					if !strings.Contains(r.Header.Get("Content-Type"), "multipart/form-data") {
+						t.Errorf("asr Content-Type = %q, want multipart/form-data", r.Header.Get("Content-Type"))
+					}
+					if !strings.Contains(string(body), probeModelName) {
+						t.Errorf("asr body missing placeholder model %q", probeModelName)
+					}
+				}
+				// 典型上游拒绝场景：TTS 无 chat template / 模型路由层不认识占位名 → 400
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = io.WriteString(w, `{"error":{"message":"model not found","code":400}}`)
+			}))
+			defer srv.Close()
+
+			up := config.Upstream{Name: "kind-" + c.kind, Type: "openai", Kind: c.kind, BaseURL: srv.URL, APIKey: "sk-test"}
+			ck := New(testCfg(up))
+			defer ck.Close()
+
+			out := ck.ping(context.Background(), &upstreamState{up: &up, timeout: 2 * time.Second})
+			if gotPath != c.wantPath {
+				t.Errorf("probe path = %q, want %q (kind=%q)", gotPath, c.wantPath, c.kind)
+			}
+			if !out.ok {
+				t.Errorf("4xx probe ok = false, want healthy (out=%+v)", out)
+			}
+		})
+	}
+
+	// 5xx 仍失败：连续两次 → degraded
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+	up := config.Upstream{Name: "tts-broken", Kind: "tts", BaseURL: srv.URL, APIKey: "k"}
+	ck := New(testCfg(up))
+	defer ck.Close()
+	st := ck.states[up.Name]
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	ck.checkOnce(ctx, st)
+	ck.checkOnce(ctx, st)
+	if got := ck.Status(up.Name); got != StateDegraded {
+		t.Errorf("5xx status = %q, want degraded", got)
+	}
+}
+
+// mustDecode 解码 JSON 测试请求体。
+func mustDecode(t *testing.T, data []byte, v any) {
+	t.Helper()
+	if err := json.Unmarshal(data, v); err != nil {
+		t.Fatalf("decode %s: %v", data, err)
 	}
 }

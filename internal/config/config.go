@@ -127,8 +127,13 @@ type Server struct {
 //	anthropic —— Anthropic 原生（/v1/messages）
 //	ollama —— Ollama 原生（/api/chat, /api/generate, /api/embed）
 type Upstream struct {
-	Name            string            `yaml:"name"`
-	Type            string            `yaml:"type"`
+	Name string `yaml:"name"`
+	Type string `yaml:"type"`
+	// Kind 上游能力类型（与 Type 协议正交）：chat（默认）| emb | rerank | tts | asr | image。
+	// 健康检查按 Kind 选探测端点（/chat/completions、/embeddings、/rerank、/audio/speech、
+	// /audio/transcriptions、/images/generations），避免把纯 TTS/embedding 等上游用 chat
+	// 探测误判 dead（如无 chat template 的 TTS 模型对 chat 探测返回 400）。
+	Kind            string            `yaml:"kind"`
 	BaseURL         string            `yaml:"base_url"`
 	APIKey          string            `yaml:"api_key"`
 	Tier            string            `yaml:"tier"` // free | subscription | payg（默认 payg）
@@ -139,6 +144,15 @@ type Upstream struct {
 	RequestOverride string            `yaml:"request_override"` // 请求体复写（JSON 字符串）：转发前强制覆盖请求体部分字段，空=不启用
 	Enabled         bool              `yaml:"enabled"`          // 禁用（false）时不参与转发路由
 	MaxTokensCap    int               `yaml:"max_tokens_cap"`   // 上游 max_tokens 上限；0=不限制（客户端传超范围值时 clamp 到该值，防 400）
+	// StripFields 转发前从请求体剥离的顶层字段名列表（空=不剥离）。
+	// 部分上游（基元律动等）对未知字段严格校验，收到即 400 UNKNOWN_FIELD——
+	// 如 OpenAI 协议的新参数 prompt_cache_retention（客户端 agent 常自动携带）。
+	// 按上游配置剥离：只有认不全字段的上游剥离，标准上游（opencode 等）原样透传。
+	// 存储用 config 表键 upstream.<name>.strip_fields（逗号分隔或 JSON 数组），不动 upstreams 表结构。
+	StripFields []string `yaml:"strip_fields"`
+	// Arrears 欠费标记：true=该上游因「余额不足」类错误被自动标记。
+	// 路由硬排除 + 健康检查停止，等待人工充值后经「测试上游」成功自动清除。
+	Arrears bool `yaml:"arrears"`
 	// Timeout 上游请求超时秒数（连接+非流式整体）；0=跟随全局 retry.upstream_timeout（默认 60）。
 	// 慢速兜底上游（如本地一体机）建议单独调大（如 300），避免响应稍慢就被全局超时误判失败导致 502。
 	Timeout     int          `yaml:"timeout"`
@@ -222,6 +236,16 @@ const DefaultPort = 8787
 // DefaultStrategy 是 routing.default_strategy 未配置时的默认分流策略。
 const DefaultStrategy = "primary_backup"
 
+// validKinds 是可选的上游能力类型枚举。Kind 留空时默认 chat（聊天/多模态对话，最常见能力）。
+var validKinds = map[string]bool{
+	"chat":   true,
+	"emb":    true,
+	"rerank": true,
+	"tts":    true,
+	"asr":    true,
+	"image":  true,
+}
+
 // validStrategies 是可选的分流策略枚举。
 var validStrategies = map[string]bool{
 	"quota":          true,
@@ -291,6 +315,13 @@ func (c *Config) validate() error {
 			if strings.TrimSpace(m) == "" {
 				return fmt.Errorf("config: upstreams[%d] %q: models[%d] is empty", i, u.Name, j)
 			}
+		}
+		// kind 留空默认 chat；非空必须合法（chat|emb|rerank|tts|asr|image）
+		if u.Kind == "" {
+			u.Kind = "chat"
+		}
+		if !validKinds[u.Kind] {
+			return fmt.Errorf("config: upstreams[%d] %q: kind %q is invalid (want chat|emb|rerank|tts|asr|image)", i, u.Name, u.Kind)
 		}
 	}
 
@@ -510,12 +541,16 @@ func LoadFromDB(s *store.Store) (*Config, error) {
 		up := Upstream{
 			Name:     u.Name,
 			Type:     u.Type,
+			Kind:     u.Kind,
 			BaseURL:  u.BaseURL,
 			APIKey:   u.APIKey,
 			Tier:     u.Tier,
 			Priority: u.Priority,
 			Weight:   u.Weight,
 			Enabled:  u.Enabled == 1,
+		}
+		if up.Kind == "" {
+			up.Kind = "chat" // 旧库无 kind 列或未配置：默认 chat
 		}
 		if u.Models != "" {
 			up.Models = ParseModelsString(u.Models)
@@ -525,11 +560,20 @@ func LoadFromDB(s *store.Store) (*Config, error) {
 		}
 		up.RequestOverride = u.RequestOverride
 		up.Timeout = u.Timeout
+		up.Arrears = u.Arrears == 1
 		// 每上游 max_tokens 上限：config 表键 upstream.<name>.max_tokens_cap
 		// （不落 upstreams 表，避免动表结构；0=不限制，默认行为不变）
 		if v, ok := all["upstream."+u.Name+".max_tokens_cap"]; ok {
 			if cap, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && cap > 0 {
 				up.MaxTokensCap = cap
+			}
+		}
+		// 每上游 strip_fields：config 表键 upstream.<name>.strip_fields
+		// （不落表；逗号分隔或 JSON 数组）。部分上游对未知字段严格校验（收到即 400 UNKNOWN_FIELD），
+		// 配置后转发前按字段名剥离请求体，标准上游原样透传。
+		if v, ok := all["upstream."+u.Name+".strip_fields"]; ok {
+			if fields := ParseModelsString(v); len(fields) > 0 {
+				up.StripFields = fields
 			}
 		}
 		cfg.Upstreams = append(cfg.Upstreams, up)

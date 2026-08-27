@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"path/filepath"
 	"sort"
@@ -153,8 +154,10 @@ func (h *Handler) Status(w http.ResponseWriter, _ *http.Request) {
 // upstreamResponse 是 GET /admin/upstreams 的单个元素。
 // 绝不包含 api_key 字段（安全）。
 type upstreamResponse struct {
-	Name            string   `json:"name"`
-	Type            string   `json:"type"`
+	Name string `json:"name"`
+	Type string `json:"type"`
+	// Kind 能力类型：chat|emb|rerank|tts|asr|image（空=chat）。健康检查按此选探测端点。
+	Kind            string   `json:"kind"`
 	BaseURL         string   `json:"base_url"`
 	APIKey          string   `json:"api_key"`
 	Tier            string   `json:"tier"`
@@ -162,6 +165,7 @@ type upstreamResponse struct {
 	Weight          int      `json:"weight"`
 	Enabled         bool     `json:"enabled"`        // 1=启用 0=禁用（禁用的不参与转发）
 	BillingExempt   bool     `json:"billing_exempt"` // true=不参与计费（统计费用记 0，路由不受影响）
+	Arrears         bool     `json:"arrears"`        // true=欠费标记中（停路由停健康检查，测试通过后自动清除）
 	FastFail        bool     `json:"fast_fail"`      // 快速失败黑名单中（后台探测可自动恢复）
 	State           string   `json:"state"`
 	LatencyMS       int64    `json:"latency_ms"`
@@ -187,6 +191,7 @@ func (h *Handler) Upstreams(w http.ResponseWriter, _ *http.Request) {
 				resp = append(resp, upstreamResponse{
 					Name:            u.Name,
 					Type:            u.Type,
+					Kind:            u.Kind,
 					BaseURL:         u.BaseURL,
 					APIKey:          u.APIKey,
 					Tier:            u.Tier,
@@ -194,6 +199,7 @@ func (h *Handler) Upstreams(w http.ResponseWriter, _ *http.Request) {
 					Weight:          u.Weight,
 					Enabled:         u.Enabled == 1,
 					BillingExempt:   u.BillingExempt == 1,
+					Arrears:         u.Arrears == 1,
 					FastFail:        h.fastFailState(u.Name),
 					State:           string(h.hc.Status(u.Name)),
 					LatencyMS:       h.hc.Latency(u.Name).Milliseconds(),
@@ -212,20 +218,23 @@ func (h *Handler) Upstreams(w http.ResponseWriter, _ *http.Request) {
 	for _, up := range h.cfg.Upstreams {
 		mm, _ := json.Marshal(up.ModelMapping)
 		resp = append(resp, upstreamResponse{
-			Name:         up.Name,
-			Type:         up.Type,
-			BaseURL:      up.BaseURL,
-			APIKey:       up.APIKey,
-			Tier:         up.Tier,
-			Priority:     up.Priority,
-			Weight:       up.Weight,
-			Enabled:      up.Enabled,
-			FastFail:     h.fastFailState(up.Name),
-			State:        string(h.hc.Status(up.Name)),
-			LatencyMS:    h.hc.Latency(up.Name).Milliseconds(),
-			Models:       up.Models,
-			ModelCount:   len(up.Models),
-			ModelMapping: string(mm),
+			Name:          up.Name,
+			Type:          up.Type,
+			Kind:          up.Kind,
+			BaseURL:       up.BaseURL,
+			APIKey:        up.APIKey,
+			Tier:          up.Tier,
+			Priority:      up.Priority,
+			Weight:        up.Weight,
+			Enabled:       up.Enabled,
+			BillingExempt: false,
+			Arrears:       false,
+			FastFail:      h.fastFailState(up.Name),
+			State:         string(h.hc.Status(up.Name)),
+			LatencyMS:     h.hc.Latency(up.Name).Milliseconds(),
+			Models:        up.Models,
+			ModelCount:    len(up.Models),
+			ModelMapping:  string(mm),
 		})
 	}
 	writeJSON(w, resp)
@@ -1046,6 +1055,14 @@ func (h *Handler) UpdateUpstream(w http.ResponseWriter, r *http.Request) {
 				req.Timeout = t
 			}
 		}
+		// kind 同样：显式传入（含空串=回默认 chat）才允许改，未传（旧客户端）保持原值。
+		if v, ok := raw["kind"]; ok {
+			var k string
+			if json.Unmarshal(v, &k) == nil {
+				req.KindPtr = &k
+				req.Kind = k
+			}
+		}
 	}
 	if err := h.store.UpdateUpstream(name, &req); err != nil {
 		writeJSON(w, map[string]string{"error": err.Error()})
@@ -1769,6 +1786,7 @@ func (h *Handler) upstreamByName(name string) *config.Upstream {
 						Models:       parseStringSlice(u.Models),
 						ModelMapping: parseStringMap(u.ModelMapping),
 						Timeout:      u.Timeout,
+						Arrears:      u.Arrears == 1,
 					}
 				}
 			}
@@ -2176,6 +2194,16 @@ func (h *Handler) TestUpstream(w http.ResponseWriter, r *http.Request) {
 	warning := ""
 	if proxy.IsEmptyCompletion(respBody) {
 		warning = "⚠ 响应内容为空：疑似思考型模型（商汤日日新等默认开启思考）max_tokens 不足，思考未完成即被截断（finish_reason=length）。请调大 max_tokens（如 512+）或检查模型思考模式。"
+	}
+	// 欠费恢复：测试通过（HTTP <400，含空完成警告——模型可达性已验证）时清除欠费标记。
+	// 用户充值后无需重启/改库：标记清除 + 热重载立即恢复路由与健康检查。
+	if h.store != nil && up.Arrears {
+		if err := h.store.SetUpstreamArrears(name, 0); err == nil {
+			slog.Info("upstream arrear cleared via test", "upstream", name)
+			if h.reload != nil {
+				_ = h.reload()
+			}
+		}
 	}
 	writeJSON(w, map[string]any{
 		"status":      "ok",
