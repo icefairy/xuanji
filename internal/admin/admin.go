@@ -1066,6 +1066,55 @@ func (h *Handler) UpdateUpstream(w http.ResponseWriter, r *http.Request) {
 				req.Kind = k
 			}
 		}
+		// 部分更新语义：store.UpdateUpstream 是全列覆盖 UPDATE，raw 未出现的字段
+		// 必须以 DB 旧行回填，否则稀疏 PUT（如只传 per_model_billing 开关）会把
+		// base_url/api_key/models/model_mapping 等核心配置清成零值
+		// （2026-08-27 实测清空硅基流动上游的事故）。显式传入新值仍可正常修改。
+		if h.store != nil {
+			if old, gerr := h.store.GetUpstream(name); gerr == nil {
+				has := func(k string) bool { _, ok := raw[k]; return ok }
+				if !has("type") {
+					req.Type = old.Type
+				}
+				if !has("kind") {
+					req.Kind = old.Kind
+				}
+				if !has("base_url") {
+					req.BaseURL = old.BaseURL
+				}
+				if !has("api_key") {
+					req.APIKey = old.APIKey
+				}
+				if !has("tier") {
+					req.Tier = old.Tier
+				}
+				if !has("priority") {
+					req.Priority = old.Priority
+				}
+				if !has("weight") {
+					req.Weight = old.Weight
+				}
+				if !has("models") {
+					req.Models = old.Models
+				}
+				if !has("model_mapping") {
+					req.ModelMapping = old.ModelMapping
+				}
+				if !has("request_override") {
+					req.RequestOverride = old.RequestOverride
+				}
+				if !has("enabled") {
+					req.EnabledPtr = &old.Enabled
+				}
+				if !has("billing_exempt") {
+					req.BillingExemptPtr = &old.BillingExempt
+				}
+				if !has("timeout") {
+					req.TimeoutPtr = &old.Timeout
+					req.Timeout = old.Timeout
+				}
+			}
+		}
 		// per_model_billing 模型独立计费开关：存 config 表键 upstream.<name>.per_model_billing
 		// （upstreams 表无此列）。显式传入才改；兼容 bool 与 0/1 数字（Vue 表单传 1/0）；
 		// 未传保持原值。

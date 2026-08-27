@@ -206,6 +206,16 @@ func (c *Checker) loop(ctx context.Context, st *upstreamState) {
 // 日志约定：成功（healthy）记 Info；失败且状态恶化为 degraded/dead 记 Warn 完整原因；
 // 失败但状态保持 healthy（连续失败不足 degradedAfterFails）时不打扰、不记失败日志。
 func (c *Checker) checkOnce(ctx context.Context, st *upstreamState) {
+	// 禁用（enabled=false）的上游不参与转发路由，健康检查同样停止：
+	// 探测结果无人消费，还会对已下线端点持续打请求。状态置 unknown
+	// （不参与 healthy/degraded/dead 计数），重新启用并热重载后恢复探测。
+	if st.up == nil || !st.up.Enabled {
+		c.mu.Lock()
+		st.current = StateUnknown
+		st.fails = 0
+		c.mu.Unlock()
+		return
+	}
 	// 欠费上游停止健康检查：余额不足不会自愈，探测只会继续报错消耗额度窗口；
 	// 状态置 unknown（不参与 healthy/degraded/dead 计数），等待人工处理。
 	if st.up.Arrears {
