@@ -153,6 +153,11 @@ type Upstream struct {
 	// Arrears 欠费标记：true=该上游因「余额不足」类错误被自动标记。
 	// 路由硬排除 + 健康检查停止，等待人工充值后经「测试上游」成功自动清除。
 	Arrears bool `yaml:"arrears"`
+	// PerModelBilling 模型独立计费开关：true 时欠费按 (upstream, model) 粒度记录
+	// （阿里云百炼等每模型独立免费额度的平台：A 模型额度耗尽不影响 B 模型），
+	// 路由仅跳过该上游的该模型；false 时欠费记整个上游（默认）。
+	// 存储用 config 表键 upstream.<name>.per_model_billing。
+	PerModelBilling bool `yaml:"per_model_billing"`
 	// Timeout 上游请求超时秒数（连接+非流式整体）；0=跟随全局 retry.upstream_timeout（默认 60）。
 	// 慢速兜底上游（如本地一体机）建议单独调大（如 300），避免响应稍慢就被全局超时误判失败导致 502。
 	Timeout     int          `yaml:"timeout"`
@@ -575,6 +580,10 @@ func LoadFromDB(s *store.Store) (*Config, error) {
 			if fields := ParseModelsString(v); len(fields) > 0 {
 				up.StripFields = fields
 			}
+		}
+		// 每上游 per_model_billing 开关：config 表键 upstream.<name>.per_model_billing
+		if v, ok := all["upstream."+u.Name+".per_model_billing"]; ok {
+			up.PerModelBilling = strings.TrimSpace(v) == "true" || strings.TrimSpace(v) == "1"
 		}
 		cfg.Upstreams = append(cfg.Upstreams, up)
 	}

@@ -16,7 +16,11 @@
 //     关思考用 thinking.type=disabled 或 reasoning_effort=none（实测都有效）。
 //   - Kimi K3：顶层 reasoning_effort 原生支持（low/high/max），始终思考不能关闭。
 //   - Kimi K2.x：只用 thinking.type 开关（enabled/disabled + keep），无强度档。
-//   - GLM-4.5：只用 thinking.type 开关（enabled/disabled），无强度档。
+//   - GLM-4.5/4.6：只用 thinking.type 开关（enabled/disabled），无强度档。
+//   - GLM-5.x 等较新 GLM（含阿里云百炼托管）：顶层 reasoning_effort 原生支持，
+//     枚举 none/minimal/low/medium/high/xhigh（实测百炼 max 直接 400
+//     "must be one of: 'none', 'minimal', 'low', 'medium', 'high', 'xhigh'"），
+//     仅需把 max 降为 xhigh，其余档位原样透传；不注入 thinking 字段。
 //   - Qwen3 / Qwen3.5 / Qwen3.6 / Qwen3.7：顶层 enable_thinking 开关 + thinking_budget 限思考长度，
 //     无 reasoning_effort 档位（Qwen3.5 开源小模型默认禁用思考需显式开启；Qwen3.6 默认思考可关闭；
 //     Qwen3 支持 /think /no_think 软切换，Qwen3.6 不支持）。Qwen2.5 无思考模式，不匹配本族。
@@ -57,6 +61,8 @@ func normalizeThinkingEffort(body []byte, upstreamModel string) ([]byte, bool) {
 		return applyKimiK3(body, effort)
 	case "kimi-k2", "glm":
 		return applySwitchOnly(body, effort)
+	case "glm-x":
+		return applyGlmX(body, effort)
 	case "qwen":
 		return applyQwen(body, effort)
 	default:
@@ -86,6 +92,10 @@ func matchThinkingProfile(model string) string {
 		return "kimi-k2"
 	case strings.Contains(m, "glm-4.5"), strings.Contains(m, "glm-4.6"):
 		return "glm"
+	case strings.HasPrefix(m, "glm"):
+		// glm-5.x 等较新版本（含阿里云百炼托管 glm-5.1/5.2）：OpenAI 枚举兼容但无 max
+		// （must be one of: none/minimal/low/medium/high/xhigh），仅需 max 降档。
+		return "glm-x"
 	case strings.Contains(m, "qwen3"):
 		// qwen3 / qwen3.5 / qwen3.6 / qwen3.7 / Qwen3-xxx（子串天然排除 qwen2.5，Qwen2.5 无思考模式）
 		return "qwen"
@@ -175,6 +185,22 @@ func applySenseNova(body []byte, effort string) ([]byte, bool) {
 		if err != nil {
 			return body, false
 		}
+	}
+	return nb, true
+}
+
+// applyGlmX 较新 GLM（glm-5.x 等，含阿里云百炼托管）：reasoning_effort 原生支持，
+// 但枚举只有 none/minimal/low/medium/high/xhigh，**没有 max**（实测百炼 max 直接 400
+// "'reasoning_effort' must be one of: 'none', 'minimal', 'low', 'medium', 'high', 'xhigh'"）。
+// 因此仅把 max 降为 xhigh（xhigh 在支持 max 的上游同样有效，降档无损）；
+// 其余档位原样透传，不注入 thinking 字段（是否支持开关未实测，保持最小改动）。
+func applyGlmX(body []byte, effort string) ([]byte, bool) {
+	if effort != "max" {
+		return body, false
+	}
+	nb, err := sjson.SetBytes(body, "reasoning_effort", "xhigh")
+	if err != nil {
+		return body, false
 	}
 	return nb, true
 }

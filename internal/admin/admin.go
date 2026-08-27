@@ -163,10 +163,11 @@ type upstreamResponse struct {
 	Tier            string   `json:"tier"`
 	Priority        int      `json:"priority"`
 	Weight          int      `json:"weight"`
-	Enabled         bool     `json:"enabled"`        // 1=启用 0=禁用（禁用的不参与转发）
-	BillingExempt   bool     `json:"billing_exempt"` // true=不参与计费（统计费用记 0，路由不受影响）
-	Arrears         bool     `json:"arrears"`        // true=欠费标记中（停路由停健康检查，测试通过后自动清除）
-	FastFail        bool     `json:"fast_fail"`      // 快速失败黑名单中（后台探测可自动恢复）
+	Enabled         bool     `json:"enabled"`           // 1=启用 0=禁用（禁用的不参与转发）
+	BillingExempt   bool     `json:"billing_exempt"`    // true=不参与计费（统计费用记 0，路由不受影响）
+	Arrears         bool     `json:"arrears"`           // true=欠费标记中（停路由停健康检查，测试通过后自动清除）
+	PerModelBilling bool     `json:"per_model_billing"` // true=模型独立计费（欠费按(上游,模型)粒度标记，仅跳该模型）
+	FastFail        bool     `json:"fast_fail"`         // 快速失败黑名单中（后台探测可自动恢复）
 	State           string   `json:"state"`
 	LatencyMS       int64    `json:"latency_ms"`
 	Models          []string `json:"models"`
@@ -200,6 +201,7 @@ func (h *Handler) Upstreams(w http.ResponseWriter, _ *http.Request) {
 					Enabled:         u.Enabled == 1,
 					BillingExempt:   u.BillingExempt == 1,
 					Arrears:         u.Arrears == 1,
+					PerModelBilling: h.configBool("upstream." + u.Name + ".per_model_billing"),
 					FastFail:        h.fastFailState(u.Name),
 					State:           string(h.hc.Status(u.Name)),
 					LatencyMS:       h.hc.Latency(u.Name).Milliseconds(),
@@ -218,23 +220,24 @@ func (h *Handler) Upstreams(w http.ResponseWriter, _ *http.Request) {
 	for _, up := range h.cfg.Upstreams {
 		mm, _ := json.Marshal(up.ModelMapping)
 		resp = append(resp, upstreamResponse{
-			Name:          up.Name,
-			Type:          up.Type,
-			Kind:          up.Kind,
-			BaseURL:       up.BaseURL,
-			APIKey:        up.APIKey,
-			Tier:          up.Tier,
-			Priority:      up.Priority,
-			Weight:        up.Weight,
-			Enabled:       up.Enabled,
-			BillingExempt: false,
-			Arrears:       false,
-			FastFail:      h.fastFailState(up.Name),
-			State:         string(h.hc.Status(up.Name)),
-			LatencyMS:     h.hc.Latency(up.Name).Milliseconds(),
-			Models:        up.Models,
-			ModelCount:    len(up.Models),
-			ModelMapping:  string(mm),
+			Name:            up.Name,
+			Type:            up.Type,
+			Kind:            up.Kind,
+			BaseURL:         up.BaseURL,
+			APIKey:          up.APIKey,
+			Tier:            up.Tier,
+			Priority:        up.Priority,
+			Weight:          up.Weight,
+			Enabled:         up.Enabled,
+			BillingExempt:   false,
+			Arrears:         false,
+			PerModelBilling: up.PerModelBilling,
+			FastFail:        h.fastFailState(up.Name),
+			State:           string(h.hc.Status(up.Name)),
+			LatencyMS:       h.hc.Latency(up.Name).Milliseconds(),
+			Models:          up.Models,
+			ModelCount:      len(up.Models),
+			ModelMapping:    string(mm),
 		})
 	}
 	writeJSON(w, resp)
@@ -1063,6 +1066,23 @@ func (h *Handler) UpdateUpstream(w http.ResponseWriter, r *http.Request) {
 				req.Kind = k
 			}
 		}
+		// per_model_billing 模型独立计费开关：存 config 表键 upstream.<name>.per_model_billing
+		// （upstreams 表无此列）。显式传入才改；兼容 bool 与 0/1 数字（Vue 表单传 1/0）；
+		// 未传保持原值。
+		if v, ok := raw["per_model_billing"]; ok && h.store != nil {
+			var bb bool
+			if err := json.Unmarshal(v, &bb); err != nil {
+				var n int
+				if err2 := json.Unmarshal(v, &n); err2 == nil {
+					bb = n != 0
+				}
+			}
+			val := "0"
+			if bb {
+				val = "1"
+			}
+			_ = h.store.SetConfig("upstream."+name+".per_model_billing", val)
+		}
 	}
 	if err := h.store.UpdateUpstream(name, &req); err != nil {
 		writeJSON(w, map[string]string{"error": err.Error()})
@@ -1767,6 +1787,18 @@ func generateToken() string {
 }
 
 // upstreamByConfig 从内存配置找上游；h.store 非 nil 时优先从数据库读取
+// configBool 读取 config 表布尔键（未配置/读取失败视为 false）。
+func (h *Handler) configBool(key string) bool {
+	if h.store == nil {
+		return false
+	}
+	v, err := h.store.GetConfig(key)
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(v) == "true" || strings.TrimSpace(v) == "1"
+}
+
 // （数据库是配置唯一来源，内存 cfg 可能因直改 DB 未 reload 而过期）。
 func (h *Handler) upstreamByName(name string) *config.Upstream {
 	if h.store != nil {
@@ -1776,17 +1808,18 @@ func (h *Handler) upstreamByName(name string) *config.Upstream {
 				u := &rows[i]
 				if u.Name == name {
 					return &config.Upstream{
-						Name:         u.Name,
-						Type:         u.Type,
-						BaseURL:      u.BaseURL,
-						APIKey:       u.APIKey,
-						Tier:         u.Tier,
-						Priority:     u.Priority,
-						Weight:       u.Weight,
-						Models:       parseStringSlice(u.Models),
-						ModelMapping: parseStringMap(u.ModelMapping),
-						Timeout:      u.Timeout,
-						Arrears:      u.Arrears == 1,
+						Name:            u.Name,
+						Type:            u.Type,
+						BaseURL:         u.BaseURL,
+						APIKey:          u.APIKey,
+						Tier:            u.Tier,
+						Priority:        u.Priority,
+						Weight:          u.Weight,
+						Models:          parseStringSlice(u.Models),
+						ModelMapping:    parseStringMap(u.ModelMapping),
+						Timeout:         u.Timeout,
+						Arrears:         u.Arrears == 1,
+						PerModelBilling: h.configBool("upstream." + u.Name + ".per_model_billing"),
 					}
 				}
 			}
@@ -2196,10 +2229,24 @@ func (h *Handler) TestUpstream(w http.ResponseWriter, r *http.Request) {
 		warning = "⚠ 响应内容为空：疑似思考型模型（商汤日日新等默认开启思考）max_tokens 不足，思考未完成即被截断（finish_reason=length）。请调大 max_tokens（如 512+）或检查模型思考模式。"
 	}
 	// 欠费恢复：测试通过（HTTP <400，含空完成警告——模型可达性已验证）时清除欠费标记。
-	// 用户充值后无需重启/改库：标记清除 + 热重载立即恢复路由与健康检查。
-	if h.store != nil && up.Arrears {
-		if err := h.store.SetUpstreamArrears(name, 0); err == nil {
-			slog.Info("upstream arrear cleared via test", "upstream", name)
+	// 粒度与标记一致：per_model_billing 上游仅清该模型的模型级欠费记录；
+	// 其它上游清上游级 arrears。用户充值后无需重启/改库：标记清除 + 热重载立即恢复。
+	if h.store != nil {
+		cleared := false
+		if up.PerModelBilling && h.store.IsModelArrearRecorded(name, req.Model) {
+			if err := h.store.ClearModelArrears(name, req.Model); err == nil {
+				cleared = true
+				if h.px != nil {
+					h.px.ClearModelArrearCache(name, req.Model)
+				}
+			}
+		} else if up.Arrears {
+			if err := h.store.SetUpstreamArrears(name, 0); err == nil {
+				cleared = true
+			}
+		}
+		if cleared {
+			slog.Info("upstream arrear cleared via test", "upstream", name, "model", req.Model)
 			if h.reload != nil {
 				_ = h.reload()
 			}

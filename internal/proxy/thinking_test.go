@@ -153,6 +153,47 @@ func TestNormalizeThinkingEffort_KimiK2AndGLM(t *testing.T) {
 	}
 }
 
+// TestNormalizeThinkingEffort_GLM5x 阿里云百炼托管 glm-5.1/5.2 实测：reasoning_effort 枚举
+// 无 max（400 "must be one of: 'none', 'minimal', 'low', 'medium', 'high', 'xhigh'"），
+// max 需降为 xhigh，其余档位（none/minimal/low/medium/high/xhigh）原样透传，不注入 thinking 字段；
+// 且 glm-4.5/4.6 仍走 switch-only 老逻辑（不被 glm-x 抢占）。
+func TestNormalizeThinkingEffort_GLM5x(t *testing.T) {
+	for _, model := range []string{"glm-5.1", "glm-5.2"} {
+		// max → xhigh
+		body := `{"model":"` + model + `","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"max"}`
+		nb, changed := normalizeEffort(t, body, model)
+		if !changed {
+			t.Fatalf("%s: max should be downgraded", model)
+		}
+		if got := gjson.Get(nb, "reasoning_effort").String(); got != "xhigh" {
+			t.Fatalf("%s: reasoning_effort=%q, want xhigh (body=%s)", model, got, nb)
+		}
+		if gjson.Get(nb, "thinking").Exists() {
+			t.Fatalf("%s: should not inject thinking field (body=%s)", model, nb)
+		}
+		// 其余档位原样透传
+		for _, effort := range []string{"none", "minimal", "low", "medium", "high", "xhigh"} {
+			b := `{"model":"` + model + `","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"` + effort + `"}`
+			nb2, changed2 := normalizeThinkingEffort([]byte(b), model)
+			if changed2 || string(nb2) != b {
+				t.Errorf("%s effort=%s 应原样透传, changed=%v body=%s", model, effort, changed2, nb2)
+			}
+		}
+	}
+	// glm-4.5 不被 glm-x 抢占，仍走 switch-only
+	body45 := `{"model":"glm-4.5","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"max"}`
+	nb45, changed45 := normalizeEffort(t, body45, "glm-4.5")
+	if !changed45 {
+		t.Fatalf("glm-4.5 should transform (switch-only)")
+	}
+	if gjson.Get(nb45, "reasoning_effort").Exists() {
+		t.Fatalf("glm-4.5 reasoning_effort should be removed (body=%s)", nb45)
+	}
+	if got := gjson.Get(nb45, "thinking.type").String(); got != "enabled" {
+		t.Fatalf("glm-4.5 thinking.type=%q, want enabled (body=%s)", got, nb45)
+	}
+}
+
 func TestNormalizeThinkingEffort_Qwen3(t *testing.T) {
 	cases := []struct {
 		name, effort string

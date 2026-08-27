@@ -54,20 +54,26 @@ const chatPath = "/v1/chat/completions"
 
 // Handler 处理 POST /v1/chat/completions 的转发逻辑。
 type Handler struct {
-	cfg       *config.Config
-	router    *router.Router
-	health    *health.Checker
-	client    *http.Client
-	log       *slog.Logger
-	recorder  *store.Recorder                                         // 指标记录器；nil 时跳过记录
-	fastFail  *FastFailCache                                          // 快速失败缓存；nil 时不启用
-	tokenizer *Tokenizer                                              // token 计数器；nil 时跳过估算回退
-	discounts []store.Discount                                        // 渠道优惠时段，用于同 tier 同 weight 内折扣优先排序
-	keyName   func(r *http.Request) string                            // 下游 API Key 展示名（统计用）；nil 时记录空
-	priceFor  func(model string) (input, cache, out float64, ok bool) // 模型单价查询；nil 时不计费
-	cooldowns sync.Map                                                // 上游冷却表：map[string]time.Time, key="upstream:model"，value=冷却到期时间
-	reasoning *ReasoningCache                                         // reasoning_content 缓存（key=tool_call_id，thinking 模式回传用）；nil 时不启用
-	arrearsMarker func(name string)                                   // 欠费标记回调；nil 时仅记日志不落库
+	cfg           *config.Config
+	router        *router.Router
+	health        *health.Checker
+	client        *http.Client
+	log           *slog.Logger
+	recorder      *store.Recorder                                         // 指标记录器；nil 时跳过记录
+	fastFail      *FastFailCache                                          // 快速失败缓存；nil 时不启用
+	tokenizer     *Tokenizer                                              // token 计数器；nil 时跳过估算回退
+	discounts     []store.Discount                                        // 渠道优惠时段，用于同 tier 同 weight 内折扣优先排序
+	keyName       func(r *http.Request) string                            // 下游 API Key 展示名（统计用）；nil 时记录空
+	priceFor      func(model string) (input, cache, out float64, ok bool) // 模型单价查询；nil 时不计费
+	cooldowns     sync.Map                                                // 上游冷却表：map[string]time.Time, key="upstream:model"，value=冷却到期时间
+	reasoning     *ReasoningCache                                         // reasoning_content 缓存（key=tool_call_id，thinking 模式回传用）；nil 时不启用
+	arrearsMarker func(name string)                                       // 欠费标记回调；nil 时仅记日志不落库
+	// modelArrears 模型级欠费内存缓存：key=upstream::model。
+	// per_model_billing 开启的上游按 (上游, 客户端模型名) 粒度隔离欠费；
+	// 启动时从 DB 加载，标记/清除时同步 DB。mu 保护并发读写。
+	modelArrears       map[string]bool
+	modelArrearsMu     sync.RWMutex
+	arrearsModelMarker func(upstream, model, reason string) // 模型级欠费标记回调；nil 时不落库（仅内存）
 }
 
 // New 创建转发 Handler，共享一个 60s 连接超时的 HTTP 客户端。
@@ -553,6 +559,11 @@ func (h *Handler) selectCandidates(ups []*config.Upstream, strategy, model strin
 			h.log.Warn("skip arrear upstream", "upstream", u.Name, "model", model)
 			continue
 		}
+		// 模型级欠费（per_model_billing 上游）：仅跳过该上游上该模型，其它模型继续可用
+		if u.PerModelBilling && h.IsModelArrear(u.Name, model) {
+			h.log.Warn("skip model arrear upstream", "upstream", u.Name, "model", model)
+			continue
+		}
 		notArrear = append(notArrear, u)
 	}
 	ups = notArrear
@@ -894,11 +905,11 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 				}
 			}
 		}
-		// 欠费检测：响应体命中余额类关键词 → 标记该上游欠费（停路由+停健康检查），
-		// 等待人工充值后经「测试上游」成功自动恢复。同时强制可重试：
-		// 欠费渠道本次请求也立即弃用，切下一个候选救急。
+		// 欠费检测：响应体命中余额类关键词 → 标记欠费。
+		// 粒度由上游 per_model_billing 决定：默认上游级（整条停），开启则模型级（只停该模型）。
+		// 同时强制可重试：欠费渠道本次请求也立即弃用，切下一个候选救急。
 		if isArrearResponse(respBody) {
-			h.markArrear(up, respBody)
+			h.markArrear(up, model, respBody)
 			shouldRetry = true
 		}
 		// 详细错误日志：结构化摘要（请求关键字段 + 最近消息 + 图片打码 + 上游 error.message），

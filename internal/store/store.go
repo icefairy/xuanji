@@ -77,6 +77,15 @@ type UpstreamRow struct {
 	UpdatedAt        string `json:"updated_at"`
 }
 
+// ModelArrearRow 是 upstream_model_arrears 表的行映射。
+// 用于 per_model_billing 上游的模型级欠费跟踪（按模型隔离，A 模型欠费不误伤 B 模型）。
+type ModelArrearRow struct {
+	Upstream  string `json:"upstream"`   // 上游名
+	Model     string `json:"model"`      // 客户端模型名
+	Reason    string `json:"reason"`     // 标记原因（如 error.message 摘要）
+	CreatedAt string `json:"created_at"` // 标记时间戳
+}
+
 // RoutingRuleRow 是 routing_rules 表的行映射。
 type RoutingRuleRow struct {
 	ID        uint   `json:"id"`
@@ -446,6 +455,13 @@ func (s *Store) init() error {
 		token_week   INTEGER NOT NULL DEFAULT 0,
 		token_month  INTEGER NOT NULL DEFAULT 0,
 		UNIQUE(group_id, model)
+	);
+	CREATE TABLE IF NOT EXISTS upstream_model_arrears (
+		upstream    TEXT    NOT NULL,
+		model       TEXT    NOT NULL DEFAULT '',
+		reason      TEXT    NOT NULL DEFAULT '',
+		created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+		PRIMARY KEY (upstream, model)
 	);
 	`); err != nil {
 		return err
@@ -1105,6 +1121,49 @@ func (s *Store) IsArrears(name string) bool {
 	var n int
 	err := s.db.QueryRow(`SELECT arrears FROM upstreams WHERE name = ?`, name).Scan(&n)
 	return err == nil && n == 1
+}
+
+// SetModelArrears 写入模型级欠费记录（per_model_billing 上游按模型隔离）。
+// model 为空表示上游级（与 SetUpstreamArrears 语义一致）。幂等：重复标记直接覆盖
+// （PRIMARY KEY(upstream, model) 冲突时用 UPSERT 更新 created_at）。
+func (s *Store) SetModelArrears(upstream, model, reason string) error {
+	_, err := s.db.Exec(`
+		INSERT INTO upstream_model_arrears (upstream, model, reason, created_at)
+		VALUES (?, ?, ?, datetime('now'))
+		ON CONFLICT(upstream, model) DO UPDATE SET reason=excluded.reason, created_at=excluded.created_at`,
+		upstream, model, reason)
+	return err
+}
+
+// ClearModelArrears 删除模型级欠费记录（测试上游成功时清除对应标记）。
+func (s *Store) ClearModelArrears(upstream, model string) error {
+	_, err := s.db.Exec(`DELETE FROM upstream_model_arrears WHERE upstream=? AND model=?`, upstream, model)
+	return err
+}
+
+// IsModelArrearRecorded 判断模型级欠费记录是否存在；查询失败视为 false（不阻断恢复流程）。
+func (s *Store) IsModelArrearRecorded(upstream, model string) bool {
+	var n int
+	err := s.db.QueryRow(`SELECT COUNT(1) FROM upstream_model_arrears WHERE upstream=? AND model=?`, upstream, model).Scan(&n)
+	return err == nil && n > 0
+}
+
+// ListModelArrears 返回全部模型级欠费记录（启动时加载进内存缓存）。
+func (s *Store) ListModelArrears() ([]ModelArrearRow, error) {
+	rows, err := s.db.Query(`SELECT upstream, model, reason, created_at FROM upstream_model_arrears ORDER BY upstream, model`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ModelArrearRow
+	for rows.Next() {
+		var r ModelArrearRow
+		if err := rows.Scan(&r.Upstream, &r.Model, &r.Reason, &r.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }
 
 // DeleteUpstream 删除上游，并同步清理所有路由规则中对该上游的引用
