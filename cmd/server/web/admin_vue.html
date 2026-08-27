@@ -1900,17 +1900,58 @@
 
       <!-- 功能端点 -->
       <div class="tab-content" v-if="tab === 'endpoints'">
+        <div style="color: #909399; font-size: 12px; margin-bottom: 8px">
+          点击「示例」展开该接口的完整 curl 调用脚本（含全部参数与中文注释），
+          可直接复制给他人或其它 Agent 使用；脚本中的 API_KEY / 模型名按需替换。
+        </div>
         <table>
           <thead>
             <tr>
-              <th>路径</th>
+              <th style="width: 42%">路径</th>
               <th>功能说明</th>
+              <th style="width: 120px">示例</th>
             </tr>
           </thead>
           <tbody>
             <tr v-for="e in endpoints">
               <td>{{ e.path }}</td>
               <td>{{ e.desc }}</td>
+              <td>
+                <button
+                  class="btn"
+                  @click="expandedEndpoint = expandedEndpoint === e.path ? null : e.path"
+                >
+                  {{ expandedEndpoint === e.path ? "收起 ▲" : "展开 ▼" }}
+                </button>
+              </td>
+            </tr>
+            <tr v-for="e in endpoints" v-if="expandedEndpoint === e.path">
+              <td colspan="3" style="padding: 0">
+                <div style="position: relative; background: #f6f8fa">
+                  <button
+                    class="btn"
+                    style="
+                      position: absolute;
+                      top: 8px;
+                      right: 12px;
+                      z-index: 1;
+                    "
+                    @click="copyCurl(e)"
+                  >
+                    📋 复制脚本
+                  </button>
+                  <pre
+                    style="
+                      margin: 0;
+                      padding: 16px 110px 16px 16px;
+                      overflow-x: auto;
+                      font-size: 12px;
+                      line-height: 1.6;
+                      font-family: Menlo, Consolas, monospace;
+                    "
+                  >{{ e.curl }}</pre>
+                </div>
+              </td>
             </tr>
           </tbody>
         </table>
@@ -3113,46 +3154,284 @@
             showPwdDialog: false,
             pwdForm: { old_password: "", new_password: "", confirm: "" },
             pwdSaving: false,
+            expandedEndpoint: null,
             endpoints: [
-              { path: "GET /healthz", desc: "健康检查" },
-              { path: "GET /v1/models", desc: "模型列表（OpenAI 兼容）" },
+              {
+                path: "GET /healthz",
+                desc: "健康检查",
+                curl: `#!/usr/bin/env bash
+# 网关健康检查：进程存活即返回 {"status":"ok"}，无需鉴权
+curl -sS http://127.0.0.1:3002/healthz`,
+              },
+              {
+                path: "GET /v1/models",
+                desc: "模型列表（OpenAI 兼容）",
+                curl: `#!/usr/bin/env bash
+# 列出网关当前所有可用模型（按路由规则聚合去重）
+BASE="http://127.0.0.1:3002"        # 网关地址
+API_KEY="sk-xxxx"                   # 调用方 API Key（管理界面「API Keys」生成）
+
+curl -sS "$BASE/v1/models" \\
+  -H "Authorization: Bearer $API_KEY"`,
+              },
               {
                 path: "POST /v1/chat/completions",
                 desc: "聊天补全（OpenAI 兼容）",
+                curl: `#!/usr/bin/env bash
+# 聊天补全：OpenAI Chat 协议；思考等级用标准 reasoning_effort，
+# 网关会按目标模型自动归一化（qwen 转 enable_thinking、商汤转 output_config 等）
+BASE="http://127.0.0.1:3002"        # 网关地址
+API_KEY="sk-xxxx"                   # 调用方 API Key
+
+curl -sS "$BASE/v1/chat/completions" \\
+  -H "Authorization: Bearer $API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "model": "deepseek-v4-flash",
+    "messages": [
+      {"role": "system", "content": "你是一个严谨的技术助手"},
+      {"role": "user",   "content": "用一句话说明什么是反向代理"}
+    ],
+    "stream": true,
+    "max_tokens": 4096,
+    "temperature": 0.7,
+    "reasoning_effort": "medium"
+  }'
+#
+# —— 字段速查 ——
+# model             模型名，必须与路由规则匹配；上游可能有多个候选轮换
+# stream            true=流式 SSE 增量返回；false=一次性 JSON
+# max_tokens        最大输出 token 数（超上限会被网关 clamp 防止 400）
+# temperature       采样温度 0~2，越大越随机；top_p 与它二选一调
+# stop              可选停止序列数组，如 ["END"]
+# reasoning_effort  思考深度：none(关闭)/minimal/low/medium/high/xhigh/max
+#                   部分模型只支持子集档位，网关自动降档不报错
+# 多模态            messages[].content 可用数组形式传图/视频：
+#                   [{"type":"text","text":"看看图"},
+#                    {"type":"image_url","image_url":{"url":"https://…"}}]
+#                   视频同理 type=video_url（需系统设置开启视频透传）`,
               },
               {
                 path: "POST /v1/completions",
                 desc: "文本补全（老版兼容接口，仅文本补全）",
+                curl: `#!/usr/bin/env bash
+# 老版文本补全：传 prompt 而非 messages；适合无状态单轮文本续写
+BASE="http://127.0.0.1:3002"
+API_KEY="sk-xxxx"
+
+curl -sS "$BASE/v1/completions" \\
+  -H "Authorization: Bearer $API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "model": "deepseek-v4-flash",
+    "prompt": "中国的首都是",
+    "max_tokens": 64,
+    "temperature": 0.7,
+    "stream": false
+  }'
+#
+# —— 字段速查 ——
+# prompt       续写起始文本（字符串或数组）
+# max_tokens   续写最大长度
+# temperature  采样温度；stream 流式开关同 chat`,
               },
-              { path: "POST /v1/embeddings", desc: "文本嵌入（OpenAI 兼容）" },
-              { path: "POST /v1/rerank", desc: "重排（OpenAI 兼容）" },
+              {
+                path: "POST /v1/embeddings",
+                desc: "文本嵌入（OpenAI 兼容）",
+                curl: `#!/usr/bin/env bash
+# 文本向量化：返回浮点向量数组，用于语义检索/RAG
+BASE="http://127.0.0.1:3002"
+API_KEY="sk-xxxx"
+
+curl -sS "$BASE/v1/embeddings" \\
+  -H "Authorization: Bearer $API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "model": "bge-m3",              // 嵌入模型（走配置了 emb 能力的上游）
+    "input": ["什么是向量数据库？", "如何选型？"]  // 字符串或字符串数组，批量更高效
+  }'`,
+              },
+              {
+                path: "POST /v1/rerank",
+                desc: "重排（OpenAI 兼容）",
+                curl: `#!/usr/bin/env bash
+# 重排：按与 query 的相关度给 documents 打分排序，RAG 召回精排常用
+BASE="http://127.0.0.1:3002"
+API_KEY="sk-xxxx"
+
+curl -sS "$BASE/v1/rerank" \\
+  -H "Authorization: Bearer $API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "model": "rerankv2m3",           // 重排模型
+    "query": "什么是向量数据库",      // 查询语句
+    "documents": [                   // 候选文档数组（纯文本）
+      "向量数据库用于存储和检索高维向量",
+      "今天天气不错",
+      "embedding 是将文本映射为向量的技术"
+    ],
+    "top_n": 2                       // 可选：只返回前 N 条结果
+  }'`,
+              },
               {
                 path: "POST /v1/images/generations",
                 desc: "图片生成（OpenAI 兼容）",
+                curl: `#!/usr/bin/env bash
+# 文生图：拿到 URL 后尽快下载，有效期一般较短
+BASE="http://127.0.0.1:3002"
+API_KEY="sk-xxxx"
+
+curl -sS "$BASE/v1/images/generations" \\
+  -H "Authorization: Bearer $API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "model": "agnes-image-2.5-flash",
+    "prompt": "赛博朋克风格的城市夜景，霓虹灯倒映在雨后的街道",
+    "n": 1,
+    "size": "1024x1024",
+    "response_format": "url"
+  }'
+#
+# —— 字段速查 ——
+# model            图像模型（与路由规则匹配）
+# prompt           画面描述
+# n                生成张数
+# size             尺寸 WxH（上游支持的档位内）
+# response_format  url=返回下载链接；b64_json=内嵌 base64`,
               },
               {
                 path: "POST /v1/audio/speech",
                 desc: "语音合成（OpenAI 兼容）",
+                curl: `#!/usr/bin/env bash
+# TTS 文本转语音：响应体是音频二进制流，用 -o 重定向存盘
+BASE="http://127.0.0.1:3002"
+API_KEY="sk-xxxx"
+
+curl -sS "$BASE/v1/audio/speech" \\
+  -H "Authorization: Bearer $API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -o speech.mp3 \\
+  -d '{
+    "model": "mimo-v2.5-tts",
+    "input": "欢迎使用璇玑网关。",
+    "voice": "default",
+    "response_format": "mp3",
+    "speed": 1.0
+  }'
+#
+# —— 字段速查 ——
+# input            要合成的文本
+# voice            音色；voiceclone 模型可传克隆音色 ID
+# response_format  mp3/wav/opus 等容器格式
+# speed            语速 0.25~4.0，默认 1.0`,
               },
               {
                 path: "POST /v1/audio/transcriptions",
                 desc: "语音识别（OpenAI 兼容）",
+                curl: `#!/usr/bin/env bash
+# ASR 语音转文字：multipart/form-data 上传音频文件
+BASE="http://127.0.0.1:3002"
+API_KEY="sk-xxxx"
+
+curl -sS "$BASE/v1/audio/transcriptions" \\
+  -H "Authorization: Bearer $API_KEY" \\
+  -F "file=@meeting.mp3" \\
+  -F "model=whisper-large-v3" \\
+  -F "language=zh"
+#
+# —— 字段速查 ——
+# file      音频文件路径（mp3/wav/m4a 等，@ 前缀）
+# model     ASR 模型
+# language  可选语言提示 ISO 码（zh/en…）
+# prompt    可选领域词提示提高专名准确率`,
               },
               {
                 path: "POST /v1/videos",
                 desc: "视频生成（异步任务，OpenAI Videos 兼容 + Agnes 扩展参数）",
+                curl: `#!/usr/bin/env bash
+# 视频生成：创建异步任务拿 video_id 后轮询查询接口直至 completed/failed。
+# 三种模式 mode：text=纯文生视频；keyframe=首尾帧控制(first_frame/last_frame 至少一)；
+# reference=图片/音频参考生成（prompt 内用 <Picture N>/<Audio N> 指代素材）
+BASE="http://127.0.0.1:3002"
+API_KEY="sk-xxxx"
+
+curl -sS "$BASE/v1/videos" \\
+  -H "Authorization: Bearer $API_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "model": "agnes-video-2.5-flash",
+    "prompt": "雨后的未来城市街道，霓虹灯倒映在地面，电影级运镜",
+    "mode": "text",
+    "seconds": "5",
+    "size": "720P",
+    "aspect_ratio": "16:9",
+    "seed": 42,
+    "n": 1
+  }'
+#
+# —— 字段速查 ——
+# seconds        时长秒数（字符串）；Flash 系列 4~12
+# size           分辨率档位：720P/960P/2K；Flash 仅支持 720P
+# aspect_ratio   画幅 21:9/16:9/4:3/1:1/3:4/9:16
+# seed           随机种子（复现同一画面）；n 固定为 1
+# keyframe 模式  追加 "first_frame":"https://…/first.png","last_frame":"https://…"
+# reference 模式 追加 "images":["https://…/char.png"]（≤5 张）、或 "audios":[…]
+#                （Flash 不支持 videos 视频参考；仅 agnes-video-2.5 支持，
+#                 对象形如 {"url":"https://…/ref.mp4","start_seconds":0,"require_audio":false}）`,
               },
               {
                 path: "GET /v1/videos?video_id=xx[&model=xx]",
                 desc: "视频任务查询（老式 query 参数；有本地创建记录时自动定向，无需 model）",
+                curl: `#!/usr/bin/env bash
+# 轮询视频任务状态直至 completed/failed；完成后取响应 metadata.url 下载视频。
+# 通过本网关创建的任务已自动记录归属，只需传 video_id 即可；
+# 外部创建的陌生 video_id 需补 &model=<路由模型名>
+BASE="http://127.0.0.1:3002"
+API_KEY="sk-xxxx"
+VIDEO_ID="video_xxxx"               # 创建响应里的 video_id
+
+# 建议 1~2 秒轮询一次
+curl -sS "$BASE/v1/videos?video_id=$VIDEO_ID" \\
+  -H "Authorization: Bearer $API_KEY"`,
               },
               {
                 path: "GET /v1/videos/{id}",
                 desc: "视频任务查询（OpenAI 路径式标准；自动补 Agnes 的 model_name 参数）",
+                curl: `#!/usr/bin/env bash
+# 与 query 参数式等价的 OpenAI 标准路径写法，行为完全一致
+BASE="http://127.0.0.1:3002"
+API_KEY="sk-xxxx"
+VIDEO_ID="video_xxxx"
+
+curl -sS "$BASE/v1/videos/$VIDEO_ID" \\
+  -H "Authorization: Bearer $API_KEY"`,
               },
               {
                 path: "POST /v1/messages",
                 desc: "Claude 消息（Anthropic 兼容）",
+                curl: `#!/usr/bin/env bash
+# Anthropic Messages 协议：鉴权头不同，max_tokens 必填，system 单独字段
+BASE="http://127.0.0.1:3002"
+API_KEY="sk-xxxx"
+
+curl -sS "$BASE/v1/messages" \\
+  -H "x-api-key: $API_KEY" \\
+  -H "anthropic-version: 2023-06-01" \\
+  -H "Content-Type: application/json" \\
+  -d '{
+    "model": "deepseek-v4-flash",
+    "max_tokens": 4096,
+    "system": "你是一个严谨的技术助手",
+    "messages": [
+      {"role": "user", "content": "用一句话说明什么是反向代理"}
+    ],
+    "stream": false
+  }'
+#
+# —— 字段速查 ——
+# max_tokens   Anthropic 必填！最大输出长度
+# system       系统提示单独字段（不放进 messages）
+# stream       流式 SSE 开关`,
               },
             ],
             logTimer: null,
@@ -5242,6 +5521,22 @@
                 document.execCommand("copy");
                 document.body.removeChild(ta);
                 alert("已复制到剪贴板");
+              }
+            },
+            // 复制功能端点的 curl 示例脚本（clipboard API 优先，降级 execCommand）
+            copyCurl: function (e) {
+              if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(e.curl).then(function () {
+                  alert("示例已复制，可直接粘贴给他人或其它 Agent 使用");
+                });
+              } else {
+                var ta = document.createElement("textarea");
+                ta.value = e.curl;
+                document.body.appendChild(ta);
+                ta.select();
+                document.execCommand("copy");
+                document.body.removeChild(ta);
+                alert("示例已复制，可直接粘贴给他人或其它 Agent 使用");
               }
             },
             // ===== 组管理（配额矩阵） =====
