@@ -146,8 +146,8 @@ type Upstream struct {
 	MaxTokensCap    int               `yaml:"max_tokens_cap"`   // 上游 max_tokens 上限；0=不限制（客户端传超范围值时 clamp 到该值，防 400）
 	// StripFields 转发前从请求体剥离的顶层字段名列表（空=不剥离）。
 	// 部分上游（基元律动等）对未知字段严格校验，收到即 400 UNKNOWN_FIELD。
-	// 注意：prompt_cache_key / prompt_cache_retention 已全局无条件剥离
-	// （见 proxy/prompt_cache.go），无需在此逐上游配置；本机制留给其它字段
+	// 注意：prompt_cache_key / prompt_cache_retention / safety_identifier 已全局
+	// 无条件剥离（见 proxy/prompt_cache.go），无需在此逐上游配置；本机制留给其它字段
 	// （如 reasoning 等特定参数）按需使用。
 	// 存储用 config 表键 upstream.<name>.strip_fields（逗号分隔或 JSON 数组），不动 upstreams 表结构。
 	StripFields []string `yaml:"strip_fields"`
