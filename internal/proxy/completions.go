@@ -244,6 +244,15 @@ func (h *Handler) forwardCompletion(w http.ResponseWriter, r *http.Request, body
 			}
 		}
 		if shouldRetry {
+			// 429 限流不进 fastfail 黑名单，改走秒级 cooldown（与 chat 链路一致）
+			if resp.StatusCode == http.StatusTooManyRequests {
+				if h.needCooldownForUpstream(up.Name) {
+					h.markCooldown(up.Name, upstreamModel)
+				}
+				h.log.Info("completions upstream rate limited (429), cooldown instead of fastfail",
+					"upstream", up.Name, "model", upstreamModel)
+				return false, true, fmt.Errorf("completions upstream rate limited: %s", resp.Status)
+			}
 			if h.fastFail != nil {
 				h.fastFail.MarkFailedWithReason(up.Name, upstreamModel, fmt.Sprintf("status=%d", resp.StatusCode))
 			}

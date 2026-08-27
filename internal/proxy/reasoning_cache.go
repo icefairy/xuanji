@@ -174,15 +174,38 @@ func injectReasoningContent(body []byte, cache *ReasoningCache) ([]byte, bool) {
 			continue
 		}
 		tcs := m.Get("tool_calls")
-		if !tcs.IsArray() || len(tcs.Array()) == 0 {
-			continue
-		}
-		// 收集该消息的所有 tool_call_id
+
 		var tcIDs []string
-		for _, tc := range tcs.Array() {
-			if id := tc.Get("id").String(); id != "" {
-				tcIDs = append(tcIDs, id)
+		if tcs.IsArray() && len(tcs.Array()) > 0 {
+			// 普通情况：assistant 消息含 tool_calls，用其 tool_call_id 查缓存
+			for _, tc := range tcs.Array() {
+				if id := tc.Get("id").String(); id != "" {
+					tcIDs = append(tcIDs, id)
+				}
 			}
+		} else {
+			// Hermes L3 折叠场景：assistant 消息 content 为空且无 tool_calls 数组，
+			// 但其后紧邻的 tool 消息携带 tool_call_id——说明该 assistant 曾经生成过 thinking
+			// 且调用了工具，只是被折叠/规范化时丢掉了 tool_calls 字段。
+			// 用下一个 tool 消息的 tool_call_id 反查缓存注入 reasoning_content。
+			if m.Get("content").String() != "" {
+				continue // content 非空，不是折叠后的思考消息，跳过
+			}
+			for j := i + 1; j < len(arr); j++ {
+				tm := arr[j]
+				if tm.Get("role").String() == "tool" {
+					if id := tm.Get("tool_call_id").String(); id != "" {
+						tcIDs = append(tcIDs, id)
+					}
+					break // 只取第一条紧邻的 tool 消息
+				}
+				// 遇到非 tool 消息则停止查找（说明没有紧邻的 tool 响应）
+				break
+			}
+		}
+
+		if len(tcIDs) == 0 {
+			continue
 		}
 		// 安全检查：只有所有 tool_call_id 都有对应 tool_result 时才注入
 		if !shouldInjectReasoning(tcIDs, toolResultIDs) {
