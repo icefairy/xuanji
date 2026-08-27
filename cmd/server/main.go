@@ -614,6 +614,9 @@ func buildServeMux(cfg *config.Config, rt *router.Router, hc *health.Checker, re
 	mux.HandleFunc("POST /v1/audio/transcriptions", apiKeys.Middleware(qm.Middleware(pxHandler.AudioTranscriptions)))
 	mux.HandleFunc("POST /v1/videos", apiKeys.Middleware(qm.Middleware(pxHandler.VideoCreate)))
 	mux.HandleFunc("GET /v1/videos", apiKeys.Middleware(qm.Middleware(pxHandler.VideoQuery)))
+	// OpenAI Videos 协议标准路径式查询（与 query 参数式等价，内部同一逻辑；
+	// 归属路由基于创建时落库的 video_jobs 记录，无需配额检查）
+	mux.HandleFunc("GET /v1/videos/{id}", apiKeys.Middleware(pxHandler.VideoGetByID))
 
 	return mux
 }
