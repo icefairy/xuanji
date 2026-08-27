@@ -3139,6 +3139,18 @@
                 desc: "语音识别（OpenAI 兼容）",
               },
               {
+                path: "POST /v1/videos",
+                desc: "视频生成（异步任务，OpenAI Videos 兼容 + Agnes 扩展参数）",
+              },
+              {
+                path: "GET /v1/videos?video_id=xx[&model=xx]",
+                desc: "视频任务查询（老式 query 参数；有本地创建记录时自动定向，无需 model）",
+              },
+              {
+                path: "GET /v1/videos/{id}",
+                desc: "视频任务查询（OpenAI 路径式标准；自动补 Agnes 的 model_name 参数）",
+              },
+              {
                 path: "POST /v1/messages",
                 desc: "Claude 消息（Anthropic 兼容）",
               },

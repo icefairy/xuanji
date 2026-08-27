@@ -463,6 +463,13 @@ func (s *Store) init() error {
 		created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
 		PRIMARY KEY (upstream, model)
 	);
+	CREATE TABLE IF NOT EXISTS video_jobs (
+		video_id       TEXT PRIMARY KEY,               -- 创建响应中的 video_id，查询任务用
+		upstream       TEXT    NOT NULL,               -- 承接该任务的上游名
+		upstream_model TEXT    NOT NULL DEFAULT '',    -- 映射后的上游真实模型名（查询 URL 的 model_name）
+		client_model   TEXT    NOT NULL DEFAULT '',    -- 客户端传入的模型名
+		created_at     TEXT    NOT NULL DEFAULT (datetime('now'))
+	);
 	`); err != nil {
 		return err
 	}
@@ -1164,6 +1171,46 @@ func (s *Store) ListModelArrears() ([]ModelArrearRow, error) {
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// UpsertVideoJob 记录视频生成任务的归属（video_id → 上游 + 上游真实模型名）。
+// 查询任务时据此补 model_name（agnes 文档：keyframe/reference 模式不传
+// model_name 查不到任务）并定向承接上游，无需客户端再传 model。
+// 幂等：同一 video_id 重复创建（客户端重试）以最新一次为准。
+func (s *Store) UpsertVideoJob(videoID, upstream, upstreamModel, clientModel string) error {
+	_, err := s.db.Exec(`
+		INSERT INTO video_jobs (video_id, upstream, upstream_model, client_model, created_at)
+		VALUES (?, ?, ?, ?, datetime('now'))
+		ON CONFLICT(video_id) DO UPDATE SET
+			upstream=excluded.upstream,
+			upstream_model=excluded.upstream_model,
+			client_model=excluded.client_model,
+			created_at=excluded.created_at`,
+		videoID, upstream, upstreamModel, clientModel)
+	return err
+}
+
+// VideoJob 是 video_jobs 表的一行：任务归属信息，供查询接口定向。
+type VideoJob struct {
+	Upstream      string
+	UpstreamModel string
+	ClientModel   string
+}
+
+// GetVideoJob 按 video_id 查询任务归属信息。
+// 返回 sql.ErrNoRows 表示无记录（调用方应回退到按客户端 model 路由）。
+func (s *Store) GetVideoJob(videoID string) (VideoJob, error) {
+	var j VideoJob
+	err := s.db.QueryRow(
+		`SELECT upstream, upstream_model, client_model FROM video_jobs WHERE video_id = ?`,
+		videoID).Scan(&j.Upstream, &j.UpstreamModel, &j.ClientModel)
+	return j, err
+}
+
+// DeleteVideoJobsByUpstream 删除上游时级联清理其视频任务记录（避免孤儿引用）。
+func (s *Store) DeleteVideoJobsByUpstream(upstream string) error {
+	_, err := s.db.Exec(`DELETE FROM video_jobs WHERE upstream = ?`, upstream)
+	return err
 }
 
 // DeleteUpstream 删除上游，并同步清理所有路由规则中对该上游的引用
