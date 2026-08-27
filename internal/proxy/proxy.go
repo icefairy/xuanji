@@ -67,6 +67,7 @@ type Handler struct {
 	priceFor  func(model string) (input, cache, out float64, ok bool) // 模型单价查询；nil 时不计费
 	cooldowns sync.Map                                                // 上游冷却表：map[string]time.Time, key="upstream:model"，value=冷却到期时间
 	reasoning *ReasoningCache                                         // reasoning_content 缓存（key=tool_call_id，thinking 模式回传用）；nil 时不启用
+	arrearsMarker func(name string)                                   // 欠费标记回调；nil 时仅记日志不落库
 }
 
 // New 创建转发 Handler，共享一个 60s 连接超时的 HTTP 客户端。
@@ -544,6 +545,22 @@ func (h *Handler) isCooldown(name, model string) bool {
 // 失败切换由调用方按候选列表顺序逐个尝试：同 tier 内失败自动试下一个，
 // 同 tier 全部失败自动升到上一级计费类型（免费→包月→按量）。
 func (h *Handler) selectCandidates(ups []*config.Upstream, strategy, model string) []*config.Upstream {
+	// 欠费硬排除：标记欠费的上游停止路由（上游余额不足不会自愈，重试无意义）。
+	// 与 enabled 过滤不同：全部候选都欠费时也返回空列表——宁可报错也不打欠费渠道。
+	var notArrear []*config.Upstream
+	for _, u := range ups {
+		if u.Arrears {
+			h.log.Warn("skip arrear upstream", "upstream", u.Name, "model", model)
+			continue
+		}
+		notArrear = append(notArrear, u)
+	}
+	ups = notArrear
+	if len(ups) == 0 {
+		// 提前返回：空候选即业务意图（全欠费宁报错也不转发），
+		// 也避免后续 no-healthy 兑底取 sorted[0] 在空列表上越界。
+		return nil
+	}
 	// 禁用过滤：跳过 enabled=false 的上游（管理页手动禁用，不参与转发）
 	var enabledUps []*config.Upstream
 	for _, u := range ups {
@@ -788,6 +805,11 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 			reqBody = nb
 		}
 	}
+	// 按上游剥离指定字段：部分上游对未知字段严格校验（收到即 400 UNKNOWN_FIELD）；
+	// 请求体复写会在此之后执行，因此 override 可显式重新注入该字段（保留定向支持余地）。
+	if nb, changed := stripUpstreamFields(reqBody, up); changed {
+		reqBody = nb
+	}
 	// 视频透传开关：默认关闭。关闭时请求含 video_url 直接 400——视频流量大，
 	// 且多数模型不支持视频，需在系统设置显式开启才放行。
 	if !h.cfg.Proxy.VideoPassThrough && containsVideoURL(body) {
@@ -871,6 +893,13 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 					break
 				}
 			}
+		}
+		// 欠费检测：响应体命中余额类关键词 → 标记该上游欠费（停路由+停健康检查），
+		// 等待人工充值后经「测试上游」成功自动恢复。同时强制可重试：
+		// 欠费渠道本次请求也立即弃用，切下一个候选救急。
+		if isArrearResponse(respBody) {
+			h.markArrear(up, respBody)
+			shouldRetry = true
 		}
 		// 详细错误日志：结构化摘要（请求关键字段 + 最近消息 + 图片打码 + 上游 error.message），
 		// 避免 messages/base64 巨大时盲截前 800 字符看不到有用信息（可重试+不可重试都打）。
