@@ -1349,6 +1349,42 @@ func (h *Handler) DeleteEffortConfig(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]string{"status": "deleted"})
 }
 
+// ===== Model Token Limits =====
+
+// TokenLimits 列出所有模型 token 上限记录（GET /admin/token-limits）。
+func (h *Handler) TokenLimits(w http.ResponseWriter, _ *http.Request) {
+	if h.store == nil {
+		writeJSON(w, map[string]string{"error": "store not available"})
+		return
+	}
+	all, err := h.store.ListTokenLimits()
+	if err != nil {
+		writeJSON(w, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, map[string]any{"items": all})
+}
+
+// DeleteTokenLimit 删除一条模型 token 上限记录（DELETE /admin/token-limits/{upstream}/{model}）。
+// 删除后程序会在再次遇到同类 400 错误时自动重新学习并写入。
+func (h *Handler) DeleteTokenLimit(w http.ResponseWriter, r *http.Request) {
+	if h.store == nil {
+		writeJSON(w, map[string]string{"error": "store not available"})
+		return
+	}
+	upstream := r.PathValue("upstream")
+	model := r.PathValue("model")
+	if upstream == "" || model == "" {
+		writeJSON(w, map[string]string{"error": "upstream and model are required"})
+		return
+	}
+	if err := h.store.DeleteTokenLimit(upstream, model); err != nil {
+		writeJSON(w, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, map[string]string{"status": "deleted"})
+}
+
 // Reload 从 DB 重新加载配置并重建路由/健康检查（POST /admin/reload）。
 func (h *Handler) Reload(w http.ResponseWriter, _ *http.Request) {
 	if h.reload == nil {

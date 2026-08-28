@@ -602,6 +602,13 @@
         </button>
         <button
           class="tab-btn"
+          :class="{ active: tab === 'tokenlimits' }"
+          @click="switchTab('tokenlimits')"
+        >
+          Token 限制
+        </button>
+        <button
+          class="tab-btn"
           :class="{ active: tab === 'settings' }"
           @click="switchTab('settings')"
         >
@@ -1957,6 +1964,56 @@
         </table>
       </div>
 
+      <!-- 模型 Token 上限（自动学习自上游 400，见 proxy/tokenlimit.go） -->
+      <div class="tab-content" v-if="tab === 'tokenlimits'">
+        <div
+          style="
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+          "
+        >
+          <span style="color: #909399; font-size: 13px"
+            >共 {{ tokenLimits.length }} 条记录。程序从上游
+            「max_completion_tokens is too large ... at most N」类 400 错误自动提取 N
+            记录；转发前自动把超限的 max_tokens / max_completion_tokens clamp 到上限。
+            删除某条后程序会再次遇到同类错误时自动重新记录。</span
+          >
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>上游</th>
+              <th>真实模型</th>
+              <th>max_completion_tokens</th>
+              <th>max_tokens</th>
+              <th>来源</th>
+              <th>更新时间</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="tl in tokenLimits">
+              <td>{{ tl.upstream }}</td>
+              <td>{{ tl.upstream_model }}</td>
+              <td>{{ tl.max_completion_tokens || '-' }}</td>
+              <td>{{ tl.max_tokens || '-' }}</td>
+              <td>{{ tl.source }}</td>
+              <td style="font-size: 12px">{{ tl.updated_at || tl.created_at }}</td>
+              <td class="ops">
+                <button
+                  class="btn btn-danger"
+                  @click="delTokenLimit(tl)"
+                >
+                  删除
+                </button>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
       <!-- 系统设置 -->
       <div class="tab-content" v-if="tab === 'settings'">
         <div
@@ -3083,6 +3140,7 @@
             chatLoading: false,
             efforts: [],
             showEffortDialog: false,
+            tokenLimits: [],
             effortIsEdit: false,
             effortForm: { model: "", recommended: "", forced: "" },
             showRuleDialog: false,
@@ -3633,6 +3691,39 @@ curl -sS "$BASE/v1/messages" \\
                 })
                 .then(function () {
                   self.loadEfforts();
+                });
+            },
+            loadTokenLimits: function () {
+              var self = this;
+              self
+                .api("/admin/token-limits")
+                .then(function (r) {
+                  self.tokenLimits = (r.data && r.data.items) || [];
+                })
+                .catch(function () {});
+            },
+            delTokenLimit: function (row) {
+              var self = this;
+              if (
+                !confirm(
+                  "确认删除 " +
+                    row.upstream +
+                    " / " +
+                    row.upstream_model +
+                    " 的 token 上限？删除后程序遇同类 400 会自动重新学习。"
+                )
+              )
+                return;
+              self
+                .api(
+                  "/admin/token-limits/" +
+                    encodeURIComponent(row.upstream) +
+                    "/" +
+                    encodeURIComponent(row.upstream_model),
+                  { method: "DELETE" }
+                )
+                .then(function () {
+                  self.loadTokenLimits();
                 });
             },
             api: function (url, opts) {
@@ -4304,6 +4395,8 @@ curl -sS "$BASE/v1/messages" \\
                   });
                 } else if (name === "efforts") {
                   self.loadEfforts();
+                } else if (name === "tokenlimits") {
+                  self.loadTokenLimits();
                 } else if (name === "logs") {
                   self.loadLogs();
                 } else if (name === "metrics") {

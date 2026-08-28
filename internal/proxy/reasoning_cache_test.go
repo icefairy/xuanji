@@ -179,15 +179,36 @@ func TestInjectReasoningContent_PartialResult_NoInject(t *testing.T) {
 func TestInjectReasoningContent_NoToolCalls(t *testing.T) {
 	c := NewReasoningCache(10, nil)
 	c.Put("call_1", "x")
-	// 普通 assistant 消息（无 tool_calls）不注入
+	// 普通 assistant 消息（无 tool_calls，无匹配指纹）不注入
 	body := []byte(`{"model":"m","messages":[{"role":"assistant","content":"plain answer"}]}`)
 	if nb, changed := injectReasoningContent(body, c); changed || string(nb) != string(body) {
-		t.Fatalf("plain assistant message must not change")
+		t.Fatalf("plain assistant message without matching fingerprint must not change")
 	}
 	// 非 assistant 消息不注入
 	body = []byte(`{"model":"m","messages":[{"role":"tool","tool_call_id":"call_1","content":"result"}]}`)
 	if nb, changed := injectReasoningContent(body, c); changed || string(nb) != string(body) {
 		t.Fatalf("tool message must not change")
+	}
+}
+
+func TestInjectReasoningContent_Fingerprint(t *testing.T) {
+	c := NewReasoningCache(10, nil)
+	c.PutFingerprint("thinking result", "deep reasoning here")
+	body := []byte(`{"model":"m","messages":[{"role":"user","content":"hi"},{"role":"assistant","content":"thinking result"}]}`)
+	nb, changed := injectReasoningContent(body, c)
+	if !changed {
+		t.Fatalf("should inject reasoning_content via fingerprint")
+	}
+	msg := gjson.GetBytes(nb, "messages.1")
+	if got := msg.Get("reasoning_content").String(); got != "deep reasoning here" {
+		t.Fatalf("reasoning_content = %q, want deep reasoning here", got)
+	}
+	// 其他字段零破坏
+	if got := msg.Get("content").String(); got != "thinking result" {
+		t.Fatalf("content = %q, want thinking result", got)
+	}
+	if got := msg.Get("role").String(); got != "assistant" {
+		t.Fatalf("role = %q, want assistant", got)
 	}
 }
 
@@ -203,12 +224,17 @@ func TestCacheReasoningFromMessage_NonStream(t *testing.T) {
 }
 
 func TestCacheReasoningFromMessage_NoToolCalls(t *testing.T) {
-	// 无 tool_calls（普通回答）不缓存
+	// 无 tool_calls 但有 content 和 reasoning_content → 按指纹缓存
 	c := NewReasoningCache(10, nil)
 	resp := []byte(`{"choices":[{"message":{"role":"assistant","content":"ok","reasoning_content":"thought here"}}]}`)
 	cacheReasoningFromMessage(resp, c)
+	// 不应有 tool_call 缓存（无 tool_calls）
 	if c.Len() != 0 {
 		t.Fatalf("Len = %d, want 0 (no tool_call id to key on)", c.Len())
+	}
+	// 但应有指纹缓存
+	if v, ok := c.GetByFingerprint("ok"); !ok || v != "thought here" {
+		t.Fatalf("GetByFingerprint(ok) = %q, %v; want thought here", v, ok)
 	}
 }
 
@@ -224,32 +250,41 @@ func TestCacheReasoningFromMessage_EmptyReasoning(t *testing.T) {
 
 func TestCacheReasoningDelta_StreamConcat(t *testing.T) {
 	c := NewReasoningCache(10, nil)
-	var buf strings.Builder
+	var reasoningBuf strings.Builder
+	var contentBuf strings.Builder
 	var ids []string
 	// 分片累积：thinking 模式流式 reasoning_content 是逐片 delta
-	cacheReasoningDelta(`{"choices":[{"delta":{"role":"assistant","reasoning_content":"step1 "},"finish_reason":null}]}`, &buf, &ids, c)
-	cacheReasoningDelta(`{"choices":[{"delta":{"reasoning_content":"step2 "},"finish_reason":null}]}`, &buf, &ids, c)
-	cacheReasoningDelta(`{"choices":[{"delta":{"reasoning_content":"step3"},"finish_reason":null}]}`, &buf, &ids, c)
+	cacheReasoningDelta(`{"choices":[{"delta":{"role":"assistant","reasoning_content":"step1 "},"finish_reason":null}]}`, &reasoningBuf, &contentBuf, &ids, c)
+	cacheReasoningDelta(`{"choices":[{"delta":{"reasoning_content":"step2 "},"finish_reason":null}]}`, &reasoningBuf, &contentBuf, &ids, c)
+	cacheReasoningDelta(`{"choices":[{"delta":{"reasoning_content":"step3"},"finish_reason":null}]}`, &reasoningBuf, &contentBuf, &ids, c)
 	// tool_call id 出现的 chunk：立即写入当前累积
-	cacheReasoningDelta(`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_s","type":"function","function":{"name":"f","arguments":""}}]},"finish_reason":null}]}`, &buf, &ids, c)
+	cacheReasoningDelta(`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_s","type":"function","function":{"name":"f","arguments":""}}]},"finish_reason":null}]}`, &reasoningBuf, &contentBuf, &ids, c)
 	if len(ids) != 1 || ids[0] != "call_s" {
 		t.Fatalf("ids = %v, want [call_s]", ids)
 	}
-	if got := buf.String(); got != "step1 step2 step3" {
-		t.Fatalf("buf = %q, want step1 step2 step3", got)
+	if got := reasoningBuf.String(); got != "step1 step2 step3" {
+		t.Fatalf("reasoningBuf = %q, want step1 step2 step3", got)
 	}
 	if v, ok := c.Get("call_s"); !ok || v != "step1 step2 step3" {
 		t.Fatalf("Get(call_s) = %q, %v; want full concatenated reasoning", v, ok)
 	}
 	// arguments 增量 chunk 不带 id → 不重复记录
-	cacheReasoningDelta(`{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"city\":\"beijing\"}"}}]},"finish_reason":null}]}`, &buf, &ids, c)
+	cacheReasoningDelta(`{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"city\":\"beijing\"}"}}]},"finish_reason":null}]}`, &reasoningBuf, &contentBuf, &ids, c)
 	if len(ids) != 1 {
 		t.Fatalf("ids must not grow on argument-only chunks, got %v", ids)
 	}
-	// 流结束补写（模拟调用方在 [DONE]/EOF 时 PutAll 完整 buf）
-	c.PutAll(ids, buf.String())
+	// 流结束补写（模拟调用方在 [DONE]/EOF 时 PutAll 完整 buf + fingerprint）
+	c.PutAll(ids, reasoningBuf.String())
 	if v, _ := c.Get("call_s"); v != "step1 step2 step3" {
 		t.Fatalf("final reasoning = %q, want step1 step2 step3", v)
+	}
+	// 带 content 的分片验证指纹缓存
+	var cb2 strings.Builder
+	cacheReasoningDelta(`{"choices":[{"delta":{"content":"Hello "},"finish_reason":null}]}`, &reasoningBuf, &cb2, &ids, c)
+	cacheReasoningDelta(`{"choices":[{"delta":{"content":"World"},"finish_reason":null}]}`, &reasoningBuf, &cb2, &ids, c)
+	c.PutFingerprint(cb2.String(), reasoningBuf.String())
+	if v, ok := c.GetByFingerprint("Hello World"); !ok || v != "step1 step2 step3" {
+		t.Fatalf("GetByFingerprint(Hello World) = %q, %v; want step1 step2 step3", v, ok)
 	}
 }
 

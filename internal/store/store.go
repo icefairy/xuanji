@@ -424,13 +424,28 @@ func (s *Store) init() error {
 	ensureColumn(s.db, "request_log", "user_agent", "user_agent TEXT NOT NULL DEFAULT ''")
 
 	// reasoning_cache 表：跨重启持久化 reasoning_content，解决内存缓存容量上限与重启丢失问题。
-	// key = tool_call_id，value = reasoning_content 全文，created_at = UTC RFC3339。
+	// key 两种形态：tc:<tool_call_id>（tool-calling 轮次）/ fp:<content指纹>（纯思考回答轮次），
+	// value = reasoning_content 全文，created_at = UTC RFC3339。
 	// 由 dailyStatsTicker 每日 prune 7 天前的记录。
 	s.db.Exec(`CREATE TABLE IF NOT EXISTS reasoning_cache (
-		tool_call_id TEXT NOT NULL,
+		key          TEXT NOT NULL,
 		content      TEXT NOT NULL,
 		created_at   TEXT NOT NULL DEFAULT (datetime('now', 'utc')),
-		PRIMARY KEY (tool_call_id)
+		PRIMARY KEY (key)
+	)`)
+
+	// model_token_limits 表：从上游 400 错误自动学习的模型 token 上限（按 上游+真实模型 唯一）。
+	// 目的：客户端 agent 按模型窗口自动填 max_tokens / max_completion_tokens 超大值时上游报
+	// "is too large: N. This model supports at most M"，网关记录 M 后自动 clamp 避免 400。
+	s.db.Exec(`CREATE TABLE IF NOT EXISTS model_token_limits (
+		upstream             TEXT NOT NULL,
+		upstream_model       TEXT NOT NULL,
+		max_completion_tokens INTEGER NOT NULL DEFAULT 0,
+		max_tokens           INTEGER NOT NULL DEFAULT 0,
+		source               TEXT NOT NULL DEFAULT 'error_message',
+		created_at           TEXT NOT NULL DEFAULT (datetime('now', 'utc')),
+		updated_at           TEXT NOT NULL DEFAULT (datetime('now', 'utc')),
+		PRIMARY KEY (upstream, upstream_model)
 	)`)
 	// 迁移：upstreams 加 enabled 列（禁用/启用）
 	ensureColumn(s.db, "upstreams", "enabled", "enabled INTEGER NOT NULL DEFAULT 1")
@@ -646,25 +661,26 @@ func (s *Store) PruneReasoningCache(retainDays int) (int64, error) {
 	return n, nil
 }
 
-// PutReasoning 写入 tool_call_id → reasoning_content 映射（UPSERT）。
+// PutReasoning 写入 key → reasoning_content 映射（UPSERT）。
+// key 为 tc:<tool_call_id> 或 fp:<content指纹>（见 proxy.ReasoningCache）。
 // 幂等：已存在则更新 content 与 created_at。
-func (s *Store) PutReasoning(toolCallID, content string) error {
-	if toolCallID == "" || content == "" {
+func (s *Store) PutReasoning(key, content string) error {
+	if key == "" || content == "" {
 		return nil
 	}
 	_, err := s.db.Exec(
-		`INSERT INTO reasoning_cache (tool_call_id, content, created_at)
+		`INSERT INTO reasoning_cache (key, content, created_at)
 		 VALUES (?, ?, datetime('now', 'utc'))
-		 ON CONFLICT(tool_call_id) DO UPDATE SET content = excluded.content, created_at = datetime('now', 'utc')`,
-		toolCallID, content,
+		 ON CONFLICT(key) DO UPDATE SET content = excluded.content, created_at = datetime('now', 'utc')`,
+		key, content,
 	)
 	return err
 }
 
-// GetReasoning 读取 tool_call_id 对应的 reasoning_content，未命中返回 ("", false)。
-func (s *Store) GetReasoning(toolCallID string) (string, error) {
+// GetReasoning 读取 key 对应的 reasoning_content，未命中返回 ("", false)。
+func (s *Store) GetReasoning(key string) (string, error) {
 	var v string
-	err := s.db.QueryRow(`SELECT content FROM reasoning_cache WHERE tool_call_id = ?`, toolCallID).Scan(&v)
+	err := s.db.QueryRow(`SELECT content FROM reasoning_cache WHERE key = ?`, key).Scan(&v)
 	if err == sql.ErrNoRows {
 		return "", nil
 	}
@@ -1521,6 +1537,90 @@ func (s *Store) DeleteEffortConfig(model string) error {
 	return err
 }
 
+// ===== Model Token Limits =====
+
+// ModelTokenLimitRow 是 model_token_limits 表的行映射。
+// 从上游 400 错误自动学习（或预置）的模型 token 上限。
+type ModelTokenLimitRow struct {
+	Upstream            string `json:"upstream"`
+	UpstreamModel       string `json:"upstream_model"`
+	MaxCompletionTokens int    `json:"max_completion_tokens"`
+	MaxTokens           int    `json:"max_tokens"`
+	Source              string `json:"source"`
+	CreatedAt           string `json:"created_at"`
+	UpdatedAt           string `json:"updated_at"`
+}
+
+// ListTokenLimits 返回所有模型 token 上限记录。
+func (s *Store) ListTokenLimits() ([]ModelTokenLimitRow, error) {
+	rows, err := s.db.Query(`
+		SELECT upstream, upstream_model, max_completion_tokens, max_tokens, source, created_at, updated_at
+		FROM model_token_limits ORDER BY upstream, upstream_model`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ModelTokenLimitRow
+	for rows.Next() {
+		var r ModelTokenLimitRow
+		if err := rows.Scan(&r.Upstream, &r.UpstreamModel, &r.MaxCompletionTokens, &r.MaxTokens, &r.Source, &r.CreatedAt, &r.UpdatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// UpsertTokenLimit 写入或更新模型 token 上限（按上游+真实模型唯一）。
+// source 为来源（error_message / predefined / manual）。
+func (s *Store) UpsertTokenLimit(upstream, upstreamModel string, maxCompletionTokens, maxTokens int, source string) error {
+	if upstream == "" || upstreamModel == "" {
+		return nil
+	}
+	_, err := s.db.Exec(
+		`INSERT INTO model_token_limits (upstream, upstream_model, max_completion_tokens, max_tokens, source, updated_at)
+		 VALUES (?, ?, ?, ?, ?, datetime('now', 'utc'))
+		 ON CONFLICT(upstream, upstream_model) DO UPDATE SET
+		   max_completion_tokens = excluded.max_completion_tokens,
+		   max_tokens = excluded.max_tokens,
+		   source = excluded.source,
+		   updated_at = datetime('now', 'utc')`,
+		upstream, upstreamModel, maxCompletionTokens, maxTokens, source,
+	)
+	return err
+}
+
+// GetTokenLimit 查询指定上游+模型的 token 上限。
+// 优先精确匹配 (upstream, upstreamModel)，未命中时回退到通配上游 ('*', upstreamModel)。
+// 均未命中返回 nil（不报错，调用方按需处理）。
+func (s *Store) GetTokenLimit(upstream, upstreamModel string) (*ModelTokenLimitRow, error) {
+	var r ModelTokenLimitRow
+	err := s.db.QueryRow(
+		`SELECT upstream, upstream_model, max_completion_tokens, max_tokens, source, created_at, updated_at
+		 FROM model_token_limits WHERE upstream=? AND upstream_model=?`,
+		upstream, upstreamModel,
+	).Scan(&r.Upstream, &r.UpstreamModel, &r.MaxCompletionTokens, &r.MaxTokens, &r.Source, &r.CreatedAt, &r.UpdatedAt)
+	if err == sql.ErrNoRows {
+		// 回退到通配上游
+		err = s.db.QueryRow(
+			`SELECT upstream, upstream_model, max_completion_tokens, max_tokens, source, created_at, updated_at
+			 FROM model_token_limits WHERE upstream='*' AND upstream_model=?`,
+			upstreamModel,
+		).Scan(&r.Upstream, &r.UpstreamModel, &r.MaxCompletionTokens, &r.MaxTokens, &r.Source, &r.CreatedAt, &r.UpdatedAt)
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return &r, err
+	}
+	return &r, err
+}
+
+// DeleteTokenLimit 删除指定上游+模型的 token 上限记录。
+func (s *Store) DeleteTokenLimit(upstream, upstreamModel string) error {
+	_, err := s.db.Exec(`DELETE FROM model_token_limits WHERE upstream=? AND upstream_model=?`, upstream, upstreamModel)
+	return err
+}
+
 // ===== Config key-value =====
 
 // GetConfig 读取配置值，不存在返回空字符串。
@@ -1607,6 +1707,25 @@ func (s *Store) SeedDefaults() error {
 	// 已有数据：只补缺失的 key（INSERT OR IGNORE 自动跳过已存在）
 	for k, v := range defaults {
 		if _, err := s.db.Exec(`INSERT OR IGNORE INTO config (key, value) VALUES (?, ?)`, k, v); err != nil {
+			return err
+		}
+	}
+	// 预置已知模型 token 上限（通配上游 '*'，避免首次 400 才能学习到）。
+	// INSERT OR IGNORE 不覆盖已学习的值；删除后重启会重新预置。
+	seedTokenLimits := []struct {
+		model              string
+		maxCompletionToks  int
+		maxToks            int
+	}{
+		{"deepseek-v4-flash", 262144, 262144},
+		{"deepseek-v4-pro", 262144, 262144},
+	}
+	for _, kl := range seedTokenLimits {
+		if _, err := s.db.Exec(
+			`INSERT OR IGNORE INTO model_token_limits (upstream, upstream_model, max_completion_tokens, max_tokens, source)
+			 VALUES ('*', ?, ?, ?, 'predefined')`,
+			kl.model, kl.maxCompletionToks, kl.maxToks,
+		); err != nil {
 			return err
 		}
 	}

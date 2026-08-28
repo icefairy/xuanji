@@ -68,6 +68,7 @@ type Handler struct {
 	cooldowns     sync.Map                                                // 上游冷却表：map[string]time.Time, key="upstream:model"，value=冷却到期时间
 	reasoning     *ReasoningCache                                         // reasoning_content 缓存（key=tool_call_id，thinking 模式回传用）；nil 时不启用
 	arrearsMarker func(name string)                                       // 欠费标记回调；nil 时仅记日志不落库
+	tokenLimits     *store.Store                                            // 模型 token 上限持久化；nil 时仅默认 cap 兜底
 	// modelArrears 模型级欠费内存缓存：key=upstream::model。
 	// per_model_billing 开启的上游按 (上游, 客户端模型名) 粒度隔离欠费；
 	// 启动时从 DB 加载，标记/清除时同步 DB。mu 保护并发读写。
@@ -779,6 +780,11 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 	if nb, changed := normalizeMaxTokens(reqBody, up); changed {
 		reqBody = nb
 	}
+	// 模型 token 上限 clamp：从 model_token_limits 表查该上游+模型已学习的上限，
+	// 超过则 clamp（自动学习自上游 400 错误，见 tokenlimit.go）。
+	if nb, changed := h.applyTokenLimit(reqBody, up, upstreamModel); changed {
+		reqBody = nb
+	}
 	// prompt 缓存私有参数剥离（对所有上游无条件生效）：prompt_cache_key（DeepSeek 私有）与
 	// prompt_cache_retention（OpenAI 较新参数，聚合上游普遍不认），pi 等 agent 自动携带，
 	// 转发前统一删除（上游仍走自动前缀缓存，功能无损失）。
@@ -910,6 +916,12 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 		// 详细错误日志：结构化摘要（请求关键字段 + 最近消息 + 图片打码 + 上游 error.message），
 		// 避免 messages/base64 巨大时盲截前 800 字符看不到有用信息（可重试+不可重试都打）。
 		LogUpstreamErrorDetail(h.log, up, model, upstreamModel, resp.StatusCode, reqBody, respBody)
+		// token 上限学习：400 且响应含 "is too large ... at most M" 模式时提取 M 写库，
+		// 下次同模型请求自动 clamp（见 tokenlimit.go）。仅 400（非法请求）时学习，
+		// 429/5xx 等与参数无关的错误不学习。
+		if resp.StatusCode == http.StatusBadRequest {
+			h.learnTokenLimit(up, upstreamModel, model, respBody)
+		}
 		if shouldRetry {
 			// 429 限流 ≠ 故障：不进 fastfail 黑名单（避免标红/5 分钟禁用），
 			// 改走秒级 cooldown（由 cooldown_upstreams + cooldown_seconds 控制），
@@ -1113,9 +1125,11 @@ func (h *Handler) streamCopy(w http.ResponseWriter, resp *http.Response, promptT
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
 	// thinking 模式 reasoning_content 缓存：累积 delta 分片，关联 tool_call_id；
-	// 流结束（[DONE] 或 EOF）时写入最终完整内容（tool_calls 之后可能还有 reasoning 分片）
+	// 流结束（[DONE] 或 EOF）时写入最终完整内容（tool_calls 之后可能还有 reasoning 分片）。
+	// 同时累积 content，流结束时按指纹缓存纯思考回答轮次的 reasoning_content。
 	cacheEnabled := h.cacheReasoningEnabled()
 	var reasoningBuf strings.Builder
+	var contentBuf strings.Builder
 	var toolCallIDs []string
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -1129,13 +1143,18 @@ func (h *Handler) streamCopy(w http.ResponseWriter, resp *http.Response, promptT
 			data := strings.TrimPrefix(line, "data: ")
 			if data == "[DONE]" {
 				// 流正常结束：补写最终累积的 reasoning（覆盖 tool_calls 之后的增量分片）
-				if cacheEnabled && reasoningBuf.Len() > 0 && len(toolCallIDs) > 0 {
-					h.reasoning.PutAll(toolCallIDs, reasoningBuf.String())
+				if cacheEnabled && reasoningBuf.Len() > 0 {
+					if len(toolCallIDs) > 0 {
+						h.reasoning.PutAll(toolCallIDs, reasoningBuf.String())
+					}
+					if contentBuf.Len() > 0 {
+						h.reasoning.PutFingerprint(contentBuf.String(), reasoningBuf.String())
+					}
 				}
 				continue
 			}
 			if cacheEnabled {
-				cacheReasoningDelta(data, &reasoningBuf, &toolCallIDs, h.reasoning)
+				cacheReasoningDelta(data, &reasoningBuf, &contentBuf, &toolCallIDs, h.reasoning)
 			}
 			usage := gjson.Get(data, "usage")
 			// 只有真实 usage 对象才提取；null 中间 chunk 跳过
@@ -1162,8 +1181,13 @@ func (h *Handler) streamCopy(w http.ResponseWriter, resp *http.Response, promptT
 		}
 	}
 	// 流可能没有 [DONE]（客户端中断/上游异常关闭）：EOF 时同样补写最终累积的 reasoning
-	if cacheEnabled && reasoningBuf.Len() > 0 && len(toolCallIDs) > 0 {
-		h.reasoning.PutAll(toolCallIDs, reasoningBuf.String())
+	if cacheEnabled && reasoningBuf.Len() > 0 {
+		if len(toolCallIDs) > 0 {
+			h.reasoning.PutAll(toolCallIDs, reasoningBuf.String())
+		}
+		if contentBuf.Len() > 0 {
+			h.reasoning.PutFingerprint(contentBuf.String(), reasoningBuf.String())
+		}
 	}
 	return false
 }
