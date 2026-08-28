@@ -1,80 +1,70 @@
 package proxy
 
 import (
-	"fmt"
-	"net/http"
 	"testing"
 	"time"
 )
 
-// TestFastFailProbe_Recover 验证：被标记失败的上游，后台探测返回 2xx 后解除黑名单。
-func TestFastFailProbe_Recover(t *testing.T) {
-	upstream, h := newTestHandler(t, func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprint(w, `{"choices":[{"message":{"content":"hi"}}]}`)
-	})
-	defer upstream.Close()
-
-	h.fastFail = NewFastFailCache(time.Hour)
-	h.fastFail.MarkFailed("up", "deepseek-v4-flash")
-	h.probeFastFailOnce()
-
-	if h.fastFail.IsBlacklisted("up", "deepseek-v4-flash") {
-		t.Error("upstream should be recovered after successful probe")
+// TestFastFail_RecoverViaSuccess 验证：真实请求成功后 MarkSuccess 解除黑名单（懒加载恢复路径）。
+func TestFastFail_RecoverViaSuccess(t *testing.T) {
+	ff := NewFastFailCache(time.Hour)
+	ff.MarkFailed("up", "deepseek-v4-flash")
+	if !ff.IsBlacklisted("up", "deepseek-v4-flash") {
+		t.Fatal("should be blacklisted after MarkFailed")
+	}
+	ff.MarkSuccess("up", "deepseek-v4-flash")
+	if ff.IsBlacklisted("up", "deepseek-v4-flash") {
+		t.Error("upstream should be recovered after MarkSuccess")
 	}
 }
 
-// TestFastFailProbe_ServerErrorExtendsCooldown 验证：5xx 探测仍失败时刷新冷却（顺延）。
-func TestFastFailProbe_ServerErrorExtendsCooldown(t *testing.T) {
-	upstream, h := newTestHandler(t, func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusServiceUnavailable)
-	})
-	defer upstream.Close()
+// TestFastFail_CleanupExpired 验证：懒加载 Cleanup 只清理冷却到期的条目，
+// 未到期条目保留（到期即放行，不主动探测）。
+func TestFastFail_CleanupExpired(t *testing.T) {
+	ff := NewFastFailCache(time.Hour)
+	ff.MarkFailed("a", "")
+	ff.MarkFailed("b", "")
+	// 手动把 a 的失败时间推到过期
+	ff.mu.Lock()
+	ff.entries["a"] = time.Now().Add(-2 * time.Hour)
+	ff.mu.Unlock()
 
-	h.fastFail = NewFastFailCache(time.Hour)
-	h.fastFail.MarkFailed("up", "deepseek-v4-flash")
-	failTime := h.fastFail.entries[ffKey("up", "deepseek-v4-flash")]
-
-	h.probeFastFailOnce()
-
-	after := h.fastFail.entries[ffKey("up", "deepseek-v4-flash")]
-	if after.Before(failTime) || after.Equal(failTime) {
-		t.Errorf("503 probe should extend cooldown (refresh timestamp): %v -> %v", failTime, after)
+	ff.Cleanup()
+	if ff.IsBlacklisted("a", "") {
+		t.Error("expired entry a should be cleaned")
 	}
-	if !h.fastFail.IsBlacklisted("up", "deepseek-v4-flash") {
-		t.Error("upstream should stay blacklisted after 503 probe")
+	if !ff.IsBlacklisted("b", "") {
+		t.Error("unexpired entry b should remain blacklisted")
 	}
 }
 
-// TestFastFailProbe_RateLimitedKeepsCooldown 验证：429 保留原冷却时间戳（不顺延）。
-// tokenrhythm/基元律动系上游高频探测返回 429 时，不应刷新冷却导致永续黑名单。
-func TestFastFailProbe_RateLimitedKeepsCooldown(t *testing.T) {
-	upstream, h := newTestHandler(t, func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusTooManyRequests)
-	})
-	defer upstream.Close()
+// TestFastFail_KeepCooldown429 验证：429 限流时不刷新冷却时间戳（保留原值，
+// 冷却自然到期后由真实流量验证恢复），避免探测/限流相互顺延形成永续黑名单。
+func TestFastFail_KeepCooldown429(t *testing.T) {
+	ff := NewFastFailCache(time.Hour)
+	ff.MarkFailed("up", "deepseek-v4-flash")
+	fTime := ff.entries[ffKey("up", "deepseek-v4-flash")]
 
-	h.fastFail = NewFastFailCache(time.Hour)
-	h.fastFail.MarkFailed("up", "deepseek-v4-flash")
-	failTime := h.fastFail.entries[ffKey("up", "deepseek-v4-flash")]
-
-	h.probeFastFailOnce()
-
-	after := h.fastFail.entries[ffKey("up", "deepseek-v4-flash")]
-	if !after.Equal(failTime) {
-		t.Errorf("cooldown timestamp refreshed on 429 (should keep): %v -> %v", failTime, after)
+	// 429 语义：保留原冷却时间戳（MarkKeepCooldown 不写 entries）
+	ff.MarkKeepCooldown("up", "deepseek-v4-flash", "status=429")
+	after := ff.entries[ffKey("up", "deepseek-v4-flash")]
+	if !after.Equal(fTime) {
+		t.Errorf("429 should keep cooldown timestamp: %v -> %v", fTime, after)
 	}
-	// 仍在冷却期（1h 未到）→ 保持黑名单
-	if !h.fastFail.IsBlacklisted("up", "deepseek-v4-flash") {
+	if !ff.IsBlacklisted("up", "deepseek-v4-flash") {
 		t.Error("still in cooldown, should stay blacklisted")
 	}
 }
 
-// TestFastFailProbe_NoProbeWhenNil 验证：未启用 FastFail 时探测安全跳过。
-func TestFastFailProbe_NoProbeWhenNil(t *testing.T) {
-	_, h := newTestHandler(t, func(w http.ResponseWriter, _ *http.Request) {})
-	h.fastFail = nil
-	h.probeFastFailOnce() // 不应 panic
+// TestFastFail_NoBlacklistWhenEmpty 验证：空缓存无黑名单（等价于未启用探测时的安全路径）。
+func TestFastFail_NoBlacklistWhenEmpty(t *testing.T) {
+	ff := NewFastFailCache(time.Hour)
+	if ff.IsBlacklisted("up", "deepseek-v4-flash") {
+		t.Error("empty cache should not blacklist anything")
+	}
+	if ff.Names() != nil && len(ff.Names()) != 0 {
+		t.Error("empty cache should have no names")
+	}
 }
 
 // TestFastFailNames 验证 Names 只返回冷却期内的上游。

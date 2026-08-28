@@ -468,6 +468,9 @@ func buildServeMux(cfg *config.Config, rt *router.Router, hc *health.Checker, re
 	mux.HandleFunc("POST /admin/efforts", adminAuth(admHandler.CreateEffortConfig))
 	mux.HandleFunc("PUT /admin/efforts/{model}", adminAuth(admHandler.UpdateEffortConfig))
 	mux.HandleFunc("DELETE /admin/efforts/{model}", adminAuth(admHandler.DeleteEffortConfig))
+	// 模型 token 上限（自动学习自上游 400 错误，见 proxy/tokenlimit.go）
+	mux.HandleFunc("GET /admin/token-limits", adminAuth(admHandler.TokenLimits))
+	mux.HandleFunc("DELETE /admin/token-limits/{upstream}/{model}", adminAuth(admHandler.DeleteTokenLimit))
 	mux.HandleFunc("POST /admin/reload", adminAuth(admHandler.Reload))
 	mux.HandleFunc("PUT /admin/upstreams/{name}/toggle", adminAuth(admHandler.ToggleUpstream))
 
@@ -489,6 +492,9 @@ func buildServeMux(cfg *config.Config, rt *router.Router, hc *health.Checker, re
 	mux.HandleFunc("PUT /api/admin/config", adminKeyAuth(admHandler.UpdateConfig))
 	mux.HandleFunc("GET /api/admin/logs", adminKeyAuth(admHandler.RequestLogs))
 	mux.HandleFunc("POST /api/admin/reload", adminKeyAuth(admHandler.Reload))
+	// AI 助手管理 API（免登录）：token 上限
+	mux.HandleFunc("GET /api/admin/token-limits", adminKeyAuth(admHandler.TokenLimits))
+	mux.HandleFunc("DELETE /api/admin/token-limits/{upstream}/{model}", adminKeyAuth(admHandler.DeleteTokenLimit))
 
 	// 渠道优惠时段
 	mux.HandleFunc("GET /admin/discounts", adminAuth(admHandler.Discounts))
@@ -517,6 +523,8 @@ func buildServeMux(cfg *config.Config, rt *router.Router, hc *health.Checker, re
 	pxHandler := proxy.New(cfg, rt, hc)
 	// 注入 store 以启用 reasoning_content DB 持久化（跨重启保留最近 ReasoningCacheRetainDays 天）
 	pxHandler.SetStore(storeInst)
+	// 注入 token 上限学习存储（模型 max_tokens 超限自动 clamp，见 tokenlimit.go）
+	pxHandler.SetTokenLimits(storeInst)
 	if storeInst != nil {
 		if n, err := storeInst.PruneReasoningCache(store.ReasoningCacheRetainDays); err != nil {
 			slog.Error("initial prune reasoning cache failed", "error", err)
