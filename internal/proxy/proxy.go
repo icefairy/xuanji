@@ -68,7 +68,7 @@ type Handler struct {
 	cooldowns     sync.Map                                                // 上游冷却表：map[string]time.Time, key="upstream:model"，value=冷却到期时间
 	reasoning     *ReasoningCache                                         // reasoning_content 缓存（key=tool_call_id，thinking 模式回传用）；nil 时不启用
 	arrearsMarker func(name string)                                       // 欠费标记回调；nil 时仅记日志不落库
-	tokenLimits     *store.Store                                            // 模型 token 上限持久化；nil 时仅默认 cap 兜底
+	tokenLimits   *store.Store                                            // 模型 token 上限持久化；nil 时仅默认 cap 兜底
 	// modelArrears 模型级欠费内存缓存：key=upstream::model。
 	// per_model_billing 开启的上游按 (上游, 客户端模型名) 粒度隔离欠费；
 	// 启动时从 DB 加载，标记/清除时同步 DB。mu 保护并发读写。
