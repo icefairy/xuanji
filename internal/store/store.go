@@ -35,6 +35,9 @@ type Record struct {
 	UserAgent             string  // 客户端 User-Agent（r.UserAgent()，写入时截断 200 字符）
 	PromptCacheHitTokens  int64   // 上游前缀缓存命中 token 数（DeepSeek prompt_cache_hit_tokens）
 	PromptCacheMissTokens int64   // 上游前缀缓存未命中 token 数（DeepSeek prompt_cache_miss_tokens）
+	// ErrorDetail 上游 4xx/5xx 具体错误信息（如 error.message），请求日志页排查用。
+	// 成功请求或无法提取时为空串。
+	ErrorDetail string
 }
 
 // UpstreamRow 是 upstreams 表的行映射。
@@ -209,6 +212,14 @@ func Open(path string) (*Store, error) {
 	return s, nil
 }
 
+// sqlQuotedLiteral 把任意字符串包装成 SQL 单引号字符串字面量：先转义内部单引号
+// （SQL 惯例用 ” 表示一个 '），再外套单引号。仅用于 VACUUM INTO 这类无法使用
+// 绑定参数、又必须内联文件路径的语句；调用方应保证传入值的来源可信（如服务端
+// 配置路径），本函数在此前提下额外规避路径含单引号带来的截断/注入风险。
+func sqlQuotedLiteral(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
+}
+
 // CreateBackup 用 SQLite 在线快照（VACUUM INTO）备份数据库，再 gzip 压缩。
 // VACUUM INTO 是官方推荐的在线一致性备份方式，不会阻塞正在进行的读写。
 // 返回备份文件名（backups/<db>.<ts>.gz）。
@@ -223,7 +234,10 @@ func (s *Store) CreateBackup() (string, error) {
 	gzPath := filepath.Join(dir, fmt.Sprintf("%s.%s.gz", base, ts))
 
 	// 在线快照到临时文件
-	if _, err := s.db.Exec(fmt.Sprintf(`VACUUM INTO '%s'`, rawPath)); err != nil {
+	// VACUUM INTO 不支持绑定参数；rawPath 由服务端配置的 DB 路径 + 时间戳拼接而来，
+	// 非用户输入。仍通过 sqlQuotedLiteral 按 SQL 惯例转义单引号，避免路径含单引号时
+	// 被截断或注入（转义后的整个字面值仍当作一个普通字符串常量使用）。
+	if _, err := s.db.Exec("VACUUM INTO " + sqlQuotedLiteral(rawPath)); err != nil {
 		os.Remove(rawPath)
 		return "", fmt.Errorf("vacuum: %w", err)
 	}
@@ -417,6 +431,8 @@ func (s *Store) init() error {
 	s.db.Exec("ALTER TABLE request_log ADD COLUMN upstream_model TEXT NOT NULL DEFAULT ''")
 	// 迁移：request_log 加 cost 列（本次请求费用，元）
 	s.db.Exec("ALTER TABLE request_log ADD COLUMN cost REAL NOT NULL DEFAULT 0")
+	// 迁移：request_log 加 error_detail 列（上游 4xx/5xx 具体错误信息，请求日志页排查用）
+	ensureColumn(s.db, "request_log", "error_detail", "error_detail TEXT NOT NULL DEFAULT ''")
 	// 迁移：request_log 加 client_addr 列（客户端地址 "IP:port"，按调用程序分析）
 	s.db.Exec("ALTER TABLE request_log ADD COLUMN client_addr TEXT NOT NULL DEFAULT ''")
 	// 迁移：request_log 加 user_agent 列（客户端 User-Agent，程序识别最强信号）。
@@ -543,11 +559,12 @@ func (s *Store) DB() *sql.DB { return s.db }
 // Insert 单条插入一条请求记录。
 func (s *Store) Insert(rec Record) error {
 	_, err := s.db.Exec(
-		`INSERT INTO request_log (ts, upstream, model, endpoint, status, duration_ms, tokens, prompt_tokens, completion_tokens, api_key, client_addr, user_agent, prompt_cache_hit_tokens, prompt_cache_miss_tokens)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO request_log (ts, upstream, model, endpoint, status, duration_ms, tokens, prompt_tokens, completion_tokens, api_key, client_addr, user_agent, prompt_cache_hit_tokens, prompt_cache_miss_tokens, error_detail)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		rec.Timestamp.UTC().Format(time.RFC3339), rec.Upstream, rec.Model, rec.Endpoint,
 		rec.Status, rec.DurationMS, rec.Tokens, rec.PromptTokens, rec.CompletionTokens, rec.APIKey,
 		rec.ClientAddr, rec.UserAgent, rec.PromptCacheHitTokens, rec.PromptCacheMissTokens,
+		rec.ErrorDetail,
 	)
 	return err
 }
@@ -955,8 +972,8 @@ func (s *Store) InsertBatch(recs []Record) error {
 	defer tx.Rollback()
 
 	stmt, err := tx.Prepare(
-		`INSERT INTO request_log (ts, upstream, model, upstream_model, cost, endpoint, status, duration_ms, tokens, prompt_tokens, completion_tokens, api_key, client_addr, user_agent, prompt_cache_hit_tokens, prompt_cache_miss_tokens)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO request_log (ts, upstream, model, upstream_model, cost, endpoint, status, duration_ms, tokens, prompt_tokens, completion_tokens, api_key, client_addr, user_agent, prompt_cache_hit_tokens, prompt_cache_miss_tokens, error_detail)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 	)
 	if err != nil {
 		return err
@@ -969,6 +986,7 @@ func (s *Store) InsertBatch(recs []Record) error {
 			rec.Endpoint,
 			rec.Status, rec.DurationMS, rec.Tokens, rec.PromptTokens, rec.CompletionTokens, rec.APIKey,
 			rec.ClientAddr, rec.UserAgent, rec.PromptCacheHitTokens, rec.PromptCacheMissTokens,
+			rec.ErrorDetail,
 		); err != nil {
 			return err
 		}
