@@ -2081,8 +2081,9 @@
         >
           <span style="color: #909399; font-size: 13px"
             >共 {{ tokenLimits.length }} 条记录。程序从上游
-            「max_completion_tokens is too large ... at most N」类 400 错误自动提取 N
-            记录；转发前自动把超限的 max_tokens / max_completion_tokens clamp 到上限。
+            「max_completion_tokens is too large ... at most N」类 400
+            错误自动提取 N 记录；转发前自动把超限的 max_tokens /
+            max_completion_tokens clamp 到上限。
             删除某条后程序会再次遇到同类错误时自动重新记录。</span
           >
         </div>
@@ -2105,12 +2106,11 @@
               <td>{{ tl.max_completion_tokens || '-' }}</td>
               <td>{{ tl.max_tokens || '-' }}</td>
               <td>{{ tl.source }}</td>
-              <td style="font-size: 12px">{{ tl.updated_at || tl.created_at }}</td>
+              <td style="font-size: 12px">
+                {{ tl.updated_at || tl.created_at }}
+              </td>
               <td class="ops">
-                <button
-                  class="btn btn-danger"
-                  @click="delTokenLimit(tl)"
-                >
+                <button class="btn btn-danger" @click="delTokenLimit(tl)">
                   删除
                 </button>
               </td>
@@ -3823,7 +3823,7 @@ curl -sS "$BASE/v1/messages" \\
                     row.upstream +
                     " / " +
                     row.upstream_model +
-                    " 的 token 上限？删除后程序遇同类 400 会自动重新学习。"
+                    " 的 token 上限？删除后程序遇同类 400 会自动重新学习。",
                 )
               )
                 return;
@@ -3833,7 +3833,7 @@ curl -sS "$BASE/v1/messages" \\
                     encodeURIComponent(row.upstream) +
                     "/" +
                     encodeURIComponent(row.upstream_model),
-                  { method: "DELETE" }
+                  { method: "DELETE" },
                 )
                 .then(function () {
                   self.loadTokenLimits();

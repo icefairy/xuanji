@@ -1731,9 +1731,9 @@ func (s *Store) SeedDefaults() error {
 	// 预置已知模型 token 上限（通配上游 '*'，避免首次 400 才能学习到）。
 	// INSERT OR IGNORE 不覆盖已学习的值；删除后重启会重新预置。
 	seedTokenLimits := []struct {
-		model              string
-		maxCompletionToks  int
-		maxToks            int
+		model             string
+		maxCompletionToks int
+		maxToks           int
 	}{
 		{"deepseek-v4-flash", 262144, 262144},
 		{"deepseek-v4-pro", 262144, 262144},
