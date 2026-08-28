@@ -808,11 +808,12 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 			reqBody = nb
 		}
 	}
-	// thinking 模式 reasoning_content 回传兼容：客户端 agent（pi / Claude Code 等）
-	// 消息规范化时可能丢掉历史 assistant 消息的 reasoning_content，DeepSeek thinking
-	// 模式多轮 tool-calling 要求原样回传否则上游 400。用上一轮响应缓存的
-	// tool_call_id → reasoning_content 补回。尽力而为：命中才注入，未命中原样转发。
-	if h.cacheReasoningEnabled() {
+	// thinking 模式 reasoning_content 回传兼容：DeepSeek thinking 模式多轮 tool-calling
+	// 要求原样回传否则上游 400（https://api-docs.deepseek.com/guides/thinking_mode/#tool-calls）。
+	// 注意：只有 DeepSeek 模型严格要求回传，其他模型（Kimi/GLM/Qwen/OpenAI 等）虽然可
+	// 能返回 reasoning_content 但不需要回传，注入反而可能触发未知字段校验错误，故仅对
+	// DeepSeek 模型执行注入（模型名含 "deepseek" 不区分大小写）。
+	if h.cacheReasoningEnabled() && strings.Contains(strings.ToLower(upstreamModel), "deepseek") {
 		if nb, changed := injectReasoningContent(reqBody, h.reasoning); changed {
 			reqBody = nb
 		}
