@@ -13,7 +13,7 @@ import (
 // ===== ReasoningCache 单元测试 =====
 
 func TestReasoningCache_PutGet(t *testing.T) {
-	c := NewReasoningCache(10)
+	c := NewReasoningCache(10, nil)
 	c.Put("call_1", "deep thinking...")
 	if v, ok := c.Get("call_1"); !ok || v != "deep thinking..." {
 		t.Fatalf("Get(call_1) = %q, %v; want %q, true", v, ok, "deep thinking...")
@@ -30,7 +30,7 @@ func TestReasoningCache_PutGet(t *testing.T) {
 }
 
 func TestReasoningCache_PutAll(t *testing.T) {
-	c := NewReasoningCache(10)
+	c := NewReasoningCache(10, nil)
 	c.PutAll([]string{"a", "b", "c"}, "shared reasoning")
 	for _, id := range []string{"a", "b", "c"} {
 		if v, ok := c.Get(id); !ok || v != "shared reasoning" {
@@ -40,7 +40,7 @@ func TestReasoningCache_PutAll(t *testing.T) {
 }
 
 func TestReasoningCache_FIFOEvict(t *testing.T) {
-	c := NewReasoningCache(2)
+	c := NewReasoningCache(2, nil)
 	c.Put("a", "1")
 	c.Put("b", "2")
 	c.Put("c", "3") // 超出容量，淘汰最旧 a
@@ -60,7 +60,7 @@ func TestReasoningCache_FIFOEvict(t *testing.T) {
 
 func TestReasoningCache_UpdateKeepsOrder(t *testing.T) {
 	// 更新已存在的 key 不应改变插入顺序（避免热 key 把冷 key 挤出去）
-	c := NewReasoningCache(2)
+	c := NewReasoningCache(2, nil)
 	c.Put("a", "1")
 	c.Put("b", "2")
 	c.Put("a", "updated") // 更新 a，不改变顺序
@@ -79,7 +79,7 @@ func TestReasoningCache_UpdateKeepsOrder(t *testing.T) {
 // ===== 注入逻辑测试 =====
 
 func TestInjectReasoningContent_Hit(t *testing.T) {
-	c := NewReasoningCache(10)
+	c := NewReasoningCache(10, nil)
 	c.Put("call_abc", "thinking about the weather")
 	body := []byte(`{"model":"m","messages":[{"role":"user","content":"hi"},{"role":"assistant","content":null,"tool_calls":[{"id":"call_abc","type":"function","function":{"name":"get_weather","arguments":"{}"}}]},{"role":"tool","tool_call_id":"call_abc","content":"sunny"}]}`)
 	nb, changed := injectReasoningContent(body, c)
@@ -106,7 +106,7 @@ func TestInjectReasoningContent_Hit(t *testing.T) {
 }
 
 func TestInjectReasoningContent_Miss(t *testing.T) {
-	c := NewReasoningCache(10)
+	c := NewReasoningCache(10, nil)
 	body := []byte(`{"model":"m","messages":[{"role":"assistant","content":null,"tool_calls":[{"id":"call_unknown","type":"function","function":{"name":"f","arguments":"{}"}}]}]}`)
 	nb, changed := injectReasoningContent(body, c)
 	if changed {
@@ -118,7 +118,7 @@ func TestInjectReasoningContent_Miss(t *testing.T) {
 }
 
 func TestInjectReasoningContent_AlreadyHas(t *testing.T) {
-	c := NewReasoningCache(10)
+	c := NewReasoningCache(10, nil)
 	c.Put("call_1", "cached reasoning")
 	body := []byte(`{"model":"m","messages":[{"role":"assistant","reasoning_content":"client keeps it","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"f","arguments":"{}"}}]}]}`)
 	nb, changed := injectReasoningContent(body, c)
@@ -131,7 +131,7 @@ func TestInjectReasoningContent_AlreadyHas(t *testing.T) {
 }
 
 func TestInjectReasoningContent_MultiToolCall(t *testing.T) {
-	c := NewReasoningCache(10)
+	c := NewReasoningCache(10, nil)
 	c.Put("call_2", "multi reasoning")
 	// 两个 tool_call 均已执行完（有对应 tool_result），第二个命中 → 注入同一份 reasoning
 	body := []byte(`{"model":"m","messages":[
@@ -153,7 +153,7 @@ func TestInjectReasoningContent_MultiToolCall(t *testing.T) {
 }
 
 func TestInjectReasoningContent_NewToolCall_NoInject(t *testing.T) {
-	c := NewReasoningCache(10)
+	c := NewReasoningCache(10, nil)
 	c.Put("call_new", "reasoning for new call")
 	// 新发起的 tool_call（无对应 tool_result）：注入 reasoning_content 会让上游认为
 	// 这是历史 context 导致消息链断裂（tool_call 找不到 tool_result）→ 400。必须跳过。
@@ -164,7 +164,7 @@ func TestInjectReasoningContent_NewToolCall_NoInject(t *testing.T) {
 }
 
 func TestInjectReasoningContent_PartialResult_NoInject(t *testing.T) {
-	c := NewReasoningCache(10)
+	c := NewReasoningCache(10, nil)
 	c.Put("call_2", "reasoning")
 	// 两个 tool_call，只有 call_1 有 tool_result（call_2 是新发起）→ 保守不注入
 	body := []byte(`{"model":"m","messages":[
@@ -177,7 +177,7 @@ func TestInjectReasoningContent_PartialResult_NoInject(t *testing.T) {
 }
 
 func TestInjectReasoningContent_NoToolCalls(t *testing.T) {
-	c := NewReasoningCache(10)
+	c := NewReasoningCache(10, nil)
 	c.Put("call_1", "x")
 	// 普通 assistant 消息（无 tool_calls）不注入
 	body := []byte(`{"model":"m","messages":[{"role":"assistant","content":"plain answer"}]}`)
@@ -194,7 +194,7 @@ func TestInjectReasoningContent_NoToolCalls(t *testing.T) {
 // ===== 响应解析测试 =====
 
 func TestCacheReasoningFromMessage_NonStream(t *testing.T) {
-	c := NewReasoningCache(10)
+	c := NewReasoningCache(10, nil)
 	resp := []byte(`{"id":"r","choices":[{"index":0,"message":{"role":"assistant","content":null,"reasoning_content":"non-stream reasoning","tool_calls":[{"id":"call_ns","type":"function","function":{"name":"f","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`)
 	cacheReasoningFromMessage(resp, c)
 	if v, ok := c.Get("call_ns"); !ok || v != "non-stream reasoning" {
@@ -204,7 +204,7 @@ func TestCacheReasoningFromMessage_NonStream(t *testing.T) {
 
 func TestCacheReasoningFromMessage_NoToolCalls(t *testing.T) {
 	// 无 tool_calls（普通回答）不缓存
-	c := NewReasoningCache(10)
+	c := NewReasoningCache(10, nil)
 	resp := []byte(`{"choices":[{"message":{"role":"assistant","content":"ok","reasoning_content":"thought here"}}]}`)
 	cacheReasoningFromMessage(resp, c)
 	if c.Len() != 0 {
@@ -214,7 +214,7 @@ func TestCacheReasoningFromMessage_NoToolCalls(t *testing.T) {
 
 func TestCacheReasoningFromMessage_EmptyReasoning(t *testing.T) {
 	// 空 reasoning_content 不缓存
-	c := NewReasoningCache(10)
+	c := NewReasoningCache(10, nil)
 	resp := []byte(`{"choices":[{"message":{"role":"assistant","content":null,"reasoning_content":"","tool_calls":[{"id":"call_x","type":"function","function":{"name":"f","arguments":"{}"}}]}}]}`)
 	cacheReasoningFromMessage(resp, c)
 	if c.Len() != 0 {
@@ -223,7 +223,7 @@ func TestCacheReasoningFromMessage_EmptyReasoning(t *testing.T) {
 }
 
 func TestCacheReasoningDelta_StreamConcat(t *testing.T) {
-	c := NewReasoningCache(10)
+	c := NewReasoningCache(10, nil)
 	var buf strings.Builder
 	var ids []string
 	// 分片累积：thinking 模式流式 reasoning_content 是逐片 delta

@@ -306,6 +306,11 @@ func dailyStatsTicker(s *store.Store) {
 		} else if n > 0 {
 			slog.Info("pruned request log", "rows", n, "retain_days", store.RequestLogRetainDays)
 		}
+		if n, err := s.PruneReasoningCache(store.ReasoningCacheRetainDays); err != nil {
+			slog.Error("prune reasoning cache failed", "error", err)
+		} else if n > 0 {
+			slog.Info("pruned reasoning cache", "rows", n, "retain_days", store.ReasoningCacheRetainDays)
+		}
 	}
 }
 
@@ -510,6 +515,15 @@ func buildServeMux(cfg *config.Config, rt *router.Router, hc *health.Checker, re
 	olHandler := ollama.New(rt, hc)
 	olHandler.SetTimeout(time.Duration(cfg.Retry.UpstreamTimeout) * time.Second)
 	pxHandler := proxy.New(cfg, rt, hc)
+	// 注入 store 以启用 reasoning_content DB 持久化（跨重启保留最近 ReasoningCacheRetainDays 天）
+	pxHandler.SetStore(storeInst)
+	if storeInst != nil {
+		if n, err := storeInst.PruneReasoningCache(store.ReasoningCacheRetainDays); err != nil {
+			slog.Error("initial prune reasoning cache failed", "error", err)
+		} else if n > 0 {
+			slog.Info("pruned reasoning cache", "rows", n, "retain_days", store.ReasoningCacheRetainDays)
+		}
+	}
 	gmHandler := gemini.New(rt, hc)
 	gmHandler.SetTimeout(time.Duration(cfg.Retry.UpstreamTimeout) * time.Second)
 	ff := proxy.NewFastFailCache(time.Duration(cfg.Retry.FastFailMinutes) * time.Minute)

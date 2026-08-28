@@ -89,8 +89,14 @@ func New(cfg *config.Config, rt *router.Router, hc *health.Checker) *Handler {
 		client:    &http.Client{Transport: transport},
 		log:       slog.Default(),
 		tokenizer: NewTokenizer(),
-		reasoning: NewReasoningCache(0),
+		reasoning: NewReasoningCache(0, nil), // db 由 SetStore 注入
 	}
+}
+
+// SetStore 注入 store 实例以启用 reasoning_content DB 持久化。
+// 应在启动后、接受请求前调用；nil 时退化为纯内存模式。
+func (h *Handler) SetStore(s *store.Store) {
+	h.reasoning = NewReasoningCache(h.reasoning.max, s)
 }
 
 // SetRecorder 注入指标记录器（nil 安全；测试不需要调用）。
@@ -549,7 +555,7 @@ func (h *Handler) isCooldown(name, model string) bool {
 }
 
 // selectCandidates 依据健康状态与统一优先级选出转发候选：
-// 5. 同 tier 同 weight 同折扣状态内：网络延迟低的优先（未测过延迟的排最后）
+// 5. 同 tier 同 weight 同折扣状态内：随机打乱（负载均衡）
 // 失败切换由调用方按候选列表顺序逐个尝试：同 tier 内失败自动试下一个，
 // 同 tier 全部失败自动升到上一级计费类型（免费→包月→按量）。
 func (h *Handler) selectCandidates(ups []*config.Upstream, strategy, model string) []*config.Upstream {
@@ -656,7 +662,7 @@ func (h *Handler) selectCandidates(ups []*config.Upstream, strategy, model strin
 	var out []*config.Upstream
 	for _, tw := range tiers {
 		group := grouped[tw]
-		// 统一优先级：同 tier 内 weight 降序；同 weight 内优惠时段优先；同权重同折扣延迟低优先（稳定排序保序）
+		// 统一优先级：同 tier 内 weight 降序；同 weight 内优惠时段优先；同权重同折扣随机打乱
 		sort.SliceStable(group, func(i, j int) bool {
 			wi, wj := group[i].Weight, group[j].Weight
 			if wi != wj {
@@ -667,30 +673,17 @@ func (h *Handler) selectCandidates(ups []*config.Upstream, strategy, model strin
 			if di != dj {
 				return di
 			}
-			// 同权重同折扣：延迟低优先；Latency()==0 表示未测过，排最后
-			li := h.latencyRank(group[i].Name)
-			lj := h.latencyRank(group[j].Name)
-			if li != lj {
-				if li == 0 {
-					return false
-				}
-				if lj == 0 {
-					return true
-				}
-				return li < lj
-			}
 			return false
 		})
 		out = append(out, group...)
 	}
-	// 同 tier 同 weight 同折扣同延迟：随机打乱（所有条件相同，避免固定原序导致流量倾斜）
+	// 同 tier 同 weight 同折扣：随机打乱（所有条件相同，避免固定原序导致流量倾斜）
 	for i := 0; i < len(out); {
 		j := i
 		for j < len(out) && out[j].TierWeight() == out[i].TierWeight() && out[j].Weight == out[i].Weight {
-			// 细分：折扣状态 + 延迟完全相同才在一组
+			// 细分：折扣状态相同才在一组
 			sameDiscount := h.isDiscountActive(out[i].Name, model) == h.isDiscountActive(out[j].Name, model)
-			sameLatency := h.latencyRank(out[i].Name) == h.latencyRank(out[j].Name)
-			if !(sameDiscount && sameLatency) {
+			if !sameDiscount {
 				break
 			}
 			j++
@@ -705,8 +698,7 @@ func (h *Handler) selectCandidates(ups []*config.Upstream, strategy, model strin
 	return out
 }
 
-// latencyRank 返回上游最近健康检查延迟的毫秒数，用于同权重候选的延迟排序；
-// 0 表示未测过延迟（health 为 nil 或尚无探测数据），排序时排最后。
+// latencyRank 保留接口供外部测试使用；selectCandidates 已不再按延迟排序。
 func (h *Handler) latencyRank(name string) int64 {
 	if h.health == nil {
 		return 0

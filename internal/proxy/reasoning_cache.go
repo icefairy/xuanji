@@ -8,54 +8,68 @@ package proxy
 
 import (
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
+
+	"github.com/icefairy/xuanji/internal/store"
 )
 
-// defaultReasoningCacheMax 是 reasoning_content 缓存的最大条目数，超出后 FIFO 淘汰最旧。
+// defaultReasoningCacheMax 是内存侧 reasoning_content 缓存的最大条目数，超出后 FIFO 淘汰最旧。
+// DB 侧无容量限制，仅按 ReasoningCacheRetainDays 清理过期记录。
 const defaultReasoningCacheMax = 500
 
-// ReasoningCache 是 reasoning_content 的内存缓存，key=tool_call_id。
-// 缓存 key 用 tool_call_id 而非会话 id：无需追踪会话状态，天然适配多客户端
-// （n8n / Goose / Cursor / JetBrains 等 agent 框架各自携带历史 tool_calls）。
-// 容量上限 defaultReasoningCacheMax，超出淘汰最旧（FIFO）。
-// 尽力而为：命中就注入，未命中不影响正常转发。
+// ReasoningCache 是 reasoning_content 的缓存，key=tool_call_id。
+// 双写设计：内存侧用于低延迟读/写，DB 侧用于跨重启持久化。
+// 写入：同时写内存 + DB（DB 写失败不影响主流程，仅记日志）。
+// 读取：先查内存，未命中再查 DB（DB 未命中返回 false，不重试内存）。
+// 容量上限 defaultReasoningCacheMax（内存侧），DB 侧由 dailyStatsTicker 每日 prune。
 type ReasoningCache struct {
 	mu    sync.Mutex
 	max   int
 	items map[string]string // tool_call_id → reasoning_content
 	order []string          // 插入顺序（FIFO 淘汰）
+	db    *store.Store      // 持久化 backing；nil 时仅内存模式
 }
 
 // NewReasoningCache 创建 reasoning_content 缓存。max<=0 时用默认值 500。
-func NewReasoningCache(max int) *ReasoningCache {
+// db 为可选的持久化 backing：非 nil 时写操作双写 DB，读操作内存未命中则 fallback DB。
+func NewReasoningCache(max int, db *store.Store) *ReasoningCache {
 	if max <= 0 {
 		max = defaultReasoningCacheMax
 	}
-	return &ReasoningCache{max: max, items: make(map[string]string)}
+	return &ReasoningCache{max: max, items: make(map[string]string), db: db}
 }
 
 // Put 写入 tool_call_id 对应的 reasoning_content。已存在时更新值但保持原插入顺序
 // （避免"热 key"把其他条目挤出）；空 id 或空内容不缓存（注入空串无意义）。
+// 同时双写 DB（DB 写失败仅记日志，不影响主流程）。
 func (c *ReasoningCache) Put(id, content string) {
 	if id == "" || content == "" {
 		return
 	}
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if _, exists := c.items[id]; exists {
 		c.items[id] = content
-		return
+		c.mu.Unlock()
+	} else {
+		c.items[id] = content
+		c.order = append(c.order, id)
+		for len(c.order) > c.max {
+			oldest := c.order[0]
+			c.order = c.order[1:]
+			delete(c.items, oldest)
+		}
+		c.mu.Unlock()
 	}
-	c.items[id] = content
-	c.order = append(c.order, id)
-	for len(c.order) > c.max {
-		oldest := c.order[0]
-		c.order = c.order[1:]
-		delete(c.items, oldest)
+	// 双写 DB（异步感：不阻塞主流程，失败仅日志）
+	if c.db != nil {
+		if err := c.db.PutReasoning(id, content); err != nil {
+			slog.Default().Debug("reasoning_cache: db write failed", "id", id, "error", err)
+		}
 	}
 }
 
@@ -68,11 +82,23 @@ func (c *ReasoningCache) PutAll(ids []string, content string) {
 }
 
 // Get 读取 tool_call_id 对应的 reasoning_content，未命中返回 false。
+// 优先查内存；内存未命中时 fallback 查 DB。
 func (c *ReasoningCache) Get(id string) (string, bool) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	v, ok := c.items[id]
-	return v, ok
+	c.mu.Unlock()
+	if ok {
+		return v, true
+	}
+	// 内存未命中 → DB fallback
+	if c.db != nil {
+		if dbV, err := c.db.GetReasoning(id); err == nil && dbV != "" {
+			// 回填内存（热路径加速后续读取）
+			c.Put(id, dbV)
+			return dbV, true
+		}
+	}
+	return "", false
 }
 
 // Len 返回当前缓存条目数。
