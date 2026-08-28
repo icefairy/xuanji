@@ -88,7 +88,7 @@
         color: #606266;
         margin-right: 4px;
       }
-      .chat-bar input[type='number'] {
+      .chat-bar input[type="number"] {
         width: 76px;
         padding: 3px 6px;
         border: 1px solid #dcdfe6;
@@ -479,42 +479,42 @@
           <h2>⚙️ 璇玑网关</h2>
           <p class="login-sub">管理端登录</p>
           <form @submit.prevent="doLogin">
-          <div class="form-group">
-            <label>用户名</label
-            ><input
-              v-model="loginUsername"
-              name="username"
-              autocomplete="username"
-              placeholder="admin"
-              @keyup.enter="doLogin"
-            />
-          </div>
-          <div class="form-group">
-            <label>密码</label
-            ><input
-              v-model="loginPassword"
-              name="password"
-              autocomplete="current-password"
-              type="password"
-              placeholder="密码"
-              @keyup.enter="doLogin"
-            />
-          </div>
-          <div
-            style="color: red; font-size: 13px; margin-bottom: 8px"
-            v-if="loginError"
-          >
-            {{ loginError }}
-          </div>
-          <button
-            class="btn btn-primary"
-            style="width: 100%; padding: 8px"
-            type="button"
-            @click="doLogin"
-            :disabled="loginLoading"
-          >
-            {{ loginLoading ? '登录中...' : '登 录' }}
-          </button>
+            <div class="form-group">
+              <label>用户名</label
+              ><input
+                v-model="loginUsername"
+                name="username"
+                autocomplete="username"
+                placeholder="admin"
+                @keyup.enter="doLogin"
+              />
+            </div>
+            <div class="form-group">
+              <label>密码</label
+              ><input
+                v-model="loginPassword"
+                name="password"
+                autocomplete="current-password"
+                type="password"
+                placeholder="密码"
+                @keyup.enter="doLogin"
+              />
+            </div>
+            <div
+              style="color: red; font-size: 13px; margin-bottom: 8px"
+              v-if="loginError"
+            >
+              {{ loginError }}
+            </div>
+            <button
+              class="btn btn-primary"
+              style="width: 100%; padding: 8px"
+              type="button"
+              @click="doLogin"
+              :disabled="loginLoading"
+            >
+              {{ loginLoading ? '登录中...' : '登 录' }}
+            </button>
           </form>
         </div>
       </div>
@@ -769,16 +769,26 @@
                 >
               </td>
               <td style="font-size: 12px">
-                <span v-if="r.vision" class="badge" style="background:#e1f3d8;color:#67c23a">支持</span>
+                <span
+                  v-if="r.vision"
+                  class="badge"
+                  style="background: #e1f3d8; color: #67c23a"
+                  >支持</span
+                >
                 <template v-else>
                   <span
                     v-if="r.vision_fallback"
                     class="badge"
-                    style="background:#fdf6ec;color:#e6a23c"
+                    style="background: #fdf6ec; color: #e6a23c"
                     :title="'带图请求兑底转发到 ' + r.vision_fallback"
                     >兑底→{{ r.vision_fallback }}</span
                   >
-                  <span v-else class="badge" style="background:#f4f4f5;color:#909399">不支持</span>
+                  <span
+                    v-else
+                    class="badge"
+                    style="background: #f4f4f5; color: #909399"
+                    >不支持</span
+                  >
                 </template>
               </td>
               <td class="ops">
@@ -879,14 +889,19 @@
               <option value="max">max</option>
             </select>
           </span>
-          <span style="color:#909399;font-size:12px"
-            >top_k / repetition_penalty 为 0 时不发送；上游不认的采样参数由网关 normalize 处理</span
+          <span style="color: #909399; font-size: 12px"
+            >top_k / repetition_penalty 为 0 时不发送；上游不认的采样参数由网关
+            normalize 处理</span
           >
         </div>
 
         <div class="chat-list" ref="chatList">
-          <div v-if="chatMessages.length === 0" style="color:#c0c4cc;text-align:center;padding:24px 0">
-            开始对话吧 —— 请求将走完整网关路由链路（路由选择 / 模型映射 / vision fallback / 健康检查）
+          <div
+            v-if="chatMessages.length === 0"
+            style="color: #c0c4cc; text-align: center; padding: 24px 0"
+          >
+            开始对话吧 —— 请求将走完整网关路由链路（路由选择 / 模型映射 / vision
+            fallback / 健康检查）
           </div>
           <div
             v-for="(m, i) in chatMessages"
@@ -896,30 +911,64 @@
           >
             <div class="bubble">
               <div v-if="m.images && m.images.length" class="thumbs">
-                <img v-for="(im, j) in m.images" :key="j" :src="im.preview" alt="" />
+                <img
+                  v-for="(im, j) in m.images"
+                  :key="j"
+                  :src="im.preview"
+                  alt=""
+                />
               </div>
               <template v-if="m.thinking">
-                <div style="color:#b8860b;font-weight:600;font-size:12px;margin-bottom:2px">
+                <div
+                  style="
+                    color: #b8860b;
+                    font-weight: 600;
+                    font-size: 12px;
+                    margin-bottom: 2px;
+                  "
+                >
                   thinking
                 </div>
                 <div
-                  style="color:#909399;font-size:13px;white-space:pre-wrap;word-break:break-word;border-left:3px solid #e6a23c;padding-left:8px;margin-bottom:8px"
-                  >{{ m.thinking }}</div
+                  style="
+                    color: #909399;
+                    font-size: 13px;
+                    white-space: pre-wrap;
+                    word-break: break-word;
+                    border-left: 3px solid #e6a23c;
+                    padding-left: 8px;
+                    margin-bottom: 8px;
+                  "
                 >
-                <div style="color:#67c23a;font-weight:600;font-size:12px;margin-bottom:2px">response</div>
-                <div style="white-space:pre-wrap;word-break:break-word">{{ m.content }}</div>
+                  {{ m.thinking }}
+                </div>
+                <div
+                  style="
+                    color: #67c23a;
+                    font-weight: 600;
+                    font-size: 12px;
+                    margin-bottom: 2px;
+                  "
+                >
+                  response
+                </div>
+                <div style="white-space: pre-wrap; word-break: break-word">
+                  {{ m.content }}
+                </div>
               </template>
               <div v-else>{{ m.content }}</div>
               <div v-if="m.routing" class="routing">
                 <template v-if="m.routing.upstream"
-                  >上游：{{ m.routing.upstream }}（{{ m.routing.upstream_model || '?' }}）</template
+                  >上游：{{ m.routing.upstream }}（{{ m.routing.upstream_model
+                  || '?' }}）</template
                 >
-                · 状态：{{ m.routing.status }} · 耗时：{{ m.routing.duration_ms }}ms
+                · 状态：{{ m.routing.status }} · 耗时：{{ m.routing.duration_ms
+                }}ms
                 <template v-if="m.usage"
-                  ><br />tokens：输入 {{ m.usage.prompt_tokens || 0 }} / 输出
-                  {{ m.usage.completion_tokens || 0 }} / 缓存命中
-                  {{ m.usage.cache_hit_tokens || 0 }} / 未命中
-                  {{ m.usage.cache_miss_tokens || 0 }}</template
+                  ><br />tokens：输入 {{ m.usage.prompt_tokens || 0 }} / 输出 {{
+                  m.usage.completion_tokens || 0 }} / 缓存命中 {{
+                  m.usage.cache_hit_tokens || 0 }} / 未命中 {{
+                  m.usage.cache_miss_tokens || 0 }}</template
                 >
               </div>
             </div>
@@ -939,16 +988,40 @@
             placeholder="输入消息，Enter 发送（Shift+Enter 换行）"
             @keydown.enter.exact.prevent="chatSend()"
           ></textarea>
-          <input type="file" accept="image/*" multiple style="display:none" ref="chatFile" @change="onChatFiles" />
-          <button class="btn" :disabled="chatLoading" @click="$refs.chatFile.click()">
-            📷 {{ chatImages.length ? '图片(' + chatImages.length + ')' : '加图' }}
+          <input
+            type="file"
+            accept="image/*"
+            multiple
+            style="display: none"
+            ref="chatFile"
+            @change="onChatFiles"
+          />
+          <button
+            class="btn"
+            :disabled="chatLoading"
+            @click="$refs.chatFile.click()"
+          >
+            📷 {{ chatImages.length ? '图片(' + chatImages.length + ')' : '加图'
+            }}
           </button>
-          <button class="btn btn-danger" :disabled="chatLoading" @click="chatClear()">清空对话</button>
-          <button class="btn btn-primary" :disabled="chatLoading || !chatInput.trim()" @click="chatSend()">
+          <button
+            class="btn btn-danger"
+            :disabled="chatLoading"
+            @click="chatClear()"
+          >
+            清空对话
+          </button>
+          <button
+            class="btn btn-primary"
+            :disabled="chatLoading || !chatInput.trim()"
+            @click="chatSend()"
+          >
             {{ chatLoading ? '发送中…' : '发送' }}
           </button>
         </div>
-        <div style="margin-top:4px;color:#909399;font-size:12px">Enter 发送 · Shift+Enter 换行</div>
+        <div style="margin-top: 4px; color: #909399; font-size: 12px">
+          Enter 发送 · Shift+Enter 换行
+        </div>
       </div>
 
       <!-- 思考等级（最佳思考等级配置） -->
@@ -995,10 +1068,7 @@
       </div>
 
       <!-- 添加/编辑思考等级配置 -->
-      <div
-        class="modal"
-        v-if="showEffortDialog"
-      >
+      <div class="modal" v-if="showEffortDialog">
         <div class="modal-content">
           <h3>{{ effortIsEdit ? '编辑配置' : '添加配置' }}</h3>
           <div class="form-group">
@@ -1142,9 +1212,7 @@
             >共 {{ logTotal }} 条（每 10 秒刷新）</span
           >
           <button class="btn" @click="loadLogs()">刷新</button>
-          <button class="btn" @click="showLogColsDialog = true"
-            >列设置</button
-          >
+          <button class="btn" @click="showLogColsDialog = true">列设置</button>
         </div>
         <table>
           <thead>
@@ -1157,21 +1225,36 @@
           <tbody>
             <tr v-for="l in logs">
               <td v-for="col in visibleLogColsFiltered" :key="col.key">
-                <template v-if="col.key === 'ts'">{{ (l.ts||'').substring(0,19) }}</template>
-                <template v-else-if="col.key === 'api_key'"><span :title="l.api_key || ''">{{ truncKeyName(l.api_key||'') }}</span></template>
-                <template v-else-if="col.key === 'upstream'">{{ l.upstream }}</template>
+                <template v-if="col.key === 'ts'"
+                  >{{ (l.ts||'').substring(0,19) }}</template
+                >
+                <template v-else-if="col.key === 'api_key'"
+                  ><span :title="l.api_key || ''"
+                    >{{ truncKeyName(l.api_key||'') }}</span
+                  ></template
+                >
+                <template v-else-if="col.key === 'upstream'"
+                  >{{ l.upstream }}</template
+                >
                 <template v-else-if="col.key === 'client'">
                   <span
                     v-if="l.user_agent"
                     class="badge badge-green"
                     :title="'User-Agent: ' + l.user_agent + ' | 地址 ' + (l.client_addr||'')"
-                    >{{ l.user_agent.length > 28 ? l.user_agent.substring(0, 26) + '..' : l.user_agent }}</span
+                    >{{ l.user_agent.length > 28 ? l.user_agent.substring(0, 26)
+                    + '..' : l.user_agent }}</span
                   >
-                  <span v-else :title="l.client_addr || ''">{{ l.client_addr || '-' }}</span>
+                  <span v-else :title="l.client_addr || ''"
+                    >{{ l.client_addr || '-' }}</span
+                  >
                 </template>
-                <template v-else-if="col.key === 'model'">{{ l.model }}</template>
+                <template v-else-if="col.key === 'model'"
+                  >{{ l.model }}</template
+                >
                 <template v-else-if="col.key === 'endpoint'">
-                  <span class="badge" :title="'端点 ' + (l.endpoint||'')">{{ l.endpoint || '-' }}</span>
+                  <span class="badge" :title="'端点 ' + (l.endpoint||'')"
+                    >{{ l.endpoint || '-' }}</span
+                  >
                 </template>
                 <template v-else-if="col.key === 'status'">
                   <span
@@ -1180,10 +1263,36 @@
                     >{{ l.status }}</span
                   >
                 </template>
-                <template v-else-if="col.key === 'duration_ms'">{{ l.duration_ms }}</template>
-                <template v-else-if="col.key === 'prompt_tokens'">{{ l.prompt_tokens }}</template>
-                <template v-else-if="col.key === 'completion_tokens'">{{ l.completion_tokens }}</template>
-                <template v-else-if="col.key === 'tokens'">{{ l.tokens }}</template>
+                <template v-else-if="col.key === 'error_detail'">
+                  <span
+                    v-if="l.error_detail"
+                    class="badge badge-red"
+                    :title="l.error_detail"
+                    style="
+                      max-width: 320px;
+                      overflow: hidden;
+                      text-overflow: ellipsis;
+                      white-space: nowrap;
+                      display: inline-block;
+                      vertical-align: middle;
+                    "
+                    >{{ l.error_detail.length > 48 ? l.error_detail.substring(0,
+                    46) + '…' : l.error_detail }}</span
+                  >
+                  <span v-else class="badge badge-green">—</span>
+                </template>
+                <template v-else-if="col.key === 'duration_ms'"
+                  >{{ l.duration_ms }}</template
+                >
+                <template v-else-if="col.key === 'prompt_tokens'"
+                  >{{ l.prompt_tokens }}</template
+                >
+                <template v-else-if="col.key === 'completion_tokens'"
+                  >{{ l.completion_tokens }}</template
+                >
+                <template v-else-if="col.key === 'tokens'"
+                  >{{ l.tokens }}</template
+                >
                 <template v-else-if="col.key === 'cache_hit'">
                   <span
                     :title="'命中 '+fmtNum(l.prompt_cache_hit_tokens||0,0)+' / 未命中 '+fmtNum(l.prompt_cache_miss_tokens||0,0)"
@@ -1224,15 +1333,12 @@
         </div>
 
         <!-- 请求日志列设置弹窗：勾选要显示的列，选择结果存 localStorage -->
-        <div
-          class="modal"
-          v-if="showLogColsDialog"
-        >
+        <div class="modal" v-if="showLogColsDialog">
           <div class="modal-content" style="max-width: 360px">
             <h3>列设置</h3>
-            <div style="color: #909399; font-size: 12px; margin-bottom: 10px"
-              >勾选要在请求日志表格中显示的列：</div
-            >
+            <div style="color: #909399; font-size: 12px; margin-bottom: 10px">
+              勾选要在请求日志表格中显示的列：
+            </div>
             <label
               v-for="c in logColumns"
               :key="c.key"
@@ -1254,12 +1360,7 @@
               {{ c.label }}
             </label>
             <div
-              style="
-                margin-top: 8px;
-                display: flex;
-                gap: 8px;
-                flex-wrap: wrap;
-              "
+              style="margin-top: 8px; display: flex; gap: 8px; flex-wrap: wrap"
             >
               <button
                 class="btn"
@@ -1520,7 +1621,12 @@
                     <div style="flex: 1; min-width: 300px; text-align: center">
                       <div
                         :id="'pie-' + s.name.replace(/[^a-zA-Z0-9\u4e00-\u9fff]/g, '_')"
-                        style="display: inline-block; width: 100%; max-width: 340px; height: 260px"
+                        style="
+                          display: inline-block;
+                          width: 100%;
+                          max-width: 340px;
+                          height: 260px;
+                        "
                       ></div>
                       <div
                         style="color: #909399; font-size: 12px; margin-top: 4px"
@@ -1531,7 +1637,12 @@
                     <div style="flex: 1; min-width: 300px; text-align: center">
                       <div
                         :id="'piecost-' + s.name.replace(/[^a-zA-Z0-9\u4e00-\u9fff]/g, '_')"
-                        style="display: inline-block; width: 100%; max-width: 340px; height: 260px"
+                        style="
+                          display: inline-block;
+                          width: 100%;
+                          max-width: 340px;
+                          height: 260px;
+                        "
                       ></div>
                       <div
                         style="color: #909399; font-size: 12px; margin-top: 4px"
@@ -1749,11 +1860,8 @@
             </span>
           </div>
           <div style="color: #909399; font-size: 12px; margin-bottom: 8px">
-            可用模型：{{
-              g.allowed_models && g.allowed_models !== '[]'
-                ? g.allowed_models
-                : '不限（白名单未限制；已配配额的模型仍可用）'
-            }}
+            可用模型：{{ g.allowed_models && g.allowed_models !== '[]' ?
+            g.allowed_models : '不限（白名单未限制；已配配额的模型仍可用）' }}
           </div>
           <!-- 白名单编辑器：从模型路由勾选 -->
           <div
@@ -1800,19 +1908,16 @@
               >
                 全选
               </button>
-              <button class="btn" @click="g._allowedChecked = []">
-                清空
-              </button>
+              <button class="btn" @click="g._allowedChecked = []">清空</button>
               <button class="btn btn-primary" @click="saveGroupAllowed(g)">
                 保存白名单
               </button>
-              <button class="btn" @click="g._editAllowed = false">
-                取消
-              </button>
+              <button class="btn" @click="g._editAllowed = false">取消</button>
             </div>
           </div>
           <div style="color: #e6a23c; font-size: 12px; margin-bottom: 6px">
-            ≙ 限额单位：M = 百万 token（如 200 = 2 亿 token；0 = 不限）。三个窗口各自独立，任一超限只拦该模型。
+            ≙ 限额单位：M = 百万 token（如 200 = 2 亿 token；0 =
+            不限）。三个窗口各自独立，任一超限只拦该模型。
           </div>
           <table>
             <thead>
@@ -1839,14 +1944,10 @@
                 </td>
                 <td style="font-size: 12px; color: #606266">
                   {{ pfmt(q.used_5h) }} / {{ pfmt(q.used_week) }} / {{
-                    pfmt(q.used_month)
-                  }}
+                  pfmt(q.used_month) }}
                 </td>
                 <td>
-                  <button
-                    class="btn btn-primary"
-                    @click="saveGroupQuota(g, q)"
-                  >
+                  <button class="btn btn-primary" @click="saveGroupQuota(g, q)">
                     保存本行
                   </button>
                   <button class="btn btn-danger" @click="delGroupQuota(g, q)">
@@ -1856,7 +1957,8 @@
               </tr>
               <tr v-if="!g.quotas.length">
                 <td colspan="6" style="color: #909399">
-                  尚未为该组配置模型配额（组内可用模型 = 白名单内，不限量）。在下方填模型名与三个窗口额度后点「＋新增模型配额」即生效。
+                  尚未为该组配置模型配额（组内可用模型 =
+                  白名单内，不限量）。在下方填模型名与三个窗口额度后点「＋新增模型配额」即生效。
                 </td>
               </tr>
               <tr>
@@ -1900,7 +2002,9 @@
             </tbody>
           </table>
           <div style="color: #909399; font-size: 12px; margin-top: 6px">
-            ✏️ 单位 M = 百万 token（200 = 2 亿）。修改后点行尾「保存本行」或组头「💾 保存配额」生效；三个窗口都填 0 保存 = 移除该模型限制。
+            ✏️ 单位 M = 百万 token（200 = 2
+            亿）。修改后点行尾「保存本行」或组头「💾
+            保存配额」生效；三个窗口都填 0 保存 = 移除该模型限制。
           </div>
         </div>
       </div>
@@ -1956,7 +2060,8 @@
                       line-height: 1.6;
                       font-family: Menlo, Consolas, monospace;
                     "
-                  >{{ e.curl }}</pre>
+                  >
+{{ e.curl }}</pre>
                 </div>
               </td>
             </tr>
@@ -2269,8 +2374,6 @@
           >
         </div>
 
-        
-
         <div
           style="
             margin-bottom: 12px;
@@ -2490,10 +2593,7 @@
       </div>
 
       <!-- 编辑上游 -->
-      <div
-        class="modal"
-        v-if="showEditDialog"
-      >
+      <div class="modal" v-if="showEditDialog">
         <div class="modal-content" style="max-width: 640px">
           <h3>编辑上游</h3>
           <div class="form-group">
@@ -2526,19 +2626,30 @@
           </div>
           <div class="form-group">
             <label
-              style="display: flex; align-items: center; gap: 8px; cursor: pointer"
+              style="
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                cursor: pointer;
+              "
             >
               <input
                 type="checkbox"
                 v-model="editForm.billing_exempt"
                 style="cursor: pointer"
               />
-              不参与计费（统计费用记 0，路由不受影响；适合完全不关注成本的真实免费渠道）
+              不参与计费（统计费用记
+              0，路由不受影响；适合完全不关注成本的真实免费渠道）
             </label>
           </div>
           <div class="form-group">
             <label
-              style="display: flex; align-items: center; gap: 8px; cursor: pointer"
+              style="
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                cursor: pointer;
+              "
             >
               <input
                 type="checkbox"
@@ -2590,11 +2701,7 @@
             </div>
           </div>
           <div
-            style="
-              margin-bottom: 16px;
-              display: flex;
-              flex-direction: column;
-            "
+            style="margin-bottom: 16px; display: flex; flex-direction: column"
           >
             <label style="margin-bottom: 4px">请求体复写（可选）</label>
             <textarea
@@ -2615,7 +2722,8 @@
             </div>
           </div>
           <div class="form-group">
-            <label>请求超时（秒，0=跟随全局 retry.upstream_timeout，默认 60）</label
+            <label
+              >请求超时（秒，0=跟随全局 retry.upstream_timeout，默认 60）</label
             ><input
               type="number"
               min="0"
@@ -2623,7 +2731,9 @@
               placeholder="0"
             />
             <div style="margin-top: 2px; font-size: 12px; color: #909399">
-              慢速兜底上游（如本地一体机）建议单独调大（如 300），避免响应稍慢就被全局超时误判失败导致 502；流式请求不受该超时影响。
+              慢速兜底上游（如本地一体机）建议单独调大（如
+              300），避免响应稍慢就被全局超时误判失败导致
+              502；流式请求不受该超时影响。
             </div>
           </div>
           <div class="modal-footer">
@@ -2636,10 +2746,7 @@
       </div>
 
       <!-- 克隆上游 -->
-      <div
-        class="modal"
-        v-if="showCloneDialog"
-      >
+      <div class="modal" v-if="showCloneDialog">
         <div class="modal-content">
           <h3>克隆上游</h3>
           <div class="form-group">
@@ -2663,10 +2770,7 @@
       </div>
 
       <!-- 添加/编辑路由规则 -->
-      <div
-        class="modal"
-        v-if="showRuleDialog"
-      >
+      <div class="modal" v-if="showRuleDialog">
         <div class="modal-content">
           <h3>{{ ruleIsEdit ? '编辑规则' : '添加规则' }}</h3>
           <div class="form-group">
@@ -2743,9 +2847,19 @@
           </div>
           <div class="form-group">
             <label
-              style="display: flex; align-items: center; gap: 6px; cursor: pointer; font-weight: normal"
+              style="
+                display: flex;
+                align-items: center;
+                gap: 6px;
+                cursor: pointer;
+                font-weight: normal;
+              "
             >
-              <input type="checkbox" v-model="ruleForm.vision" style="cursor: pointer" />
+              <input
+                type="checkbox"
+                v-model="ruleForm.vision"
+                style="cursor: pointer"
+              />
               支持多模态（模型可接收图片）
             </label>
             <div style="margin-top: 2px; font-size: 12px; color: #909399">
@@ -2759,7 +2873,9 @@
               placeholder="如 flash（需存在对应路由规则，由 model_mapping 映射到上游真实名）"
             />
             <div style="margin-top: 2px; font-size: 12px; color: #909399">
-              留空 = 不支持多模态也不兑底（带图请求按原模型转发）；填写后带图请求自动改写 model 为兑底模型重新路由
+              留空 =
+              不支持多模态也不兑底（带图请求按原模型转发）；填写后带图请求自动改写
+              model 为兑底模型重新路由
             </div>
           </div>
           <div class="modal-footer">
@@ -2770,10 +2886,7 @@
       </div>
 
       <!-- 测试上游 -->
-      <div
-        class="modal"
-        v-if="showTestDialog"
-      >
+      <div class="modal" v-if="showTestDialog">
         <div class="modal-content" style="max-width: 600px">
           <h3>测试上游：{{ testRow && testRow.name ? testRow.name : '' }}</h3>
           <div class="form-group">
@@ -2848,10 +2961,7 @@
       </div>
 
       <!-- 创建 API Key -->
-      <div
-        class="modal"
-        v-if="showAddKeyDialog"
-      >
+      <div class="modal" v-if="showAddKeyDialog">
         <div class="modal-content" style="max-width: 440px">
           <h3>创建下游 API Key</h3>
           <div class="form-group">
@@ -2877,10 +2987,7 @@
       </div>
 
       <!-- 添加/编辑优惠时段 -->
-      <div
-        class="modal"
-        v-if="showDiscountDialog"
-      >
+      <div class="modal" v-if="showDiscountDialog">
         <div class="modal-content" style="max-width: 520px">
           <h3>{{ discountForm.id ? '编辑优惠时段' : '添加优惠时段' }}</h3>
           <div class="form-group">
@@ -2943,10 +3050,7 @@
       </div>
 
       <!-- 添加/编辑模型价格 -->
-      <div
-        class="modal"
-        v-if="showPriceDialog"
-      >
+      <div class="modal" v-if="showPriceDialog">
         <div class="modal-content" style="max-width: 520px">
           <h3>{{ priceForm.id ? '编辑模型价格' : '添加模型价格' }}</h3>
           <div class="form-group">
@@ -2983,10 +3087,7 @@
       </div>
 
       <!-- 编辑系统配置 -->
-      <div
-        class="modal"
-        v-if="showConfigDialog"
-      >
+      <div class="modal" v-if="showConfigDialog">
         <div class="modal-content" style="max-width: 440px">
           <h3>编辑配置</h3>
           <div class="form-group">
@@ -3145,7 +3246,13 @@
             effortForm: { model: "", recommended: "", forced: "" },
             showRuleDialog: false,
             ruleIsEdit: false,
-            ruleForm: { model: "", strategy: "", upstreams: "", vision: false, vision_fallback: "" },
+            ruleForm: {
+              model: "",
+              strategy: "",
+              upstreams: "",
+              vision: false,
+              vision_fallback: "",
+            },
             ruleSelectedUpstreams: [],
             ruleUpstreamOptions: [],
             logs: [],
@@ -3158,6 +3265,7 @@
               { key: "endpoint", label: "端点" },
               { key: "model", label: "模型" },
               { key: "status", label: "状态" },
+              { key: "error_detail", label: "错误详情" },
               { key: "duration_ms", label: "耗时(ms)" },
               { key: "prompt_tokens", label: "输入t" },
               { key: "completion_tokens", label: "输出t" },
@@ -3174,6 +3282,7 @@
               "endpoint",
               "model",
               "status",
+              "error_detail",
               "duration_ms",
               "prompt_tokens",
               "completion_tokens",
@@ -3515,7 +3624,11 @@ curl -sS "$BASE/v1/messages" \\
               model_mapping: "{}",
             },
             showEditDialog: false,
-            editForm: { billing_exempt: false, per_model_billing: false, request_override: "" },
+            editForm: {
+              billing_exempt: false,
+              per_model_billing: false,
+              request_override: "",
+            },
             fetchingModels: false,
             showCloneDialog: false,
             cloneForm: { name: "", api_key: "" },
@@ -4144,7 +4257,9 @@ curl -sS "$BASE/v1/messages" \\
                   formatter: function (params) {
                     var v = params.value;
                     var s = v >= 0.01 ? v.toFixed(2) : v.toFixed(4);
-                    return params.name + ": ¥" + s + " (" + params.percent + "%)";
+                    return (
+                      params.name + ": ¥" + s + " (" + params.percent + "%)"
+                    );
                   },
                 },
                 legend: {
@@ -4342,7 +4457,7 @@ curl -sS "$BASE/v1/messages" \\
                     }
                     self.chatMessages.push({
                       role: "assistant",
-                      content: thinking ? answer : (answer || "（空回复）"),
+                      content: thinking ? answer : answer || "（空回复）",
                       thinking: thinking,
                       routing: d.routing || null,
                       usage: d.usage || null,
@@ -4575,7 +4690,7 @@ curl -sS "$BASE/v1/messages" \\
                   alert(
                     ua
                       ? "转发 User-Agent 已保存并热重载生效: " + ua
-                      : "已清空转发 User-Agent（恢复 Go 默认 Go-http-client/1.1）"
+                      : "已清空转发 User-Agent（恢复 Go 默认 Go-http-client/1.1）",
                   );
                 });
             },
@@ -4608,7 +4723,7 @@ curl -sS "$BASE/v1/messages" \\
                   alert("reasoning_content 回传开关已保存并热重载生效");
                 });
             },
-                        openPwdDialog: function () {
+            openPwdDialog: function () {
               this.pwdForm = {
                 old_password: "",
                 new_password: "",
@@ -4734,7 +4849,11 @@ curl -sS "$BASE/v1/messages" \\
                   var d = r.data || {};
                   self.logs = d.logs || [];
                   self.logTotal = d.total || 0;
-                  self.logFilters = d.filters || { upstreams: [], models: [], endpoints: [] };
+                  self.logFilters = d.filters || {
+                    upstreams: [],
+                    models: [],
+                    endpoints: [],
+                  };
                   // 筛选后页码可能越界，回退到最后一页
                   var maxPage = Math.max(
                     1,
@@ -5089,7 +5208,10 @@ curl -sS "$BASE/v1/messages" \\
                 };
               });
               opts.sort(function (a, b) {
-                return String(a.name).localeCompare(String(b.name), "zh-Hans-CN");
+                return String(a.name).localeCompare(
+                  String(b.name),
+                  "zh-Hans-CN",
+                );
               });
               self.ruleUpstreamOptions = opts;
             },
@@ -5224,7 +5346,8 @@ curl -sS "$BASE/v1/messages" \\
                 this.editForm.request_override = "";
               // per_model_billing 开关：上游列表 API 返回布尔 arrears 同层的 per_model_billing
               //（config 表键 upstream.<name>.per_model_billing，后端读取后随 upstreamResponse 返回）
-              this.editForm.per_model_billing = !!this.editForm.per_model_billing;
+              this.editForm.per_model_billing =
+                !!this.editForm.per_model_billing;
               // models 统一成逗号分隔字符串（兼容数组与历史 JSON 字符串两种来源）
               if (Array.isArray(this.editForm.models)) {
                 this.editForm.models = this.editForm.models.join(", ");
@@ -5695,7 +5818,11 @@ curl -sS "$BASE/v1/messages" \\
               self
                 .api("/admin/groups", {
                   method: "POST",
-                  body: { name: String(name).trim(), allowed_models: "[]", remark: "" },
+                  body: {
+                    name: String(name).trim(),
+                    allowed_models: "[]",
+                    remark: "",
+                  },
                 })
                 .then(function () {
                   alert("组创建成功，可为组配置模型配额与白名单");
@@ -5704,7 +5831,10 @@ curl -sS "$BASE/v1/messages" \\
                 .catch(function (e) {
                   alert(
                     "创建失败: " +
-                      ((e.response && e.response.data && e.response.data.error) || e.message)
+                      ((e.response &&
+                        e.response.data &&
+                        e.response.data.error) ||
+                        e.message),
                   );
                 });
             },
@@ -5735,7 +5865,7 @@ curl -sS "$BASE/v1/messages" \\
               var models = JSON.stringify(
                 g._allowedChecked.filter(function (m) {
                   return m;
-                })
+                }),
               );
               self
                 .api("/admin/groups/" + g.id, {
@@ -5750,13 +5880,23 @@ curl -sS "$BASE/v1/messages" \\
                 .catch(function (e) {
                   alert(
                     "保存失败: " +
-                      ((e.response && e.response.data && e.response.data.error) || e.message)
+                      ((e.response &&
+                        e.response.data &&
+                        e.response.data.error) ||
+                        e.message),
                   );
                 });
             },
             delGroup: function (g) {
               var self = this;
-              if (!confirm("确定删除组 \"" + g.name + "\" 吗？\n组内 key 保留但变为未分组。")) return;
+              if (
+                !confirm(
+                  '确定删除组 "' +
+                    g.name +
+                    '" 吗？\n组内 key 保留但变为未分组。',
+                )
+              )
+                return;
               self
                 .api("/admin/groups/" + g.id, { method: "DELETE" })
                 .then(function () {
@@ -5783,7 +5923,13 @@ curl -sS "$BASE/v1/messages" \\
                   self.loadGroups();
                 })
                 .catch(function (e) {
-                  alert("保存失败: " + ((e.response && e.response.data && e.response.data.error) || e.message));
+                  alert(
+                    "保存失败: " +
+                      ((e.response &&
+                        e.response.data &&
+                        e.response.data.error) ||
+                        e.message),
+                  );
                 });
             },
             // 一键保存整组所有模型配额（逐行 PUT，全部成功才提示）
@@ -5793,7 +5939,9 @@ curl -sS "$BASE/v1/messages" \\
                 return q && q.model;
               });
               if (!rows.length) {
-                alert("该组还没有模型配额可保存，请在表格下方填写模型名后点「＋新增模型配额」");
+                alert(
+                  "该组还没有模型配额可保存，请在表格下方填写模型名后点「＋新增模型配额」",
+                );
                 return;
               }
               var tasks = rows.map(function (q) {
@@ -5814,7 +5962,8 @@ curl -sS "$BASE/v1/messages" \\
                 })
                 .catch(function (e) {
                   var msg =
-                    (e.response && e.response.data && e.response.data.error) || e.message;
+                    (e.response && e.response.data && e.response.data.error) ||
+                    e.message;
                   alert("部分保存失败: " + msg);
                   self.loadGroups();
                 });
@@ -5844,16 +5993,28 @@ curl -sS "$BASE/v1/messages" \\
                   self.loadGroups();
                 })
                 .catch(function (e) {
-                  alert("添加失败: " + ((e.response && e.response.data && e.response.data.error) || e.message));
+                  alert(
+                    "添加失败: " +
+                      ((e.response &&
+                        e.response.data &&
+                        e.response.data.error) ||
+                        e.message),
+                  );
                 });
             },
             delGroupQuota: function (g, q) {
               var self = this;
               if (!confirm("删除模型 " + q.model + " 的配额？")) return;
               self
-                .api("/admin/groups/" + g.id + "/quotas/" + encodeURIComponent(q.model), {
-                  method: "DELETE",
-                })
+                .api(
+                  "/admin/groups/" +
+                    g.id +
+                    "/quotas/" +
+                    encodeURIComponent(q.model),
+                  {
+                    method: "DELETE",
+                  },
+                )
                 .then(function () {
                   self.loadGroups();
                 });
@@ -5879,7 +6040,13 @@ curl -sS "$BASE/v1/messages" \\
                   self.loadGroups();
                 })
                 .catch(function (e) {
-                  alert("设置失败: " + ((e.response && e.response.data && e.response.data.error) || e.message));
+                  alert(
+                    "设置失败: " +
+                      ((e.response &&
+                        e.response.data &&
+                        e.response.data.error) ||
+                        e.message),
+                  );
                   self.switchTab("apikeys");
                 });
             },
@@ -5900,7 +6067,7 @@ curl -sS "$BASE/v1/messages" \\
               (self.rules || []).forEach(function (r) {
                 // 规则本身被禁用则忽略
                 if (r.enabled === false || r.enabled === 0) return;
-                var ruleUpNames = (r.upstreams || []) || [];
+                var ruleUpNames = r.upstreams || [] || [];
                 if (r.model.indexOf("*") >= 0) {
                   var re = new RegExp(
                     "^" +
@@ -6029,10 +6196,7 @@ curl -sS "$BASE/v1/messages" \\
               this._visListener = function () {
                 self.onVisibilityChange();
               };
-              document.addEventListener(
-                "visibilitychange",
-                this._visListener,
-              );
+              document.addEventListener("visibilitychange", this._visListener);
             }
           },
           beforeDestroy: function () {

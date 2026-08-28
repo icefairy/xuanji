@@ -2,16 +2,20 @@ package proxy
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/icefairy/xuanji/internal/config"
+	"github.com/icefairy/xuanji/internal/health"
 	"github.com/icefairy/xuanji/internal/router"
+	"github.com/icefairy/xuanji/internal/store"
 	"github.com/tidwall/gjson"
 )
 
@@ -344,5 +348,93 @@ func TestUpstreamTimeoutForUp(t *testing.T) {
 	up0 := &config.Upstream{Timeout: 0}
 	if got := upstreamTimeoutForUp(up0, cfg); got != 120*time.Second {
 		t.Errorf("up0/global120 = %v, want 120s", got)
+	}
+}
+
+// TestForwardOnce_4xxRecordsErrorDetail 验证：上游返回非可重试 4xx 时，
+// 请求日志中 error_detail 字段记录了上游的 error.message，便于请求日志页排查。
+// 对应场景：WorkBuddy 等客户端按窗口自动填 max_completion_tokens=384000，
+// 上游 deepseek-v4-flash 最多支持 262144 → 返回 400 且不可重试。
+func TestForwardOnce_4xxRecordsErrorDetail(t *testing.T) {
+	// 模拟上游返回 400 不可重试（含 OpenAI 风格 error.message）
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":{"message":"max_completion_tokens is too large: 384000. This model supports at most 262144 completion tokens.","type":"BadRequestError","code":400}}`))
+	}))
+	defer upstream.Close()
+
+	s, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	rec := store.NewRecorder(s)
+
+	cfg := &config.Config{
+		Upstreams: []config.Upstream{
+			{Name: "up", BaseURL: upstream.URL, APIKey: "sk-test", Priority: 10,
+				Models:       []string{"deepseek-v4-flash"},
+				ModelMapping: map[string]string{"deepseek-v4-flash": "deepseek-ai/DeepSeek-V4-Flash"},
+			},
+		},
+		Routing: config.Routing{
+			DefaultStrategy: "primary_backup",
+			Rules: []config.Rule{
+				{Model: "deepseek-v4-flash", Upstreams: []string{"up"}, Strategy: "primary_backup"},
+			},
+		},
+		Retry: config.Retry{}, // 空配置 → 所有 4xx 都不可重试
+	}
+	h := New(cfg, router.New(cfg), health.New(cfg))
+	h.SetRecorder(rec)
+
+	body := `{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"hi"}],"stream":false}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req.RemoteAddr = "127.0.0.1:54321"
+	recw := httptest.NewRecorder()
+	h.ChatCompletions(recw, req)
+	rec.Close() // flush
+
+	// 网关应返回 400（透传上游）
+	if recw.Code != http.StatusBadRequest {
+		t.Fatalf("gateway status=%d body=%s, want 400", recw.Code, recw.Body.String())
+	}
+
+	// 请求日志中应有记录，且 error_detail 包含上游报错摘要
+	// 诊断：打印表结构
+	cols, _ := s.DB().Query("PRAGMA table_info(request_log)")
+	for cols.Next() {
+		var cid int
+		var name, ctype string
+		var notnull, pk int
+		var dfltValue sql.NullString
+		cols.Scan(&cid, &name, &ctype, &notnull, &dfltValue, &pk)
+		t.Logf("column: %s (%s)", name, ctype)
+	}
+	cols.Close()
+	rows, err := s.DB().Query(`SELECT status, error_detail FROM request_log`)
+	if err != nil {
+		t.Fatalf("query request_log: %v", err)
+	}
+	defer rows.Close()
+
+	found := false
+	for rows.Next() {
+		var status int
+		var errorDetail string
+		if err := rows.Scan(&status, &errorDetail); err != nil {
+			t.Fatal(err)
+		}
+		if status != http.StatusBadRequest {
+			continue
+		}
+		found = true
+		if !strings.Contains(errorDetail, "message=max_completion_tokens is too large") {
+			t.Errorf("error_detail = %q, want to contain message= max_completion_tokens is too large", errorDetail)
+		}
+	}
+	if !found {
+		t.Fatal("no request_log record with status=400")
 	}
 }

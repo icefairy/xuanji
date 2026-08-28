@@ -1465,7 +1465,7 @@ func (h *Handler) RequestLogs(w http.ResponseWriter, r *http.Request) {
 	queryArgs := append([]interface{}{}, args...)
 	queryArgs = append(queryArgs, limit, offset)
 	rows, err := h.store.DB().Query(`
-				SELECT ts, upstream, model, endpoint, status, duration_ms, prompt_tokens, completion_tokens, tokens, prompt_cache_hit_tokens, prompt_cache_miss_tokens, api_key, cost, upstream_model, client_addr, user_agent
+				SELECT ts, upstream, model, endpoint, status, duration_ms, prompt_tokens, completion_tokens, tokens, prompt_cache_hit_tokens, prompt_cache_miss_tokens, api_key, cost, upstream_model, client_addr, user_agent, error_detail
 				FROM request_log`+where+` ORDER BY id DESC LIMIT ? OFFSET ?`, queryArgs...)
 	if err != nil {
 		writeJSON(w, map[string]interface{}{"total": total, "limit": limit, "offset": offset, "logs": []map[string]interface{}{}})
@@ -1475,14 +1475,13 @@ func (h *Handler) RequestLogs(w http.ResponseWriter, r *http.Request) {
 
 	var out []map[string]interface{}
 	for rows.Next() {
-		var ts, upstream, model, endpoint, apiKey, upstreamModel, clientAddr, userAgent string
+		var ts, upstream, model, endpoint, apiKey, upstreamModel, clientAddr, userAgent, errorDetail string
 		var status, durationMs, promptTokens, completionTokens, tokens, cacheHitTokens, cacheMissTokens int64
 		var cost float64
-		if err := rows.Scan(&ts, &upstream, &model, &endpoint, &status, &durationMs, &promptTokens, &completionTokens, &tokens, &cacheHitTokens, &cacheMissTokens, &apiKey, &cost, &upstreamModel, &clientAddr, &userAgent); err != nil {
+		if err := rows.Scan(&ts, &upstream, &model, &endpoint, &status, &durationMs, &promptTokens, &completionTokens, &tokens, &cacheHitTokens, &cacheMissTokens, &apiKey, &cost, &upstreamModel, &clientAddr, &userAgent, &errorDetail); err != nil {
 			continue
 		}
-		out = append(out, map[string]interface{}{
-			"ts":                       fmtCST(ts),
+		out = append(out, map[string]interface{}{"ts": fmtCST(ts),
 			"upstream":                 upstream,
 			"model":                    model,
 			"endpoint":                 endpoint,
@@ -1498,6 +1497,7 @@ func (h *Handler) RequestLogs(w http.ResponseWriter, r *http.Request) {
 			"upstream_model":           upstreamModel,
 			"client_addr":              clientAddr,
 			"user_agent":               userAgent,
+			"error_detail":             errorDetail,
 		})
 	}
 

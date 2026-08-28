@@ -719,6 +719,9 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 	// 流式转发期间客户端提前断开（streamCopy 写响应失败）：日志状态记为 499，
 	// 避免"中断"被误记为 200 污染统计（客户端实际收到 200 头后断流）。
 	var streamInterrupted bool
+	// 上游 4xx/5xx 响应体摘要（error.message 等），随 request_log 落库，请求日志页排查用。
+	// 仅在向客户端写上游错误（handled=true）时填充，成功请求保持空。
+	var errorDetail string
 	upstreamModel := h.pickAvailableModel(up, model)
 	defer func() {
 		if h.recorder == nil || !handled {
@@ -751,6 +754,7 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 			UserAgent:             r.UserAgent(), // 客户端 UA，程序识别最强信号
 			PromptCacheHitTokens:  promptCacheHitTokens,
 			PromptCacheMissTokens: promptCacheMissTokens,
+			ErrorDetail:           errorDetail,
 		})
 	}()
 	reqBody := body
@@ -923,6 +927,9 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 		if resp.StatusCode == http.StatusBadRequest {
 			h.learnTokenLimit(up, upstreamModel, model, respBody)
 		}
+		// 记录具体错误摘要（error.message / type / code），供请求日志页排查；
+		// 无论是否可重试都先记下来，避免不可重试分支返回前丢失。
+		errorDetail = summarizeUpstreamError(respBody)
 		if shouldRetry {
 			// 429 限流 ≠ 故障：不进 fastfail 黑名单（避免标红/5 分钟禁用），
 			// 改走秒级 cooldown（由 cooldown_upstreams + cooldown_seconds 控制），
