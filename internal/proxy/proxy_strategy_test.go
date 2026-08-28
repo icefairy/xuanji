@@ -64,7 +64,7 @@ func TestSelectCandidates_WeightOrder(t *testing.T) {
 	}
 }
 
-// 同 weight 同折扣同延迟：随机打乱（不再保持原序）
+// 同 weight 同折扣：随机打乱（不看延迟了）
 func TestSelectCandidates_SameWeightShuffle(t *testing.T) {
 	h := newStrategyTestHandler()
 	ups := []*config.Upstream{
@@ -119,44 +119,35 @@ func TestSelectCandidates_DisabledExcluded(t *testing.T) {
 	}
 }
 
-// 同 weight 同折扣状态：延迟低的优先（统一优先级第四级）；未测过延迟（0）排最后
-func TestSelectCandidates_LatencyFirst(t *testing.T) {
+// 同 weight 同折扣：随机打乱（不看延迟）
+func TestSelectCandidates_LatencyIgnored(t *testing.T) {
 	h := newStrategyTestHandler()
 	ups := []*config.Upstream{
 		{Name: "free-a", Tier: "free", Weight: 100},
 		{Name: "free-b", Tier: "free", Weight: 100},
 		{Name: "payg-c", Tier: "payg", Weight: 100},
 	}
-	// 手动设置延迟（名字必须在 health states 中，故用 cfg 里的 free-a/free-b）：
-	// free-a 200ms，free-b 1500ms，payg-c 未测（0）
-	h.health.SetLatencyForTest("free-a", 200*time.Millisecond)
-	h.health.SetLatencyForTest("free-b", 1500*time.Millisecond)
-	got := h.selectCandidates(ups, "", "m1")
-	if got[0].Name != "free-a" {
-		t.Errorf("first = %s, want free-a (延迟低优先)", got[0].Name)
+	// 即使延迟差异很大，同 weight 同 tier 也应随机分配
+	h.health.SetLatencyForTest("free-a", 50*time.Millisecond)
+	h.health.SetLatencyForTest("free-b", 5000*time.Millisecond)
+	var seenAFirst, seenBFirst bool
+	for i := 0; i < 50; i++ {
+		got := h.selectCandidates(ups, "", "m1")
+		if got[0].Name == "free-a" {
+			seenAFirst = true
+		} else if got[0].Name == "free-b" {
+			seenBFirst = true
+		}
+		if seenAFirst && seenBFirst {
+			break
+		}
 	}
-	if got[1].Name != "free-b" {
-		t.Errorf("second = %s, want free-b", got[1].Name)
-	}
-	if got[2].Name != "payg-c" {
-		t.Errorf("last = %s, want payg-c (tier 保护: payg 永远最后)", got[2].Name)
+	if !seenAFirst || !seenBFirst {
+		t.Errorf("同 weight 上游应随机打乱（不看延迟），但 50 次只见到固定顺序 (seenA=%v seenB=%v)", seenAFirst, seenBFirst)
 	}
 }
 
-// 延迟只在同 weight 内起作用：weight 高的即使延迟高也优先于 weight 低的
-func TestSelectCandidates_LatencyDoesNotOverrideWeight(t *testing.T) {
-	h := newStrategyTestHandler()
-	ups := []*config.Upstream{
-		{Name: "free-a", Tier: "free", Weight: 100},
-		{Name: "free-b", Tier: "free", Weight: 500},
-	}
-	h.health.SetLatencyForTest("free-a", 50*time.Millisecond)
-	h.health.SetLatencyForTest("free-b", 2000*time.Millisecond)
-	got := h.selectCandidates(ups, "", "m1")
-	if got[0].Name != "free-b" {
-		t.Errorf("first = %s, want free-b (weight 优先于延迟)", got[0].Name)
-	}
-}
+// 延迟低的优先已被移除：同 weight 同 tier 内随机选择
 
 func names(ups []*config.Upstream) []string {
 	var out []string
@@ -167,3 +158,4 @@ func names(ups []*config.Upstream) []string {
 }
 
 var _ = health.New // 保留 health 依赖引用（SelectCandidates 健康过滤在真实链路生效）
+var _ = time.Millisecond // 保留 time 依赖引用

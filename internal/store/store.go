@@ -422,6 +422,16 @@ func (s *Store) init() error {
 	// 迁移：request_log 加 user_agent 列（客户端 User-Agent，程序识别最强信号）。
 	// 用 PRAGMA table_info 判断列是否存在，保证旧库（无此列）与新建库都幂等可启动。
 	ensureColumn(s.db, "request_log", "user_agent", "user_agent TEXT NOT NULL DEFAULT ''")
+
+	// reasoning_cache 表：跨重启持久化 reasoning_content，解决内存缓存容量上限与重启丢失问题。
+	// key = tool_call_id，value = reasoning_content 全文，created_at = UTC RFC3339。
+	// 由 dailyStatsTicker 每日 prune 7 天前的记录。
+	s.db.Exec(`CREATE TABLE IF NOT EXISTS reasoning_cache (
+		tool_call_id TEXT NOT NULL,
+		content      TEXT NOT NULL,
+		created_at   TEXT NOT NULL DEFAULT (datetime('now', 'utc')),
+		PRIMARY KEY (tool_call_id)
+	)`)
 	// 迁移：upstreams 加 enabled 列（禁用/启用）
 	ensureColumn(s.db, "upstreams", "enabled", "enabled INTEGER NOT NULL DEFAULT 1")
 	// 迁移：upstreams 加 billing_exempt 列（不参与计费：统计模块费用记 0，路由不受影响）
@@ -615,6 +625,51 @@ func (s *Store) PruneHealthProbeLog(retainDays int) (int64, error) {
 // 历史统计已由 daily_stats 按天预聚合兜底，原始明细仅需保留近期
 // （用于单条追溯 + today 实时聚合），更早的明细每日自动删除控制表规模。
 const RequestLogRetainDays = 30
+
+// ReasoningCacheRetainDays reasoning_content 持久化保留天数。
+// 超过此时长的记录由 PruneReasoningCache 每日清理；历史统计已由 daily_stats 兜底，
+// reasoning_content 仅需保留近期（多轮 tool-calling 回传用），7 天足够覆盖典型会话。
+const ReasoningCacheRetainDays = 7
+
+// PruneReasoningCache 删除超过 retainDays 的 reasoning_content 记录（created_at 为 UTC RFC3339）。
+// 由 dailyStatsTicker 每日维护。返回删除行数。
+func (s *Store) PruneReasoningCache(retainDays int) (int64, error) {
+	if retainDays <= 0 {
+		return 0, nil
+	}
+	cutoff := time.Now().UTC().AddDate(0, 0, -retainDays).Format(time.RFC3339)
+	res, err := s.db.Exec(`DELETE FROM reasoning_cache WHERE created_at < ?`, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}
+
+// PutReasoning 写入 tool_call_id → reasoning_content 映射（UPSERT）。
+// 幂等：已存在则更新 content 与 created_at。
+func (s *Store) PutReasoning(toolCallID, content string) error {
+	if toolCallID == "" || content == "" {
+		return nil
+	}
+	_, err := s.db.Exec(
+		`INSERT INTO reasoning_cache (tool_call_id, content, created_at)
+		 VALUES (?, ?, datetime('now', 'utc'))
+		 ON CONFLICT(tool_call_id) DO UPDATE SET content = excluded.content, created_at = datetime('now', 'utc')`,
+		toolCallID, content,
+	)
+	return err
+}
+
+// GetReasoning 读取 tool_call_id 对应的 reasoning_content，未命中返回 ("", false)。
+func (s *Store) GetReasoning(toolCallID string) (string, error) {
+	var v string
+	err := s.db.QueryRow(`SELECT content FROM reasoning_cache WHERE tool_call_id = ?`, toolCallID).Scan(&v)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	return v, err
+}
 
 // PruneRequestLog 删除超过 retainDays 的请求明细（ts 为 UTC RFC3339，
 // 走 idx_request_log_ts 索引范围删除）。返回删除行数。
