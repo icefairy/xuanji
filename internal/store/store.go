@@ -27,8 +27,10 @@ type Record struct {
 	Endpoint              string  // chat / images / audio / embed / claude / generate
 	Status                int     // HTTP 状态码
 	DurationMS            int64   // 转发耗时毫秒
+	TTFTMS                int64   // 首 token 时间（流式时首个 data chunk 到达时间 - 请求开始时间）
 	PromptTokens          int64   // 输入 token 数
-	CompletionTokens      int64   // 输出 token 数
+	CompletionTokens      int64   // 输出 token 数（不含思考）
+	ThinkingTokens        int64   // 思考 token 数（DeepSeek R1 等模型的 thinking_tokens）
 	Tokens                int64   // 总 token 数 = PromptTokens + CompletionTokens
 	APIKey                string  // 下游 API Key 名称（api_tokens.name，用于按 Key 统计）
 	ClientAddr            string  // 客户端地址 "IP:port"（r.RemoteAddr 原样），用于区分调用程序
@@ -438,6 +440,10 @@ func (s *Store) init() error {
 	// 迁移：request_log 加 user_agent 列（客户端 User-Agent，程序识别最强信号）。
 	// 用 PRAGMA table_info 判断列是否存在，保证旧库（无此列）与新建库都幂等可启动。
 	ensureColumn(s.db, "request_log", "user_agent", "user_agent TEXT NOT NULL DEFAULT ''")
+	// 迁移：request_log 加 thinking_tokens 列（DeepSeek R1 等思考模型的思考 token 数）。
+	ensureColumn(s.db, "request_log", "thinking_tokens", "thinking_tokens INTEGER NOT NULL DEFAULT 0")
+	// 迁移：request_log 加 ttft_ms 列（首 token 时间，流式统计用）。
+	ensureColumn(s.db, "request_log", "ttft_ms", "ttft_ms INTEGER NOT NULL DEFAULT 0")
 
 	// reasoning_cache 表：跨重启持久化 reasoning_content，解决内存缓存容量上限与重启丢失问题。
 	// key 两种形态：tc:<tool_call_id>（tool-calling 轮次）/ fp:<content指纹>（纯思考回答轮次），
@@ -559,10 +565,10 @@ func (s *Store) DB() *sql.DB { return s.db }
 // Insert 单条插入一条请求记录。
 func (s *Store) Insert(rec Record) error {
 	_, err := s.db.Exec(
-		`INSERT INTO request_log (ts, upstream, model, endpoint, status, duration_ms, tokens, prompt_tokens, completion_tokens, api_key, client_addr, user_agent, prompt_cache_hit_tokens, prompt_cache_miss_tokens, error_detail)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO request_log (ts, upstream, model, endpoint, status, duration_ms, ttft_ms, tokens, prompt_tokens, completion_tokens, thinking_tokens, api_key, client_addr, user_agent, prompt_cache_hit_tokens, prompt_cache_miss_tokens, error_detail)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		rec.Timestamp.UTC().Format(time.RFC3339), rec.Upstream, rec.Model, rec.Endpoint,
-		rec.Status, rec.DurationMS, rec.Tokens, rec.PromptTokens, rec.CompletionTokens, rec.APIKey,
+		rec.Status, rec.DurationMS, rec.TTFTMS, rec.Tokens, rec.PromptTokens, rec.CompletionTokens, rec.ThinkingTokens, rec.APIKey,
 		rec.ClientAddr, rec.UserAgent, rec.PromptCacheHitTokens, rec.PromptCacheMissTokens,
 		rec.ErrorDetail,
 	)
@@ -972,8 +978,8 @@ func (s *Store) InsertBatch(recs []Record) error {
 	defer tx.Rollback()
 
 	stmt, err := tx.Prepare(
-		`INSERT INTO request_log (ts, upstream, model, upstream_model, cost, endpoint, status, duration_ms, tokens, prompt_tokens, completion_tokens, api_key, client_addr, user_agent, prompt_cache_hit_tokens, prompt_cache_miss_tokens, error_detail)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO request_log (ts, upstream, model, upstream_model, cost, endpoint, status, duration_ms, ttft_ms, tokens, prompt_tokens, completion_tokens, thinking_tokens, api_key, client_addr, user_agent, prompt_cache_hit_tokens, prompt_cache_miss_tokens, error_detail)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 	)
 	if err != nil {
 		return err
@@ -984,7 +990,7 @@ func (s *Store) InsertBatch(recs []Record) error {
 		if _, err := stmt.Exec(
 			rec.Timestamp.UTC().Format(time.RFC3339), rec.Upstream, rec.Model, rec.UpstreamModel, rec.Cost,
 			rec.Endpoint,
-			rec.Status, rec.DurationMS, rec.Tokens, rec.PromptTokens, rec.CompletionTokens, rec.APIKey,
+			rec.Status, rec.DurationMS, rec.TTFTMS, rec.Tokens, rec.PromptTokens, rec.CompletionTokens, rec.ThinkingTokens, rec.APIKey,
 			rec.ClientAddr, rec.UserAgent, rec.PromptCacheHitTokens, rec.PromptCacheMissTokens,
 			rec.ErrorDetail,
 		); err != nil {
@@ -2279,13 +2285,16 @@ func (s *Store) DeleteGroupQuota(groupID uint, model string) error {
 
 // DimStat 是单维度（上游/Key/模型）的单日汇总。
 type DimStat struct {
-	Requests        int64   `json:"requests"`
-	Successes       int64   `json:"successes"`
-	Tokens          int64   `json:"tokens"`
-	Cost            float64 `json:"cost"`
-	SumDurationMS   int64   `json:"sum_duration_ms"`
-	CacheHitTokens  int64   `json:"cache_hit_tokens"`
-	CacheMissTokens int64   `json:"cache_miss_tokens"`
+	Requests           int64   `json:"requests"`
+	Successes          int64   `json:"successes"`
+	Tokens             int64   `json:"tokens"`
+	Cost               float64 `json:"cost"`
+	SumDurationMS      int64   `json:"sum_duration_ms"`
+	SumTTFTMS         int64   `json:"sum_ttft_ms"`      // 首 token 时间总和（用于计算平均 TTFT）
+	ThinkingTokens   int64   `json:"thinking_tokens"`    // 思考 token 数（DeepSeek R1 等模型的思考 token）
+	CompletionTokens   int64   `json:"completion_tokens"` // 输出 token 数（用于计算 tokens/秒）
+	CacheHitTokens     int64   `json:"cache_hit_tokens"`
+	CacheMissTokens    int64   `json:"cache_miss_tokens"`
 }
 
 // DayStats 是 daily_stats 表的一行。
@@ -2293,6 +2302,7 @@ type DayStats struct {
 	Date             string
 	Requests         int64
 	Successes        int64
+	ThinkingTokens   int64  // 思考 token 数总和
 	Tokens           int64
 	PromptTokens     int64
 	CompletionTokens int64
@@ -2300,6 +2310,7 @@ type DayStats struct {
 	CacheMissTokens  int64
 	Cost             float64
 	SumDurationMS    int64
+	SumTTFTMS       int64  // 首 token 时间总和
 	ByUpstream       map[string]*DimStat
 	ByAPIKey         map[string]*DimStat
 	ByModel          map[string]*DimStat
@@ -2356,6 +2367,9 @@ func mergeDim(into map[string]*DimStat, from map[string]*DimStat) {
 		cur.Tokens += v.Tokens
 		cur.Cost += v.Cost
 		cur.SumDurationMS += v.SumDurationMS
+		cur.SumTTFTMS += v.SumTTFTMS
+		cur.CompletionTokens += v.CompletionTokens
+		cur.ThinkingTokens += v.ThinkingTokens
 		cur.CacheHitTokens += v.CacheHitTokens
 		cur.CacheMissTokens += v.CacheMissTokens
 	}
@@ -2400,11 +2414,13 @@ func (s *Store) AggregateDay(date string) (*DayStats, error) {
 		       COALESCE(SUM(rl.prompt_cache_hit_tokens), 0),
 		       COALESCE(SUM(rl.prompt_cache_miss_tokens), 0),
 		       COALESCE(SUM(CASE WHEN u.billing_exempt = 1 THEN 0 ELSE rl.cost END), 0),
-		       COALESCE(SUM(rl.duration_ms), 0)
+		       COALESCE(SUM(rl.duration_ms), 0),
+		       COALESCE(SUM(rl.thinking_tokens), 0),
+		       COALESCE(SUM(rl.ttft_ms), 0)
 		FROM request_log rl LEFT JOIN upstreams u ON u.name = rl.upstream
 		WHERE `+dayFilter, date).Scan(
 		&ds.Requests, &ds.Successes, &ds.Tokens, &ds.PromptTokens, &ds.CompletionTokens,
-		&ds.CacheHitTokens, &ds.CacheMissTokens, &ds.Cost, &ds.SumDurationMS); err != nil {
+		&ds.CacheHitTokens, &ds.CacheMissTokens, &ds.Cost, &ds.SumDurationMS, &ds.ThinkingTokens, &ds.SumTTFTMS); err != nil {
 		return nil, err
 	}
 	// by_upstream
@@ -2415,6 +2431,9 @@ func (s *Store) AggregateDay(date string) (*DayStats, error) {
 		       COALESCE(SUM(rl.tokens), 0),
 		       COALESCE(SUM(CASE WHEN u.billing_exempt = 1 THEN 0 ELSE rl.cost END), 0),
 		       COALESCE(SUM(rl.duration_ms), 0),
+		       COALESCE(SUM(rl.ttft_ms), 0),
+		       COALESCE(SUM(rl.completion_tokens), 0),
+		       COALESCE(SUM(rl.thinking_tokens), 0),
 		       COALESCE(SUM(rl.prompt_cache_hit_tokens), 0),
 		       COALESCE(SUM(rl.prompt_cache_miss_tokens), 0)
 		FROM request_log rl LEFT JOIN upstreams u ON u.name = rl.upstream
@@ -2429,6 +2448,9 @@ func (s *Store) AggregateDay(date string) (*DayStats, error) {
 		       COALESCE(SUM(rl.tokens), 0),
 		       COALESCE(SUM(CASE WHEN u.billing_exempt = 1 THEN 0 ELSE rl.cost END), 0),
 		       COALESCE(SUM(rl.duration_ms), 0),
+		       COALESCE(SUM(rl.ttft_ms), 0),
+		       COALESCE(SUM(rl.completion_tokens), 0),
+		       COALESCE(SUM(rl.thinking_tokens), 0),
 		       COALESCE(SUM(rl.prompt_cache_hit_tokens), 0),
 		       COALESCE(SUM(rl.prompt_cache_miss_tokens), 0)
 		FROM request_log rl LEFT JOIN upstreams u ON u.name = rl.upstream
@@ -2443,6 +2465,9 @@ func (s *Store) AggregateDay(date string) (*DayStats, error) {
 		       COALESCE(SUM(rl.tokens), 0),
 		       COALESCE(SUM(CASE WHEN u.billing_exempt = 1 THEN 0 ELSE rl.cost END), 0),
 		       COALESCE(SUM(rl.duration_ms), 0),
+		       COALESCE(SUM(rl.ttft_ms), 0),
+		       COALESCE(SUM(rl.completion_tokens), 0),
+		       COALESCE(SUM(rl.thinking_tokens), 0),
 		       COALESCE(SUM(rl.prompt_cache_hit_tokens), 0),
 		       COALESCE(SUM(rl.prompt_cache_miss_tokens), 0)
 		FROM request_log rl LEFT JOIN upstreams u ON u.name = rl.upstream
@@ -2463,7 +2488,7 @@ func (s *Store) scanDim(q string, date string, out map[string]*DimStat) error {
 	for rows.Next() {
 		var k string
 		d := &DimStat{}
-		if err := rows.Scan(&k, &d.Requests, &d.Successes, &d.Tokens, &d.Cost, &d.SumDurationMS, &d.CacheHitTokens, &d.CacheMissTokens); err != nil {
+		if err := rows.Scan(&k, &d.Requests, &d.Successes, &d.Tokens, &d.Cost, &d.SumDurationMS, &d.SumTTFTMS, &d.CompletionTokens, &d.ThinkingTokens, &d.CacheHitTokens, &d.CacheMissTokens); err != nil {
 			continue
 		}
 		out[k] = d
