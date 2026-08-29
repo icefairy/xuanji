@@ -158,7 +158,7 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, claudeReq 
 	start := time.Now()
 	var status int
 	defer func() {
-		if h.recorder == nil || err == nil {
+		if h.recorder == nil || !handled {
 			return
 		}
 		if sr, ok := w.(*statusRecorder); ok {

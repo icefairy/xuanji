@@ -370,6 +370,27 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 			h.markCooldown(up.Name, model)
 			return
 		}
+		// 中间候选失败也记录 error_detail，供请求日志页排查（最后一个候选由 forwardOnce defer 记录）。
+		// 从错误字符串推断 status："upstream error: 429"→429，"upstream error: 5xx"→502 等，连接错误→0。
+		if h.recorder != nil && ferr != nil && retryable {
+			status := 0
+			if idx := strings.Index(ferr.Error(), "upstream error: "); idx >= 0 {
+				rest := ferr.Error()[idx+len("upstream error: "):]
+				fmt.Sscanf(rest, "%d", &status)
+			}
+			h.recorder.Record(store.Record{
+				Timestamp:    time.Now(),
+				Upstream:     up.Name,
+				Model:        model,
+				Endpoint:     "chat",
+				Status:       status,
+				DurationMS:   time.Since(start).Milliseconds(),
+				APIKey:       h.recordAPIKey(r),
+				ClientAddr:   r.RemoteAddr,
+				UserAgent:    r.UserAgent(),
+				ErrorDetail:  "retryable error: " + ferr.Error(),
+			})
+		}
 		h.log.Warn("upstream failed, trying next",
 			"upstream", up.Name, "model", model, "error", ferr)
 		if !retryable {
@@ -737,7 +758,7 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 	var errorDetail string
 	upstreamModel := h.pickAvailableModel(up, model)
 	defer func() {
-		if h.recorder == nil || err == nil {
+		if h.recorder == nil || !handled {
 			return
 		}
 		if sr, ok := w.(*statusRecorder); ok {
@@ -1389,7 +1410,7 @@ func (h *Handler) forwardRerank(w http.ResponseWriter, r *http.Request, body []b
 	var status int
 	var promptTokens, completionTokens int64
 	defer func() {
-		if h.recorder == nil || err == nil {
+		if h.recorder == nil || !handled {
 			return
 		}
 		if sr, ok := w.(*statusRecorder); ok {
@@ -1556,7 +1577,7 @@ func (h *Handler) forwardEmbedding(w http.ResponseWriter, r *http.Request, body 
 	var status int
 	var promptTokens, completionTokens int64
 	defer func() {
-		if h.recorder == nil || err == nil {
+		if h.recorder == nil || !handled {
 			return
 		}
 		if sr, ok := w.(*statusRecorder); ok {
