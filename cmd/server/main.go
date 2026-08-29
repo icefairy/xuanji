@@ -471,6 +471,7 @@ func buildServeMux(cfg *config.Config, rt *router.Router, hc *health.Checker, re
 	// 模型 token 上限（自动学习自上游 400 错误，见 proxy/tokenlimit.go）
 	mux.HandleFunc("GET /admin/token-limits", adminAuth(admHandler.TokenLimits))
 	mux.HandleFunc("DELETE /admin/token-limits/{upstream}/{model}", adminAuth(admHandler.DeleteTokenLimit))
+	mux.HandleFunc("POST /admin/token-limits", adminAuth(admHandler.UpsertTokenLimit))
 	mux.HandleFunc("POST /admin/reload", adminAuth(admHandler.Reload))
 	mux.HandleFunc("PUT /admin/upstreams/{name}/toggle", adminAuth(admHandler.ToggleUpstream))
 
@@ -495,6 +496,7 @@ func buildServeMux(cfg *config.Config, rt *router.Router, hc *health.Checker, re
 	// AI 助手管理 API（免登录）：token 上限
 	mux.HandleFunc("GET /api/admin/token-limits", adminKeyAuth(admHandler.TokenLimits))
 	mux.HandleFunc("DELETE /api/admin/token-limits/{upstream}/{model}", adminKeyAuth(admHandler.DeleteTokenLimit))
+	mux.HandleFunc("POST /api/admin/token-limits", adminKeyAuth(admHandler.UpsertTokenLimit))
 
 	// 渠道优惠时段
 	mux.HandleFunc("GET /admin/discounts", adminAuth(admHandler.Discounts))

@@ -48,17 +48,17 @@ func TestNormalizeMaxTokens_ClampToCap(t *testing.T) {
 }
 
 func TestNormalizeMaxTokens_NoCap_DefaultClamp(t *testing.T) {
-	// 未配置 cap（nil 或 cap=0）→ 默认 clamp 到 65536（绝大多数上游的安全上限）
-	body := []byte(`{"model":"x","max_tokens":131072,"messages":[]}`)
+	// 未配置 cap（nil 或 cap=0）→ 默认 clamp 到 209715（262144×80%，留余量避免边界 400）
+	body := []byte(`{"model":"x","max_tokens":262144,"messages":[]}`)
 	nb, changed := normalizeMaxTokens(body, nil)
-	if !changed || !strings.Contains(string(nb), `"max_tokens":65536`) {
-		t.Fatalf("nil cap should clamp to default 65536, changed=%v body=%s", changed, nb)
+	if !changed || !strings.Contains(string(nb), `"max_tokens":209715`) {
+		t.Fatalf("nil cap should clamp to default 209715, changed=%v body=%s", changed, nb)
 	}
 
 	up := &config.Upstream{Name: "商汤", MaxTokensCap: 0}
 	nb, changed = normalizeMaxTokens(body, up)
-	if !changed || !strings.Contains(string(nb), `"max_tokens":65536`) {
-		t.Fatalf("cap=0 should clamp to default 65536, changed=%v body=%s", changed, nb)
+	if !changed || !strings.Contains(string(nb), `"max_tokens":209715`) {
+		t.Fatalf("cap=0 should clamp to default 209715, changed=%v body=%s", changed, nb)
 	}
 }
 

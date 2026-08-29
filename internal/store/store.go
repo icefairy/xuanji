@@ -1735,8 +1735,8 @@ func (s *Store) SeedDefaults() error {
 		maxCompletionToks int
 		maxToks           int
 	}{
-		{"deepseek-v4-flash", 262144, 262144},
-		{"deepseek-v4-pro", 262144, 262144},
+		{"deepseek-v4-flash", 209715, 209715},
+		{"deepseek-v4-pro", 209715, 209715},
 	}
 	for _, kl := range seedTokenLimits {
 		if _, err := s.db.Exec(
