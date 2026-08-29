@@ -659,6 +659,8 @@ type upstreamMetrics struct {
 	Failures     int64   `json:"failures"`
 	SuccessRate  float64 `json:"success_rate"`
 	AvgLatencyMS float64 `json:"avg_latency_ms"`
+	AvgTTFTMS    float64 `json:"avg_ttft_ms"`    // 平均首 token 时间（毫秒）
+	TokensPerSec float64 `json:"tokens_per_sec"` // 平均每秒生成 token 数
 	TotalTokens  int64   `json:"total_tokens"`
 	State        string  `json:"state"` // healthy / degraded / dead（来自健康检查）
 	// 定时探测统计：健康度 = ProbeSuccess / (ProbeSuccess + ProbeFail)
@@ -703,6 +705,15 @@ func (h *Handler) MetricsUpstreams(w http.ResponseWriter, r *http.Request) {
 		if d.Requests > 0 {
 			m.SuccessRate = float64(d.Successes) / float64(d.Requests)
 			m.AvgLatencyMS = float64(d.SumDurationMS) / float64(d.Requests)
+			// TTFT：只统计有 TTFT 数据的请求（流式请求）
+			if d.SumTTFTMS > 0 {
+				m.AvgTTFTMS = float64(d.SumTTFTMS) / float64(d.Requests)
+			}
+			// Tokens/秒：(completion_tokens + thinking_tokens) / (duration_ms / 1000)
+			// 思考模型需要把思考 token 也算进去，否则 tokens/秒 偏低不准确
+			if d.SumDurationMS > 0 && (d.CompletionTokens+d.ThinkingTokens) > 0 {
+				m.TokensPerSec = float64(d.CompletionTokens+d.ThinkingTokens) / (float64(d.SumDurationMS) / 1000.0)
+			}
 		}
 		if h.hc != nil {
 			switch h.hc.Status(name) {

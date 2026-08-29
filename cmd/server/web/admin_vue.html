@@ -1507,6 +1507,8 @@
               <th>失败</th>
               <th>请求成功率</th>
               <th>延迟(ms)</th>
+              <th>TTFT(ms)</th>
+              <th>Tokens/秒</th>
               <th>Tokens</th>
               <th>费用(元)</th>
             </tr>
@@ -1539,6 +1541,12 @@
               </td>
               <td>
                 {{ s.avg_latency_ms ? fmtNum(s.avg_latency_ms, 0) : '-' }}
+              </td>
+              <td>
+                {{ s.avg_ttft_ms ? fmtNum(s.avg_ttft_ms, 0) : '-' }}
+              </td>
+              <td>
+                {{ s.tokens_per_sec ? fmtNum(s.tokens_per_sec, 1) : '-' }}
               </td>
               <td>
                 <span :title="'精确值: ' + (s.total_tokens || 0)"
@@ -6240,7 +6248,7 @@ curl -sS "$BASE/v1/messages" \\
               .catch(function () {
                 self.buildDate = "";
               });
-            if (this.token) {
+            if (this.token || this.token === '') {
               this.switchTab("metrics");
               this.startAutoRefresh();
               // 浏览器选项卡（窗口）非激活时暂停自动刷新，恢复激活时立即续刷：

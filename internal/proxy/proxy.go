@@ -752,6 +752,10 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 	// 流式转发期间客户端提前断开（streamCopy 写响应失败）：日志状态记为 499，
 	// 避免"中断"被误记为 200 污染统计（客户端实际收到 200 头后断流）。
 	var streamInterrupted bool
+	// TTFT（Time To First Token）：首个 data chunk 到达时间 - 请求开始时间
+	var ttftMS int64
+	// 思考 token 数（DeepSeek R1 等模型的 thinking_tokens）
+	var thinkingTokens int64
 	// 上游 4xx/5xx 响应体摘要（error.message 等），随 request_log 落库，请求日志页排查用。
 	// 只要 forwardOnce 返回了错误（err != nil），无论是否可重试都记录，
 	// 这样 retry 循环中中间候选的失败也能被请求日志页看到。
@@ -780,9 +784,11 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 			Endpoint:              "chat",
 			Status:                status,
 			DurationMS:            time.Since(start).Milliseconds(),
+			TTFTMS:                ttftMS,
 			PromptTokens:          promptTokens,
 			CompletionTokens:      completionTokens,
-			Tokens:                promptTokens + completionTokens,
+			ThinkingTokens:        thinkingTokens,
+			Tokens:                promptTokens + completionTokens + thinkingTokens,
 			APIKey:                h.recordAPIKey(r),
 			ClientAddr:            r.RemoteAddr,  // 客户端地址 "IP:port"，用于区分调用程序
 			UserAgent:             r.UserAgent(), // 客户端 UA，程序识别最强信号
@@ -922,7 +928,7 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 		if h.fastFail != nil {
 			h.fastFail.MarkSuccess(up.Name, upstreamModel)
 		}
-		streamInterrupted = h.streamCopy(w, resp, &promptTokens, &completionTokens, &promptCacheHitTokens, &promptCacheMissTokens)
+		streamInterrupted, ttftMS = h.streamCopy(w, resp, &promptTokens, &completionTokens, &promptCacheHitTokens, &promptCacheMissTokens, start, &thinkingTokens)
 		return true, false, nil, promptTokens, completionTokens, promptCacheHitTokens, promptCacheMissTokens
 	case resp.StatusCode >= 400:
 		// 读响应体用于关键词匹配
@@ -1159,7 +1165,8 @@ func extractMessages(body []byte) []map[string]string {
 // 处理 "usage":null 的中间 chunk（Exists() 对 null 也返回 true，需 IsObject() 过滤）。
 // 返回 interrupted：客户端在流结束前断开（写响应失败），调用方应把日志状态记为 499
 // （Nginx 语义 client closed request），避免把"中断"误记为 200 污染统计。
-func (h *Handler) streamCopy(w http.ResponseWriter, resp *http.Response, promptTokens, completionTokens, promptCacheHit, promptCacheMiss *int64) (interrupted bool) {
+// 返回 ttftMS：首 token 时间（第一个 data chunk 到达时间 - 调用方传入的 start），0 表示非流式或无数据。
+func (h *Handler) streamCopy(w http.ResponseWriter, resp *http.Response, promptTokens, completionTokens, promptCacheHit, promptCacheMiss *int64, start time.Time, thinkingTokens *int64) (interrupted bool, ttftMS int64) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -1173,10 +1180,16 @@ func (h *Handler) streamCopy(w http.ResponseWriter, resp *http.Response, promptT
 	var reasoningBuf strings.Builder
 	var contentBuf strings.Builder
 	var toolCallIDs []string
+	firstChunk := true
 	for scanner.Scan() {
 		line := scanner.Text()
 		if _, werr := w.Write([]byte(line + "\n")); werr != nil {
-			return true
+			return true, ttftMS
+		}
+		// 记录 TTFT：第一个 data: 行到达的时间
+		if firstChunk && strings.HasPrefix(line, "data: ") {
+			firstChunk = false
+			ttftMS = time.Since(start).Milliseconds()
 		}
 		if f, ok := w.(http.Flusher); ok {
 			f.Flush()
@@ -1207,6 +1220,9 @@ func (h *Handler) streamCopy(w http.ResponseWriter, resp *http.Response, promptT
 				if ct := usage.Get("completion_tokens").Int(); ct > 0 {
 					*completionTokens = ct
 				}
+				if tt := usage.Get("thinking_tokens").Int(); tt > 0 {
+					*thinkingTokens = tt
+				}
 				if pch := usage.Get("prompt_cache_hit_tokens").Int(); pch > 0 {
 					*promptCacheHit = pch
 				} else if cached := usage.Get("prompt_tokens_details.cached_tokens").Int(); cached > 0 {
@@ -1231,7 +1247,7 @@ func (h *Handler) streamCopy(w http.ResponseWriter, resp *http.Response, promptT
 			h.reasoning.PutFingerprint(contentBuf.String(), reasoningBuf.String())
 		}
 	}
-	return false
+	return false, ttftMS
 }
 
 // writeUpstreamError 把上游的 4xx/5xx 响应映射为 OpenAI 标准错误格式。
