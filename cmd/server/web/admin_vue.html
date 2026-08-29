@@ -2084,6 +2084,7 @@
             「max_completion_tokens is too large ... at most N」类 400
             错误自动提取 N 记录；转发前自动把超限的 max_tokens /
             max_completion_tokens clamp 到上限。
+            默认上限为模型窗口 262144 的 80%（209715），可点击「编辑」修改并立即生效。
             删除某条后程序会再次遇到同类错误时自动重新记录。</span
           >
         </div>
@@ -2103,16 +2104,29 @@
             <tr v-for="tl in tokenLimits">
               <td>{{ tl.upstream }}</td>
               <td>{{ tl.upstream_model }}</td>
-              <td>{{ tl.max_completion_tokens || '-' }}</td>
-              <td>{{ tl.max_tokens || '-' }}</td>
+              <td>
+                <input v-if="editingTl && editingTl.upstream===tl.upstream && editingTl.upstream_model===tl.upstream_model"
+                  type="number" v-model.number="editingTl.max_completion_tokens"
+                  style="width:90px;padding:2px 4px" />
+                <span v-else>{{ tl.max_completion_tokens || '-' }}</span>
+              </td>
+              <td>
+                <input v-if="editingTl && editingTl.upstream===tl.upstream && editingTl.upstream_model===tl.upstream_model"
+                  type="number" v-model.number="editingTl.max_tokens"
+                  style="width:90px;padding:2px 4px" />
+                <span v-else>{{ tl.max_tokens || '-' }}</span>
+              </td>
               <td>{{ tl.source }}</td>
               <td style="font-size: 12px">
                 {{ tl.updated_at || tl.created_at }}
               </td>
               <td class="ops">
-                <button class="btn btn-danger" @click="delTokenLimit(tl)">
-                  删除
-                </button>
+                <template v-if="editingTl && editingTl.upstream===tl.upstream && editingTl.upstream_model===tl.upstream_model">
+                  <button class="btn btn-primary" style="margin-right:4px" @click="saveTokenLimit(tl)">保存</button>
+                  <button class="btn" style="margin-right:4px" @click="cancelEditTokenLimit">取消</button>
+                </template>
+                <button v-else class="btn" style="margin-right:4px" @click="startEditTokenLimit(tl)">编辑</button>
+                <button class="btn btn-danger" @click="delTokenLimit(tl)">删除</button>
               </td>
             </tr>
           </tbody>
@@ -3242,6 +3256,7 @@
             efforts: [],
             showEffortDialog: false,
             tokenLimits: [],
+            editingTl: null, // 当前正在编辑的 token limit 行（复制值到临时对象）
             effortIsEdit: false,
             effortForm: { model: "", recommended: "", forced: "" },
             showRuleDialog: false,
@@ -3837,6 +3852,44 @@ curl -sS "$BASE/v1/messages" \\
                 )
                 .then(function () {
                   self.loadTokenLimits();
+                });
+            },
+            startEditTokenLimit: function (row) {
+              // 深拷贝一行，editingTl 保存临时副本，避免直接修改原数据
+              this.editingTl = {
+                upstream: row.upstream,
+                upstream_model: row.upstream_model,
+                max_completion_tokens: row.max_completion_tokens || 0,
+                max_tokens: row.max_tokens || 0,
+                source: row.source,
+              };
+            },
+            cancelEditTokenLimit: function () {
+              this.editingTl = null;
+            },
+            saveTokenLimit: function (originalRow) {
+              var self = this;
+              var form = this.editingTl;
+              if (!form || !form.upstream || !form.upstream_model) {
+                alert("上游和模型名不能为空");
+                return;
+              }
+              this.api("/admin/token-limits", {
+                method: "POST",
+                body: JSON.stringify({
+                  upstream: form.upstream,
+                  upstream_model: form.upstream_model,
+                  max_completion_tokens: form.max_completion_tokens || 0,
+                  max_tokens: form.max_tokens || 0,
+                  source: "manual",
+                }),
+              })
+                .then(function () {
+                  self.editingTl = null;
+                  self.loadTokenLimits();
+                })
+                .catch(function (e) {
+                  alert("保存失败：" + (e.response && e.response.data ? JSON.stringify(e.response.data) : e.message));
                 });
             },
             api: function (url, opts) {
