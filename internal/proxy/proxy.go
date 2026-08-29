@@ -732,11 +732,12 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 	// 避免"中断"被误记为 200 污染统计（客户端实际收到 200 头后断流）。
 	var streamInterrupted bool
 	// 上游 4xx/5xx 响应体摘要（error.message 等），随 request_log 落库，请求日志页排查用。
-	// 仅在向客户端写上游错误（handled=true）时填充，成功请求保持空。
+	// 只要 forwardOnce 返回了错误（err != nil），无论是否可重试都记录，
+	// 这样 retry 循环中中间候选的失败也能被请求日志页看到。
 	var errorDetail string
 	upstreamModel := h.pickAvailableModel(up, model)
 	defer func() {
-		if h.recorder == nil || !handled {
+		if h.recorder == nil || err == nil {
 			return
 		}
 		if sr, ok := w.(*statusRecorder); ok {
@@ -1388,7 +1389,7 @@ func (h *Handler) forwardRerank(w http.ResponseWriter, r *http.Request, body []b
 	var status int
 	var promptTokens, completionTokens int64
 	defer func() {
-		if h.recorder == nil || !handled {
+		if h.recorder == nil || err == nil {
 			return
 		}
 		if sr, ok := w.(*statusRecorder); ok {
@@ -1555,7 +1556,7 @@ func (h *Handler) forwardEmbedding(w http.ResponseWriter, r *http.Request, body 
 	var status int
 	var promptTokens, completionTokens int64
 	defer func() {
-		if h.recorder == nil || !handled {
+		if h.recorder == nil || err == nil {
 			return
 		}
 		if sr, ok := w.(*statusRecorder); ok {
