@@ -425,3 +425,135 @@ func TestChatCompletions_ReasoningCache_Disabled(t *testing.T) {
 		t.Fatalf("reasoning_content must NOT be injected when switch off")
 	}
 }
+
+// reasoningEmptyUpstreamBody 是无思考轮次的 tool-calling 响应：模型未产生 reasoning_content
+// （跨上游混布场景，如 GLM 等），但仍有 tool_calls。网关必须缓存空串标记。
+const reasoningEmptyUpstreamBody = `{"id":"r2","object":"chat.completion","model":"deepseek-v4-flash","choices":[{"index":0,"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_nothink","type":"function","function":{"name":"get_weather","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`
+
+// strictReasoningUpstream 模拟 DeepSeek 官方 thinking 模式校验（bai 等中转实测行为）：
+// assistant 消息若带 tool_calls，必须携带 reasoning_content 字段（空串也算已回传），
+// 否则返回 400 "The reasoning_content in the thinking mode must be passed back to the API."。
+// firstBody 是第 1 次请求（仅 user 消息）的响应体，后续请求（带历史 tool_calls）校验通过后
+// 返回 finalBody。
+func strictReasoningUpstream(gotBodies *[][]byte, firstBody, finalBody string) http.HandlerFunc {
+	var n int
+	return func(w http.ResponseWriter, r *http.Request) {
+		data, _ := io.ReadAll(r.Body)
+		*gotBodies = append(*gotBodies, data)
+		// 遍历所有 assistant 消息：带 tool_calls 的必须已有 reasoning_content 字段
+		for _, m := range gjson.GetBytes(data, "messages").Array() {
+			if m.Get("role").String() != "assistant" {
+				continue
+			}
+			if !m.Get("tool_calls").IsArray() || len(m.Get("tool_calls").Array()) == 0 {
+				continue
+			}
+			if !m.Get("reasoning_content").Exists() {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				// 注意：错误文案中的反引号不能用 raw string（会终止字符串），改用拼接
+				msg := "The `reasoning_content` in the thinking mode must be passed back to the API."
+				fmt.Fprintf(w, `{"error":{"message":%q,"type":"invalid_request_error","code":"invalid_request_error"}}`, msg)
+				return
+			}
+		}
+		n++
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		if n <= 1 {
+			fmt.Fprint(w, firstBody)
+		} else {
+			fmt.Fprint(w, finalBody)
+		}
+	}
+}
+
+// TestChatCompletions_ReasoningPassthrough_StrictUpstream 验证核心回填链路：
+// 客户端在第二轮丢掉了 reasoning_content（多轮 tool-calling 里客户端
+// 规范化/重建历史消息时常见），严格上游（DeepSeek 官方/bai 风格）会直接 400。
+// 璇玑网关心须从缓存回填 reasoning_content，使上游校验通过、请求正常返回 200。
+func TestChatCompletions_ReasoningPassthrough_StrictUpstream(t *testing.T) {
+	var gotBodies [][]byte
+	upstream, h := newTestHandler(t, strictReasoningUpstream(&gotBodies, reasoningUpstreamBody, `{"id":"fin","object":"chat.completion","model":"deepseek-v4-flash","choices":[{"index":0,"message":{"role":"assistant","content":"天气晴"},"finish_reason":"stop"}]}`))
+	defer upstream.Close()
+	h.cfg.Proxy.CacheReasoningContent = true
+
+	// 第一轮：仅 user 消息 → 上游返回 tool_calls + reasoning_content，网关缓存
+	if rec := doChat(t, h, `{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"查询北京天气"}]}`); rec.Code != http.StatusOK {
+		t.Fatalf("first round status = %d", rec.Code)
+	}
+	if v, ok := h.reasoning.Get("call_e2e"); !ok || v != "thinking about tools" {
+		t.Fatalf("cache after first round = %q, %v; want thinking about tools", v, ok)
+	}
+
+	// 第二轮：客户端丢掉了 assistant 的 reasoning_content（只保留 tool_calls）
+	secondBody := `{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"北京天气怎么样"},{"role":"assistant","content":null,"tool_calls":[{"id":"call_e2e","type":"function","function":{"name":"get_weather","arguments":"{}"}}]},{"role":"tool","tool_call_id":"call_e2e","content":"晴"}]}`
+	rec := doChat(t, h, secondBody)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("second round status = %d, want 200 (gateway must backfill reasoning_content to avoid 400)\nbody: %s", rec.Code, rec.Body.String())
+	}
+	if len(gotBodies) < 2 {
+		t.Fatalf("upstream called %d times, want >= 2", len(gotBodies))
+	}
+	// 上游实际收到的第二轮请求必须包含回填的 reasoning_content
+	if got := gjson.GetBytes(gotBodies[1], "messages.1.reasoning_content").String(); got != "thinking about tools" {
+		t.Fatalf("upstream received reasoning_content = %q, want thinking about tools (backfill failed)", got)
+	}
+}
+
+// TestChatCompletions_ReasoningPassthrough_NoInjection_Strict400 反向对照：
+// 缓存开关关闭时网关不做回填，严格上游应返回 400 —— 证明 StrictUpstream 的
+// 校验确实拦截缺字段请求，即主测试的 200 是回填生效的结果而非 mock 放行。
+func TestChatCompletions_ReasoningPassthrough_NoInjection_Strict400(t *testing.T) {
+	var gotBodies [][]byte
+	upstream, h := newTestHandler(t, strictReasoningUpstream(&gotBodies, reasoningUpstreamBody, `{"id":"fin","object":"chat.completion","model":"deepseek-v4-flash","choices":[]}`))
+	defer upstream.Close()
+	h.cfg.Proxy.CacheReasoningContent = false // 关闭回填 → 应 400
+
+	// 第一轮（user-only，校验通过）
+	if rec := doChat(t, h, `{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"查询北京天气"}]}`); rec.Code != http.StatusOK {
+		t.Fatalf("first round status = %d", rec.Code)
+	}
+
+	// 第二轮：缺 reasoning_content，网关不回填 → 严格上游 400
+	secondBody := `{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"北京天气怎么样"},{"role":"assistant","content":null,"tool_calls":[{"id":"call_e2e","type":"function","function":{"name":"get_weather","arguments":"{}"}}]},{"role":"tool","tool_call_id":"call_e2e","content":"晴"}]}`
+	rec := doChat(t, h, secondBody)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("second round status = %d, want 400 (strict upstream must reject missing reasoning_content when backfill disabled)", rec.Code)
+	}
+}
+
+// TestChatCompletions_ReasoningPassthrough_NoThinkingRound 验证无思考轮次场景：
+// 第一轮模型未产生 reasoning_content（跨上游混布，GLM 等不思考时），tool_calls 仍存在。
+// 网关须缓存空串标记；第二轮客户端丢字段后回填空串 reasoning_content（空串也算已回传），
+// 严格上游校验通过，不报 400。
+func TestChatCompletions_ReasoningPassthrough_NoThinkingRound(t *testing.T) {
+	var gotBodies [][]byte
+	upstream, h := newTestHandler(t, strictReasoningUpstream(&gotBodies, reasoningEmptyUpstreamBody, `{"id":"fin","object":"chat.completion","model":"deepseek-v4-flash","choices":[{"index":0,"message":{"role":"assistant","content":"42"},"finish_reason":"stop"}]}`))
+	defer upstream.Close()
+	h.cfg.Proxy.CacheReasoningContent = true
+
+	// 第一轮：上游返回 tool_calls 但无 reasoning_content → 网关缓存空串标记
+	if rec := doChat(t, h, `{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"算一下"}]}`); rec.Code != http.StatusOK {
+		t.Fatalf("first round status = %d", rec.Code)
+	}
+	if v, ok := h.reasoning.Get("call_nothink"); !ok {
+		t.Fatalf("cache after no-thinking round: tool_call_id missing (must cache empty marker)")
+	} else if v != "" {
+		t.Fatalf("cache value = %q, want empty string (no-thinking round)", v)
+	}
+
+	// 第二轮：客户端丢 reasoning_content → 网关回填空串 → 严格上游校验通过（空串也算已回传）
+	secondBody := `{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"算一下"},{"role":"assistant","content":null,"tool_calls":[{"id":"call_nothink","type":"function","function":{"name":"calc","arguments":"{}"}}]},{"role":"tool","tool_call_id":"call_nothink","content":"42"}]}`
+	rec := doChat(t, h, secondBody)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("second round status = %d, want 200 (empty reasoning_content backfill must pass strict upstream)\nbody: %s", rec.Code, rec.Body.String())
+	}
+	if len(gotBodies) < 2 {
+		t.Fatalf("upstream called %d times, want >= 2", len(gotBodies))
+	}
+	// 上游收到的消息里 reasoning_content 字段必须存在（值为空串也满足回传语义）
+	if !gjson.GetBytes(gotBodies[1], "messages.1.reasoning_content").Exists() {
+		t.Fatalf("upstream received message without reasoning_content field (backfill failed)")
+	}
+}
