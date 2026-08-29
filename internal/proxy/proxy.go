@@ -332,12 +332,10 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		if ferr != nil && h.health != nil {
 			h.health.MarkFailure(up.Name)
 		}
-		// 连接类错误（网络不可达/超时/连接拒绝）说明可能是本地网络问题而非上游故障
-		if ferr != nil {
-			var netErr net.Error
-			if errors.As(ferr, &netErr) || errors.Is(ferr, context.DeadlineExceeded) {
-				connIssues = true
-			}
+		// 连接类错误（网络不可达/超时/连接拒绝）说明可能是本地网络问题而非上游故障；
+		// 客户端断连（context.Canceled）不算（isConnIssue 内部排除）
+		if isConnIssue(ferr) {
+			connIssues = true
 		}
 		if handled {
 			upstream = up.Name
@@ -481,6 +479,20 @@ func (h *Handler) clearUpstreamBlacklist(up *config.Upstream, model string) {
 	for _, n := range names {
 		h.fastFail.MarkSuccess(up.Name, n)
 	}
+}
+
+// isConnIssue 判断错误是否为连接类错误（网络不可达/超时/连接拒绝）。
+// 客户端主动断连（context.Canceled）不算：它是本地取消而非网络故障。
+// 修复前 *url.Error（实现 net.Error 接口）包装的 context.Canceled 会被 errors.As 误命中，
+// 导致客户端断连被误判为全局网络问题、错误清空 fastfail 黑名单
+// （2026-08-28 日志实测：client disconnected 后打出 cleared=7 的误清日志）。
+// 与 forwardOnce 中「context.Canceled 不标记 fastfail」的既有语义保持一致。
+func isConnIssue(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) {
+		return false
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr) || errors.Is(err, context.DeadlineExceeded)
 }
 
 // needCooldownForUpstream 检查上游是否需要 per-key 冷却（名称匹配 CooldownUpstreams 前缀）。
@@ -1263,11 +1275,9 @@ func (h *Handler) Rerank(w http.ResponseWriter, r *http.Request) {
 		if ferr != nil && h.health != nil {
 			h.health.MarkFailure(up.Name)
 		}
-		if ferr != nil {
-			var netErr net.Error
-			if errors.As(ferr, &netErr) || errors.Is(ferr, context.DeadlineExceeded) {
-				connIssues = true
-			}
+		// 客户端断连（context.Canceled）不算连接类错误（isConnIssue 内部排除）
+		if isConnIssue(ferr) {
+			connIssues = true
 		}
 		if handled {
 			upstream = up.Name
@@ -1431,11 +1441,9 @@ func (h *Handler) Embeddings(w http.ResponseWriter, r *http.Request) {
 		if ferr != nil && h.health != nil {
 			h.health.MarkFailure(up.Name)
 		}
-		if ferr != nil {
-			var netErr net.Error
-			if errors.As(ferr, &netErr) || errors.Is(ferr, context.DeadlineExceeded) {
-				connIssues = true
-			}
+		// 客户端断连（context.Canceled）不算连接类错误（isConnIssue 内部排除）
+		if isConnIssue(ferr) {
+			connIssues = true
 		}
 		if handled {
 			upstream = up.Name
