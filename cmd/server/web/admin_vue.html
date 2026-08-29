@@ -6248,7 +6248,7 @@ curl -sS "$BASE/v1/messages" \\
               .catch(function () {
                 self.buildDate = "";
               });
-            if (this.token || this.token === '') {
+            if (this.token !== undefined && this.token !== null) {
               this.switchTab("metrics");
               this.startAutoRefresh();
               // 浏览器选项卡（窗口）非激活时暂停自动刷新，恢复激活时立即续刷：
