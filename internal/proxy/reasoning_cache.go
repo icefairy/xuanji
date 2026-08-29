@@ -60,10 +60,12 @@ func NewReasoningCache(max int, db *store.Store) *ReasoningCache {
 }
 
 // Put 写入 tool_call_id 对应的 reasoning_content。已存在时更新值但保持原插入顺序
-// （避免"热 key"把其他条目挤出）；空 id 或空内容不缓存（注入空串无意义）。
+// （避免"热 key"把其他条目挤出）。空 id 拦截；content 允许空串——"该轮无思考"
+// 也是有效状态：DeepSeek thinking 模式要求 assistant(tool_calls) 必须回传
+// reasoning_content（空串也算已回传），空串不缓存会导致下一轮注入失败 → 400。
 // 同时双写 DB（DB 键前缀 "tc:"）。
 func (c *ReasoningCache) Put(id, content string) {
-	if id == "" || content == "" {
+	if id == "" {
 		return
 	}
 	c.mu.Lock()
@@ -126,6 +128,7 @@ func (c *ReasoningCache) PutFingerprint(content, reasoning string) {
 
 // Get 读取 tool_call_id 对应的 reasoning_content，未命中返回 false。
 // 优先查内存；内存未命中时 fallback 查 DB（键前缀 "tc:"）。
+// 命中值可为空串（"该轮无思考"标记），err == nil 即命中。
 func (c *ReasoningCache) Get(id string) (string, bool) {
 	c.mu.Lock()
 	v, ok := c.items[id]
@@ -134,7 +137,7 @@ func (c *ReasoningCache) Get(id string) (string, bool) {
 		return v, true
 	}
 	if c.db != nil {
-		if dbV, err := c.db.GetReasoning("tc:" + id); err == nil && dbV != "" {
+		if dbV, err := c.db.GetReasoning("tc:" + id); err == nil {
 			c.Put(id, dbV)
 			return dbV, true
 		}
@@ -261,7 +264,9 @@ func injectReasoningContent(body []byte, cache *ReasoningCache) ([]byte, bool) {
 				if id == "" {
 					continue
 				}
-				if rc, ok := cache.Get(id); ok && rc != "" {
+				// 命中即注入（含空串："该轮无思考"标记，注入空 reasoning_content
+				// 可通过 DeepSeek thinking 模式回传校验）。
+				if rc, ok := cache.Get(id); ok {
 					var err error
 					nb, err = sjson.SetBytes(nb, fmt.Sprintf("messages.%d.reasoning_content", i), rc)
 					if err != nil {
@@ -328,13 +333,15 @@ func cacheReasoningFromMessage(data []byte, cache *ReasoningCache) {
 		return
 	}
 	rc := msg.Get("reasoning_content").String()
-	if rc == "" {
-		return
-	}
 	tcs := msg.Get("tool_calls")
 	content := msg.Get("content").String()
+	// rc 为空且无 tool_calls：纯文本无思考轮次，无需缓存（回传校验只针对 tool_calls 轮次）
+	if rc == "" && !(tcs.IsArray() && len(tcs.Array()) > 0) {
+		return
+	}
 
-	// 有 tool_calls → 按 tool_call_id 缓存
+	// 有 tool_calls → 按 tool_call_id 缓存（rc 可为空串："该轮无思考"标记，
+	// 下一轮注入空 reasoning_content 才能通过 DeepSeek thinking 回传校验）
 	if tcs.IsArray() && len(tcs.Array()) > 0 {
 		var ids []string
 		for _, tc := range tcs.Array() {
@@ -348,7 +355,7 @@ func cacheReasoningFromMessage(data []byte, cache *ReasoningCache) {
 	}
 
 	// 有 content → 按指纹缓存（即使也有 tool_calls，双缓存最大化命中率）
-	if content != "" {
+	if content != "" && rc != "" {
 		cache.PutFingerprint(content, rc)
 	}
 }
@@ -382,8 +389,9 @@ func cacheReasoningDelta(data string, reasoningBuf, contentBuf *strings.Builder,
 			continue
 		}
 		*ids = append(*ids, id)
-		if reasoningBuf.Len() > 0 {
-			cache.Put(id, reasoningBuf.String())
-		}
+		// 无条件写入（含空串）：该轮模型可能未思考（GLM 等混布/ reasoning_effort=none）。
+		// 空串也是有效标记——下一轮注入空 reasoning_content 才能通过 DeepSeek 官方
+		// "thinking 模式必须回传"校验；只缓存非空会导致这类轮次注入失败 → 400。
+		cache.Put(id, reasoningBuf.String())
 	}
 }

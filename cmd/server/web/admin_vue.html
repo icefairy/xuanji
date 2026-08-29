@@ -1290,6 +1290,12 @@
                 <template v-else-if="col.key === 'completion_tokens'"
                   >{{ l.completion_tokens }}</template
                 >
+                <template v-else-if="col.key === 'thinking_tokens'">
+                  <span v-if="l.thinking_tokens" class="badge badge-warn"
+                    >{{ l.thinking_tokens }}</span
+                  >
+                  <span v-else class="badge badge-gray">—</span>
+                </template>
                 <template v-else-if="col.key === 'tokens'"
                   >{{ l.tokens }}</template
                 >
@@ -3292,6 +3298,7 @@
               { key: "duration_ms", label: "耗时(ms)" },
               { key: "prompt_tokens", label: "输入t" },
               { key: "completion_tokens", label: "输出t" },
+              { key: "thinking_tokens", label: "思考t" },
               { key: "tokens", label: "总计t" },
               { key: "cache_hit", label: "缓存命中" },
               { key: "cost", label: "费用(元)" },
@@ -3309,6 +3316,7 @@
               "duration_ms",
               "prompt_tokens",
               "completion_tokens",
+              "thinking_tokens",
               "tokens",
               "cache_hit",
               "cost",
@@ -6111,6 +6119,35 @@ curl -sS "$BASE/v1/messages" \\
                   self.switchTab("apikeys");
                 });
             },
+            // 启动自动刷新（每 10 秒刷日志、在 rules 页时刷路由状态）。
+            startAutoRefresh: function () {
+              var self = this;
+              if (this.logTimer) clearInterval(this.logTimer);
+              this.autoRefreshPaused = false;
+              this.logTimer = setInterval(function () {
+                self.loadLogs();
+                if (self.tab === "rules") {
+                  self.loadRules();
+                }
+              }, 10000);
+            },
+            // 停止自动刷新并置暂停标记。
+            stopAutoRefresh: function () {
+              if (this.logTimer) clearInterval(this.logTimer);
+              this.logTimer = null;
+              this.autoRefreshPaused = true;
+            },
+            // 选项卡可见性变化回调：隐藏时暂停，恢复可见时续刷。
+            onVisibilityChange: function () {
+              if (document.hidden) {
+                this.stopAutoRefresh();
+              } else if (this.autoRefreshPaused) {
+                // 回到激活状态：立即刷一次，再恢复定时。
+                this.startAutoRefresh();
+                this.loadLogs();
+                if (this.tab === "rules") this.loadRules();
+              }
+            },
           },
           computed: {
             // 对话调试可选模型：路由规则模型（含通配符）+ 通配符展开后的实际模型 + 上游 model_mapping 的客户端名
@@ -6172,35 +6209,6 @@ curl -sS "$BASE/v1/messages" \\
               return self.logColumns.filter(function (c) {
                 return self.visibleLogCols.indexOf(c.key) >= 0;
               });
-            },
-            // 启动自动刷新（每 10 秒刷日志、在 rules 页时刷路由状态）。
-            startAutoRefresh: function () {
-              var self = this;
-              if (this.logTimer) clearInterval(this.logTimer);
-              this.autoRefreshPaused = false;
-              this.logTimer = setInterval(function () {
-                self.loadLogs();
-                if (self.tab === "rules") {
-                  self.loadRules();
-                }
-              }, 10000);
-            },
-            // 停止自动刷新并置暂停标记。
-            stopAutoRefresh: function () {
-              if (this.logTimer) clearInterval(this.logTimer);
-              this.logTimer = null;
-              this.autoRefreshPaused = true;
-            },
-            // 选项卡可见性变化回调：隐藏时暂停，恢复可见时续刷。
-            onVisibilityChange: function () {
-              if (document.hidden) {
-                this.stopAutoRefresh();
-              } else if (this.autoRefreshPaused) {
-                // 回到激活状态：立即刷一次，再恢复定时。
-                this.startAutoRefresh();
-                this.loadLogs();
-                if (this.tab === "rules") this.loadRules();
-              }
             },
           },
           watch: {

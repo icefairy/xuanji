@@ -270,7 +270,7 @@ func (h *Handler) forwardCompletion(w http.ResponseWriter, r *http.Request, body
 	if rerr != nil {
 		h.log.Debug("read completions upstream body", "error", rerr)
 	}
-	parseUsage(respBody, &promptTokens, &completionTokens, nil, nil)
+	parseUsage(respBody, &promptTokens, &completionTokens, nil, nil, nil, nil)
 	// 空内容完成（思考型 max_tokens 不足被截断，content 空 + finish_reason=length）：
 	// HTTP 200 但响应无效，非最后候选时切换下一个（与 chat 链路一致）
 	if IsEmptyCompletion(respBody) {
