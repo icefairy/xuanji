@@ -7,7 +7,7 @@ import "testing"
 func TestParseUsage_OpenAIStandardCachedTokens(t *testing.T) {
 	body := []byte(`{"usage":{"prompt_tokens":100,"completion_tokens":20,"total_tokens":120,"prompt_tokens_details":{"cached_tokens":80}}}`)
 	var p, c, hit, miss int64
-	if !parseUsage(body, &p, &c, &hit, &miss) {
+	if !parseUsage(body, &p, &c, &hit, &miss, nil, nil) {
 		t.Fatal("parseUsage 应返回 true")
 	}
 	if p != 100 || c != 20 {
@@ -22,7 +22,7 @@ func TestParseUsage_OpenAIStandardCachedTokens(t *testing.T) {
 func TestParseUsage_DeepSeekFieldsPriority(t *testing.T) {
 	body := []byte(`{"usage":{"prompt_tokens":100,"completion_tokens":20,"total_tokens":120,"prompt_cache_hit_tokens":60,"prompt_cache_miss_tokens":40,"prompt_tokens_details":{"cached_tokens":0}}}`)
 	var p, c, hit, miss int64
-	if !parseUsage(body, &p, &c, &hit, &miss) {
+	if !parseUsage(body, &p, &c, &hit, &miss, nil, nil) {
 		t.Fatal("parseUsage 应返回 true")
 	}
 	if hit != 60 || miss != 40 {

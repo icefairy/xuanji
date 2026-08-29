@@ -455,6 +455,12 @@ func (s *Store) init() error {
 		created_at   TEXT NOT NULL DEFAULT (datetime('now', 'utc')),
 		PRIMARY KEY (key)
 	)`)
+	// 老 schema 迁移：早期版本表用 tool_call_id 列（无 key），CREATE IF NOT EXISTS
+	// 不会修复已存在的老表，导致新版 PutReasoning/GetReasoning 全部报
+	// "no such column: key"（slog Debug 静默吞掉），DB 兑底完全失效 ——
+	// 超长会话内存缓存淘汰/重启丢失后无法从 DB 恢复，DeepSeek thinking 模式
+	// 回传校验 400（reasoning_content must be passed back）。
+	migrateReasoningCacheSchema(s.db)
 
 	// model_token_limits 表：从上游 400 错误自动学习的模型 token 上限（按 上游+真实模型 唯一）。
 	// 目的：客户端 agent 按模型窗口自动填 max_tokens / max_completion_tokens 超大值时上游报
@@ -531,6 +537,50 @@ func (s *Store) init() error {
 // SQLite 的 ALTER TABLE ADD COLUMN 对已存在列会报 duplicate column name，
 // 不能只依赖忽略错误——旧库与新库结构不同，显式判断最稳妥。
 // table 参数只传内部常量（如 "request_log"），不接用户输入。
+// migrateReasoningCacheSchema 迁移 reasoning_cache 老 schema（tool_call_id 列）到新 schema（key 列）。
+// 老数据 tool_call_id → tc:<id> 保留；fp: 指纹数据老表无对应记录，随缓存重建。
+// 缓存性质数据，迁移失败不阻断启动（仅告警，表会以老 schema 继续工作但 DB 兑底失效）。
+func migrateReasoningCacheSchema(db *sql.DB) {
+	rows, err := db.Query(`SELECT name FROM pragma_table_info(?)`, "reasoning_cache")
+	if err != nil {
+		slog.Warn("migrateReasoningCacheSchema: table_info failed", "error", err)
+		return
+	}
+	hasKey := false
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			rows.Close()
+			slog.Warn("migrateReasoningCacheSchema: scan failed", "error", err)
+			return
+		}
+		if name == "key" {
+			hasKey = true
+		}
+	}
+	rows.Close()
+	if hasKey {
+		return // 新 schema，无需迁移
+	}
+	// 老 schema → 新 schema：改名留底 → 建新表 → 迁移数据 → 删旧表
+	if _, err := db.Exec(`
+		ALTER TABLE reasoning_cache RENAME TO reasoning_cache_old;
+		CREATE TABLE reasoning_cache (
+			key          TEXT NOT NULL,
+			content      TEXT NOT NULL,
+			created_at   TEXT NOT NULL DEFAULT (datetime('now', 'utc')),
+			PRIMARY KEY (key)
+		);
+		INSERT OR IGNORE INTO reasoning_cache (key, content)
+			SELECT 'tc:' || tool_call_id, content FROM reasoning_cache_old;
+		DROP TABLE reasoning_cache_old;
+	`); err != nil {
+		slog.Warn("migrateReasoningCacheSchema: migrate failed", "error", err)
+		return
+	}
+	slog.Info("reasoning_cache schema migrated: tool_call_id -> key (tc: prefix)")
+}
+
 func ensureColumn(db *sql.DB, table, column, ddl string) {
 	// pragma_table_info 是表值函数形式，支持绑定参数（PRAGMA table_info(?) 不支持）
 	rows, err := db.Query(`SELECT name FROM pragma_table_info(?)`, table)
@@ -688,9 +738,12 @@ func (s *Store) PruneReasoningCache(retainDays int) (int64, error) {
 // key 为 tc:<tool_call_id> 或 fp:<content指纹>（见 proxy.ReasoningCache）。
 // 幂等：已存在则更新 content 与 created_at。
 func (s *Store) PutReasoning(key, content string) error {
-	if key == "" || content == "" {
+	if key == "" {
 		return nil
 	}
+	// content 允许空串："该轮无思考"也是有效状态（DeepSeek thinking 模式
+	// 要求 assistant(tool_calls) 必须回传 reasoning_content，即使为空），
+	// 空串不落库会导致下一轮注入失败 → 上游 400。
 	_, err := s.db.Exec(
 		`INSERT INTO reasoning_cache (key, content, created_at)
 		 VALUES (?, ?, datetime('now', 'utc'))
@@ -704,9 +757,9 @@ func (s *Store) PutReasoning(key, content string) error {
 func (s *Store) GetReasoning(key string) (string, error) {
 	var v string
 	err := s.db.QueryRow(`SELECT content FROM reasoning_cache WHERE key = ?`, key).Scan(&v)
-	if err == sql.ErrNoRows {
-		return "", nil
-	}
+	// 注意：sql.ErrNoRows 原样返回，调用方（ReasoningCache.Get）据此区分
+	// "无记录"（err != nil）与"记录存在但值为空串"（err == nil, v == ""）——
+	// 后者是"该轮无思考"的有效标记，需要照常返回命中。
 	return v, err
 }
 

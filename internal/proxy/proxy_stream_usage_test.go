@@ -21,7 +21,7 @@ func TestStreamCopy_ExtractsUsage(t *testing.T) {
 	rec := httptest.NewRecorder()
 
 	var pt, ct int64
-	_, _ = h.streamCopy(rec, resp, &pt, &ct, nil, nil, time.Now(), nil)
+	_, _ = h.streamCopy(rec, resp, &pt, &ct, nil, nil, time.Now(), nil, nil)
 
 	if pt != 10 || ct != 20 {
 		t.Errorf("usage = (%d,%d), want (10,20)", pt, ct)
@@ -43,7 +43,7 @@ func TestStreamCopy_NullUsageThenReal(t *testing.T) {
 	rec := httptest.NewRecorder()
 
 	var pt, ct int64
-	_, _ = h.streamCopy(rec, resp, &pt, &ct, nil, nil, time.Now(), nil)
+	_, _ = h.streamCopy(rec, resp, &pt, &ct, nil, nil, time.Now(), nil, nil)
 
 	if pt != 8 || ct != 61 {
 		t.Errorf("usage = (%d,%d), want (8,61) — null usage chunk must not block real one", pt, ct)
@@ -122,7 +122,7 @@ func TestStreamCopy_NoUsageKeepsZero(t *testing.T) {
 	rec := httptest.NewRecorder()
 
 	var pt, ct int64
-	_, _ = h.streamCopy(rec, resp, &pt, &ct, nil, nil, time.Now(), nil)
+	_, _ = h.streamCopy(rec, resp, &pt, &ct, nil, nil, time.Now(), nil, nil)
 
 	if pt != 0 || ct != 0 {
 		t.Errorf("usage = (%d,%d), want (0,0) when upstream omits usage", pt, ct)

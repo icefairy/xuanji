@@ -661,6 +661,7 @@ type upstreamMetrics struct {
 	AvgLatencyMS float64 `json:"avg_latency_ms"`
 	AvgTTFTMS    float64 `json:"avg_ttft_ms"`    // 平均首 token 时间（毫秒）
 	TokensPerSec float64 `json:"tokens_per_sec"` // 平均每秒生成 token 数
+	ThinkingTokens int64 `json:"thinking_tokens"` // 思考 token 总量（DeepSeek thinking_tokens / OpenAI reasoning_tokens）
 	TotalTokens  int64   `json:"total_tokens"`
 	State        string  `json:"state"` // healthy / degraded / dead（来自健康检查）
 	// 定时探测统计：健康度 = ProbeSuccess / (ProbeSuccess + ProbeFail)
@@ -696,10 +697,11 @@ func (h *Handler) MetricsUpstreams(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		m := upstreamMetrics{
-			Name:        name,
-			Requests:    d.Requests,
-			Successes:   d.Successes,
-			TotalTokens: d.Tokens,
+			Name:           name,
+			Requests:       d.Requests,
+			Successes:      d.Successes,
+			TotalTokens:    d.Tokens,
+			ThinkingTokens: d.ThinkingTokens,
 		}
 		m.Failures = d.Requests - d.Successes
 		if d.Requests > 0 {
@@ -710,7 +712,8 @@ func (h *Handler) MetricsUpstreams(w http.ResponseWriter, r *http.Request) {
 				m.AvgTTFTMS = float64(d.SumTTFTMS) / float64(d.Requests)
 			}
 			// Tokens/秒：(completion_tokens + thinking_tokens) / (duration_ms / 1000)
-			// 思考模型需要把思考 token 也算进去，否则 tokens/秒 偏低不准确
+			// 写入时已归一化：OpenAI 标准风格（agnes/o1）completion 已剥离思考，
+			// 两种风格下 completion + thinking 均等于实际生成量，不重复计数。
 			if d.SumDurationMS > 0 && (d.CompletionTokens+d.ThinkingTokens) > 0 {
 				m.TokensPerSec = float64(d.CompletionTokens+d.ThinkingTokens) / (float64(d.SumDurationMS) / 1000.0)
 			}

@@ -34,7 +34,7 @@ func TestStreamCopy_ClientInterrupt(t *testing.T) {
 	resp := &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(sse))}
 
 	var pt, ct int64
-	interrupted, _ := h.streamCopy(&failWriter{}, resp, &pt, &ct, nil, nil, time.Now(), nil)
+	interrupted, _ := h.streamCopy(&failWriter{}, resp, &pt, &ct, nil, nil, time.Now(), nil, nil)
 
 	if !interrupted {
 		t.Errorf("interrupted = false, want true（客户端写失败应标记中断）")
@@ -51,7 +51,7 @@ func TestStreamCopy_NormalFinish(t *testing.T) {
 	rec := httptest.NewRecorder()
 
 	var pt, ct int64
-	interrupted, _ := h.streamCopy(rec, resp, &pt, &ct, nil, nil, time.Now(), nil)
+	interrupted, _ := h.streamCopy(rec, resp, &pt, &ct, nil, nil, time.Now(), nil, nil)
 
 	if interrupted {
 		t.Errorf("interrupted = true, want false（正常透传完不应标记中断）")

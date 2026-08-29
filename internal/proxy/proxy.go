@@ -756,6 +756,13 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 	var ttftMS int64
 	// 思考 token 数（DeepSeek R1 等模型的 thinking_tokens）
 	var thinkingTokens int64
+	// 思考 token 是否已包含在 completion_tokens 里（OpenAI 标准风格，如 agnes：
+	// completion=4096 = reasoning 3674 + text 422）。为 true 时 normalizeThinking 把
+	// completionTokens 归一化为“不含思考”，与 DeepSeek 风格统一，避免统计重复计数。
+	var thinkingEmbedded bool
+	// 计费用原始 completion（含思考）；仅 thinkingEmbedded 归一化后非 0，
+	// 保证 agnes 等按“含思考 completion”计费的上游费用不因归一化而偏低。
+	var billingCompletion int64
 	// 上游 4xx/5xx 响应体摘要（error.message 等），随 request_log 落库，请求日志页排查用。
 	// 只要 forwardOnce 返回了错误（err != nil），无论是否可重试都记录，
 	// 这样 retry 循环中中间候选的失败也能被请求日志页看到。
@@ -773,7 +780,11 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 		}
 		cost := 0.0
 		if status >= 200 && status < 400 && (promptTokens > 0 || completionTokens > 0) {
-			cost = h.calcCost(upstreamModel, model, promptTokens, completionTokens, promptCacheHitTokens, promptCacheMissTokens)
+			bill := completionTokens
+			if billingCompletion > 0 {
+				bill = billingCompletion // 上游原始 completion（含思考），计费口径不变
+			}
+			cost = h.calcCost(upstreamModel, model, promptTokens, bill, promptCacheHitTokens, promptCacheMissTokens)
 		}
 		h.recorder.Record(store.Record{
 			Timestamp:             time.Now(),
@@ -928,7 +939,8 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 		if h.fastFail != nil {
 			h.fastFail.MarkSuccess(up.Name, upstreamModel)
 		}
-		streamInterrupted, ttftMS = h.streamCopy(w, resp, &promptTokens, &completionTokens, &promptCacheHitTokens, &promptCacheMissTokens, start, &thinkingTokens)
+		streamInterrupted, ttftMS = h.streamCopy(w, resp, &promptTokens, &completionTokens, &promptCacheHitTokens, &promptCacheMissTokens, start, &thinkingTokens, &thinkingEmbedded)
+		normalizeThinking(&thinkingEmbedded, &thinkingTokens, &completionTokens, &billingCompletion)
 		return true, false, nil, promptTokens, completionTokens, promptCacheHitTokens, promptCacheMissTokens
 	case resp.StatusCode >= 400:
 		// 读响应体用于关键词匹配
@@ -1011,11 +1023,12 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 			return false, true, fmt.Errorf("empty completion (thinking truncated?)"), 0, 0, 0, 0
 		}
 		// 优先解析上游返回的 usage；缺失时用 tokenizer 估算
-		if !parseUsage(respBody, &promptTokens, &completionTokens, &promptCacheHitTokens, &promptCacheMissTokens) && h.tokenizer != nil {
+		if !parseUsage(respBody, &promptTokens, &completionTokens, &promptCacheHitTokens, &promptCacheMissTokens, &thinkingTokens, &thinkingEmbedded) && h.tokenizer != nil {
 			promptTokens = int64(h.tokenizer.CountMessages(model, extractMessages(body)))
 			completion := gjson.GetBytes(respBody, "choices.0.message.content").String()
 			completionTokens = int64(h.tokenizer.Count(model, completion))
 		}
+		normalizeThinking(&thinkingEmbedded, &thinkingTokens, &completionTokens, &billingCompletion)
 		// 缓存 thinking 模式 tool_call 的 reasoning_content（供下一轮请求回传）
 		if h.cacheReasoningEnabled() {
 			cacheReasoningFromMessage(respBody, h.reasoning)
@@ -1087,11 +1100,36 @@ func isMultimodalRequest(body []byte) bool {
 	return false
 }
 
+// normalizeThinking 统一两种思考 token 语义（在 usage 解析后、落库前调用）：
+// OpenAI 标准风格（agnes/o1）：completion_tokens 已含 reasoning，total = prompt + completion
+//   → 把 completionTokens 减去 thinkingTokens（归一化为“不含思考”），
+//   billingCompletion 保留原始值供计费（这类上游按含思考的 completion 收费）。
+// DeepSeek 风格：completion 不含思考、thinking 独立 → 不做任何事。
+// 归一化后全链路统一：Tokens = prompt + completion + thinking 不重复；
+// TokensPerSec = (completion + thinking) / duration 正确；日志页“输出/思考”分列展示。
+func normalizeThinking(embedded *bool, thinkingTokens, completionTokens, billingCompletion *int64) {
+	if embedded == nil || !*embedded {
+		return
+	}
+	if *thinkingTokens > 0 && *completionTokens >= *thinkingTokens {
+		*billingCompletion = *completionTokens
+		*completionTokens -= *thinkingTokens
+		return
+	}
+	// completion < thinking（异常 usage）：放弃归一化，回退 DeepSeek 风格语义
+	*embedded = false
+}
+
 // parseUsage 解析 OpenAI 响应体的 usage 字段，写入 promptTokens/completionTokens，
 // 以及前缀缓存命中/未命中 token 数（promptCacheHit/promptCacheMiss 可为 nil，如 rerank/embed 不需要）。
+// thinkingTokens 可为 nil；非 nil 时解析思考 token：优先 DeepSeek 风格顶层 thinking_tokens，
+// 兑底 OpenAI 标准 completion_tokens_details.reasoning_tokens（agnes/o1 等）。
+// thinkingEmbedded 可为 nil；非 nil 时写入“思考是否已含于 completion_tokens”：
+// OpenAI 风格 completion = reasoning + text，total = prompt + completion → 嵌入；
+// DeepSeek 风格 total = prompt + completion + thinking → 不嵌入；无 total 时按 OpenAI 标准默认嵌入。
 // 返回 false 表示上游未返回 usage（调用方可回退到 tokenizer 估算）。
 // 部分上游只回 total_tokens 时，计入 completion，保证 Tokens = prompt + completion 总量正确。
-func parseUsage(data []byte, promptTokens, completionTokens, promptCacheHit, promptCacheMiss *int64) bool {
+func parseUsage(data []byte, promptTokens, completionTokens, promptCacheHit, promptCacheMiss, thinkingTokens *int64, thinkingEmbedded *bool) bool {
 	usage := gjson.GetBytes(data, "usage")
 	if !usage.Exists() {
 		return false
@@ -1101,6 +1139,17 @@ func parseUsage(data []byte, promptTokens, completionTokens, promptCacheHit, pro
 	if *promptTokens == 0 && *completionTokens == 0 {
 		if total := usage.Get("total_tokens").Int(); total > 0 {
 			*completionTokens = total
+		}
+	}
+	if thinkingTokens != nil {
+		if tt := usage.Get("thinking_tokens").Int(); tt > 0 {
+			*thinkingTokens = tt
+		} else if rt := usage.Get("completion_tokens_details.reasoning_tokens").Int(); rt > 0 {
+			*thinkingTokens = rt
+			if thinkingEmbedded != nil {
+				total := usage.Get("total_tokens").Int()
+				*thinkingEmbedded = total <= 0 || total == *promptTokens+*completionTokens
+			}
 		}
 	}
 	if promptCacheHit != nil {
@@ -1166,7 +1215,7 @@ func extractMessages(body []byte) []map[string]string {
 // 返回 interrupted：客户端在流结束前断开（写响应失败），调用方应把日志状态记为 499
 // （Nginx 语义 client closed request），避免把"中断"误记为 200 污染统计。
 // 返回 ttftMS：首 token 时间（第一个 data chunk 到达时间 - 调用方传入的 start），0 表示非流式或无数据。
-func (h *Handler) streamCopy(w http.ResponseWriter, resp *http.Response, promptTokens, completionTokens, promptCacheHit, promptCacheMiss *int64, start time.Time, thinkingTokens *int64) (interrupted bool, ttftMS int64) {
+func (h *Handler) streamCopy(w http.ResponseWriter, resp *http.Response, promptTokens, completionTokens, promptCacheHit, promptCacheMiss *int64, start time.Time, thinkingTokens *int64, thinkingEmbedded *bool) (interrupted bool, ttftMS int64) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -1197,8 +1246,10 @@ func (h *Handler) streamCopy(w http.ResponseWriter, resp *http.Response, promptT
 		if strings.HasPrefix(line, "data: ") {
 			data := strings.TrimPrefix(line, "data: ")
 			if data == "[DONE]" {
-				// 流正常结束：补写最终累积的 reasoning（覆盖 tool_calls 之后的增量分片）
-				if cacheEnabled && reasoningBuf.Len() > 0 {
+				// 流正常结束：补写最终累积的 reasoning（覆盖 tool_calls 之后的增量分片）。
+				// PutAll 不要求 reasoningBuf 非空：该轮可能无思考（GLM 混布等），
+				// 空串也是有效标记（下一轮注入空 reasoning_content 过校验）。
+				if cacheEnabled {
 					if len(toolCallIDs) > 0 {
 						h.reasoning.PutAll(toolCallIDs, reasoningBuf.String())
 					}
@@ -1222,6 +1273,13 @@ func (h *Handler) streamCopy(w http.ResponseWriter, resp *http.Response, promptT
 				}
 				if tt := usage.Get("thinking_tokens").Int(); tt > 0 {
 					*thinkingTokens = tt
+				} else if rt := usage.Get("completion_tokens_details.reasoning_tokens").Int(); rt > 0 {
+					// OpenAI 标准嵌套字段（agnes/o1 等）：completion_tokens 已含思考 token
+					*thinkingTokens = rt
+					if thinkingEmbedded != nil {
+						total := usage.Get("total_tokens").Int()
+						*thinkingEmbedded = total <= 0 || total == *promptTokens+*completionTokens
+					}
 				}
 				if pch := usage.Get("prompt_cache_hit_tokens").Int(); pch > 0 {
 					*promptCacheHit = pch
@@ -1239,7 +1297,8 @@ func (h *Handler) streamCopy(w http.ResponseWriter, resp *http.Response, promptT
 		}
 	}
 	// 流可能没有 [DONE]（客户端中断/上游异常关闭）：EOF 时同样补写最终累积的 reasoning
-	if cacheEnabled && reasoningBuf.Len() > 0 {
+	// （PutAll 含空串语义，同 [DONE]）
+	if cacheEnabled {
 		if len(toolCallIDs) > 0 {
 			h.reasoning.PutAll(toolCallIDs, reasoningBuf.String())
 		}
@@ -1504,7 +1563,7 @@ func (h *Handler) forwardRerank(w http.ResponseWriter, r *http.Request, body []b
 		h.fastFail.MarkSuccess(up.Name, upstreamModel)
 	}
 	respBody, _ := io.ReadAll(resp.Body)
-	parseUsage(respBody, &promptTokens, &completionTokens, nil, nil)
+	parseUsage(respBody, &promptTokens, &completionTokens, nil, nil, nil, nil)
 	copyHeader(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
 	_, _ = w.Write(respBody)
@@ -1671,7 +1730,7 @@ func (h *Handler) forwardEmbedding(w http.ResponseWriter, r *http.Request, body 
 		h.fastFail.MarkSuccess(up.Name, upstreamModel)
 	}
 	respBody, _ := io.ReadAll(resp.Body)
-	parseUsage(respBody, &promptTokens, &completionTokens, nil, nil)
+	parseUsage(respBody, &promptTokens, &completionTokens, nil, nil, nil, nil)
 	copyHeader(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
 	_, _ = w.Write(respBody)

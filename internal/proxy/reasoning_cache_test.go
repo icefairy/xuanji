@@ -21,11 +21,15 @@ func TestReasoningCache_PutGet(t *testing.T) {
 	if _, ok := c.Get("call_missing"); ok {
 		t.Fatalf("Get(call_missing) should miss")
 	}
-	// 空 id / 空内容不缓存
+	// 空 id 不缓存；空串内容现在也缓存（"该轮无思考"标记，
+	// 注入空 reasoning_content 可通过 DeepSeek thinking 回传校验）
 	c.Put("", "x")
 	c.Put("call_empty", "")
-	if c.Len() != 1 {
-		t.Fatalf("Len = %d, want 1 (empty entries ignored)", c.Len())
+	if v, ok := c.Get("call_empty"); !ok || v != "" {
+		t.Fatalf("Get(call_empty) = %q, %v; want empty string hit", v, ok)
+	}
+	if c.Len() != 2 {
+		t.Fatalf("Len = %d, want 2 (only empty id ignored)", c.Len())
 	}
 }
 
@@ -239,12 +243,16 @@ func TestCacheReasoningFromMessage_NoToolCalls(t *testing.T) {
 }
 
 func TestCacheReasoningFromMessage_EmptyReasoning(t *testing.T) {
-	// 空 reasoning_content 不缓存
+	// 空 reasoning_content + tool_calls：现在也缓存空串（"该轮无思考"标记，
+	// 下一轮注入空 reasoning_content 才能通过 DeepSeek thinking 回传校验）
 	c := NewReasoningCache(10, nil)
 	resp := []byte(`{"choices":[{"message":{"role":"assistant","content":null,"reasoning_content":"","tool_calls":[{"id":"call_x","type":"function","function":{"name":"f","arguments":"{}"}}]}}]}`)
 	cacheReasoningFromMessage(resp, c)
-	if c.Len() != 0 {
-		t.Fatalf("Len = %d, want 0 (empty reasoning ignored)", c.Len())
+	if v, ok := c.Get("call_x"); !ok || v != "" {
+		t.Fatalf("Get(call_x) = %q, %v; want empty string hit", v, ok)
+	}
+	if c.Len() != 1 {
+		t.Fatalf("Len = %d, want 1 (empty marker cached for tool_calls)", c.Len())
 	}
 }
 
