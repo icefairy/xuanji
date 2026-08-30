@@ -557,3 +557,59 @@ func TestChatCompletions_ReasoningPassthrough_NoThinkingRound(t *testing.T) {
 		t.Fatalf("upstream received message without reasoning_content field (backfill failed)")
 	}
 }
+
+// TestChatCompletions_ReasoningPassthrough_HermesFolded 验证 Hermes 折叠场景：
+// 客户端把 assistant(tool_calls) 折叠成 {"content":"","role":"assistant"}（丢 tool_calls，
+// pi agent 消息规范化常见），且该轮为无思考轮次（跨上游混布 GLM 等，缓存为空串标记）。
+// 网关须通过策略 3（反查下一 tool 消息的 tool_call_id）注入空串 reasoning_content，
+// 使严格上游（DeepSeek thinking 模式要求所有 assistant 消息回传 reasoning_content）校验通过。
+// 修复前策略 3 要求 rc != ""，空串标记被跳过 → 仍然 400。
+func TestChatCompletions_ReasoningPassthrough_HermesFolded(t *testing.T) {
+	var gotBodies [][]byte
+	// 严格 mock：所有 assistant 消息（含折叠无 tool_calls 的）都必须有 reasoning_content 字段
+	strict := func(w http.ResponseWriter, r *http.Request) {
+		data, _ := io.ReadAll(r.Body)
+		gotBodies = append(gotBodies, data)
+		for _, m := range gjson.GetBytes(data, "messages").Array() {
+			if m.Get("role").String() != "assistant" {
+				continue
+			}
+			if !m.Get("reasoning_content").Exists() {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusBadRequest)
+				msg := "The `reasoning_content` in the thinking mode must be passed back to the API."
+				fmt.Fprintf(w, `{"error":{"message":%q,"type":"invalid_request_error","code":"invalid_request_error"}}`, msg)
+				return
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		if len(gotBodies) <= 1 {
+			// 第一轮：返回 tool_calls 但无 reasoning_content（无思考轮次）
+			fmt.Fprint(w, reasoningEmptyUpstreamBody)
+		} else {
+			fmt.Fprint(w, `{"id":"fin","object":"chat.completion","model":"deepseek-v4-flash","choices":[{"index":0,"message":{"role":"assistant","content":"42"},"finish_reason":"stop"}]}`)
+		}
+	}
+	upstream, h := newTestHandler(t, strict)
+	defer upstream.Close()
+	h.cfg.Proxy.CacheReasoningContent = true
+
+	// 第一轮：上游返回 tool_calls 无 reasoning → 网关缓存空串标记（call_nothink）
+	if rec := doChat(t, h, `{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"算一下"}]}`); rec.Code != http.StatusOK {
+		t.Fatalf("first round status = %d\nbody: %s", rec.Code, rec.Body.String())
+	}
+
+	// 第二轮：客户端 Hermes 折叠 —— assistant 丢失 tool_calls，只剩空 content
+	foldedBody := `{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"算一下"},{"role":"assistant","content":""},{"role":"tool","tool_call_id":"call_nothink","content":"42"}]}`
+	rec := doChat(t, h, foldedBody)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("folded round status = %d, want 200 (strategy 3 must inject empty reasoning_content for Hermes-folded assistant)\nbody: %s", rec.Code, rec.Body.String())
+	}
+	if len(gotBodies) < 2 {
+		t.Fatalf("upstream called %d times, want >= 2", len(gotBodies))
+	}
+	if !gjson.GetBytes(gotBodies[1], "messages.1.reasoning_content").Exists() {
+		t.Fatalf("upstream received folded assistant without reasoning_content field (strategy 3 injection failed)")
+	}
+}

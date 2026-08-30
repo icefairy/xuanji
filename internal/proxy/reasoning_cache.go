@@ -293,7 +293,10 @@ func injectReasoningContent(body []byte, cache *ReasoningCache) ([]byte, bool) {
 			continue
 		}
 
-		// 策略 3: content 为空 → Hermes L3 折叠场景，反查下一 tool 消息的 tool_call_id
+		// 策略 3: content 为空 → Hermes L3 折叠场景，反查下一 tool 消息的 tool_call_id。
+		// 命中即注入（含空串标记）：与策略 1 一致，空 reasoning_content 也算已回传，
+		// 可通过 DeepSeek thinking 模式校验。修复前要求 rc != ""，无思考轮次（跨上游
+		// 混布 GLM 等）的空串标记被跳过，折叠场景仍会 400（2026-08-29 日志实测 bai 400）。
 		for j := i + 1; j < len(arr); j++ {
 			tm := arr[j]
 			if tm.Get("role").String() == "tool" {
@@ -301,7 +304,7 @@ func injectReasoningContent(body []byte, cache *ReasoningCache) ([]byte, bool) {
 					if !toolResultIDs[id] {
 						continue
 					}
-					if rc, ok := cache.Get(id); ok && rc != "" {
+					if rc, ok := cache.Get(id); ok {
 						var err error
 						nb, err = sjson.SetBytes(nb, fmt.Sprintf("messages.%d.reasoning_content", i), rc)
 						if err != nil {
