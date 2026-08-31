@@ -286,3 +286,77 @@ func TestChatCompletions_ModelMappingAppliedPerCandidate(t *testing.T) {
 		t.Errorf("response body = %q, want passthrough", rec.Body.String())
 	}
 }
+
+// TestChatCompletions_FailoverOn524 验证未列入 retry_statuses 白名单的 5xx 也应触发
+// 故障转移：524 是 Cloudflare「A Timeout Occurred」，语义等同 504（上游侧瞬态超时）。
+// 修复前只按配置白名单判断（默认 401,403,404,429,500,502,503,504），524 命中不了
+// 也不匹配关键词 → 原样透传 Cloudflare 错误页给客户端（2026-08-30 日志实测 bai 524 两例
+// 无 fastfail 无 failover）。修复后所有 5xx 一律可重试。
+func TestChatCompletions_FailoverOn524(t *testing.T) {
+	var up1Hits, up2Hits atomic.Int32
+	srv1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		up1Hits.Add(1)
+		w.WriteHeader(524) // Cloudflare timeout，不在 retry_statuses 白名单
+		fmt.Fprint(w, "error code: 524")
+	}))
+	defer srv1.Close()
+	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		up2Hits.Add(1)
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, `{"id":"ok524","object":"chat.completion","choices":[]}`)
+	}))
+	defer srv2.Close()
+
+	// healthCfg 的 RetryStatuses 为 [429,500,502,503,504]，不含 524
+	cfg := healthCfg([]config.Upstream{
+		{Name: "up524", BaseURL: srv1.URL, APIKey: "x", Priority: 10, Weight: 100},
+		{Name: "upOk", BaseURL: srv2.URL, APIKey: "x", Priority: 20, Weight: 50},
+	}, "m", []string{"up524", "upOk"})
+
+	hc := health.New(cfg)
+	defer hc.Close()
+	h := New(cfg, router.New(cfg), hc)
+
+	rec := doChat(t, h, `{"model":"m","messages":[{"role":"user","content":"hi"}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (5xx not in whitelist must still failover); body=%s", rec.Code, rec.Body.String())
+	}
+	if got := gjson.Get(rec.Body.String(), "id").String(); got != "ok524" {
+		t.Errorf("response id = %q, want ok524 (failover on 524)", got)
+	}
+	if up1Hits.Load() != 1 || up2Hits.Load() != 1 {
+		t.Errorf("hits = up1:%d up2:%d, want 1/1", up1Hits.Load(), up2Hits.Load())
+	}
+}
+
+// TestRerankFailoverOnNonWhitelisted5xx 验证 rerank 链路同样对白名单外 5xx 触发故障转移。
+func TestRerankFailoverOnNonWhitelisted5xx(t *testing.T) {
+	srv1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(524)
+		fmt.Fprint(w, "error code: 524")
+	}))
+	defer srv1.Close()
+	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, `{"results":[{"index":0,"relevance_score":0.9}]}`)
+	}))
+	defer srv2.Close()
+
+	cfg := &config.Config{
+		Upstreams: []config.Upstream{
+			// weight 保证 524 上游排第一（同 tier 内 weight 降序），真实验证 failover 路径
+			{Name: "r524", BaseURL: srv1.URL, APIKey: "x", Priority: 10, Weight: 100},
+			{Name: "rOk", BaseURL: srv2.URL, APIKey: "x", Priority: 20, Weight: 50},
+		},
+		Routing: config.Routing{
+			DefaultStrategy: "primary_backup",
+			Rules:           []config.Rule{{Model: "m", Upstreams: []string{"r524", "rOk"}, Strategy: "primary_backup"}},
+		},
+		Retry: config.Retry{MaxRetries: 3, RetryStatuses: []int{429, 500}},
+	}
+	h := New(cfg, router.New(cfg), nil)
+	rec := doRerank(t, h, `{"model":"m","query":"q","documents":["a"]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (rerank must failover on non-whitelisted 5xx); body=%s", rec.Code, rec.Body.String())
+	}
+}

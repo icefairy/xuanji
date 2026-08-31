@@ -321,8 +321,11 @@ func applyQwen(body []byte, effort string) ([]byte, bool) {
 //   - force 模式：客户端已传 reasoning_effort 且命中配置的强制值 → 覆盖为强制值
 //
 // 返回修改后的 body 与是否发生修改。修改后再交给 normalizeThinkingEffort 归一化。
-// model 是客户端传入的模型名（effort_config 的 pattern 与客户端模型匹配）。
-func applyBestEffort(body []byte, model string, cfg *config.Config) ([]byte, bool) {
+// 匹配键：upstreamModel（model_mapping 映射后的上游真实模型名，即最终执行模型）优先，
+// 客户端请求模型名 model 兜底，两者任一命中即取该条配置。原因：客户端常用聚合名
+// （如 flash/vision），经 model_mapping 映射后才是上游真正执行的模型；用户是按
+// 最终执行模型（如 agnes-2.5-flash）在管理端配置思考等级的，因此优先用映射后名字匹配。
+func applyBestEffort(body []byte, model string, upstreamModel string, cfg *config.Config) ([]byte, bool) {
 	if !cfg.Proxy.AutoBestEffort && !cfg.Proxy.ForceBestEffort {
 		return body, false
 	}
@@ -330,7 +333,7 @@ func applyBestEffort(body []byte, model string, cfg *config.Config) ([]byte, boo
 	var rec, forced string
 	for i := range cfg.Proxy.EffortConfigs {
 		e := &cfg.Proxy.EffortConfigs[i]
-		if matchEffortPattern(e.Model, model) {
+		if matchEffortPattern(e.Model, upstreamModel) || matchEffortPattern(e.Model, model) {
 			rec, forced = e.Recommended, e.Forced
 			break
 		}

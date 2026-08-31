@@ -2,7 +2,7 @@
 // 老程序仍调用废弃的 completions 接口时，网关把 completions 请求转换为
 // chat/completions 格式转发上游，再把上游 chat 响应转回 completions 格式返回。
 // 转换逻辑全部独立在本文件，不影响现有 chat 链路；日志 endpoint 记为 "completions"
-//（与 chat 区分，便于在请求日志里按端点筛选出仍调用老接口的程序）。
+// （与 chat 区分，便于在请求日志里按端点筛选出仍调用老接口的程序）。
 package proxy
 
 import (
@@ -236,13 +236,8 @@ func (h *Handler) forwardCompletion(w http.ResponseWriter, r *http.Request, body
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
-		shouldRetry := false
-		for _, code := range h.cfg.Retry.RetryStatuses {
-			if resp.StatusCode == code {
-				shouldRetry = true
-				break
-			}
-		}
+		// 5xx 一律可重试（retryableStatus），4xx 按配置白名单
+		shouldRetry := h.retryableStatus(resp.StatusCode)
 		if shouldRetry {
 			// 429 限流不进 fastfail 黑名单，改走秒级 cooldown（与 chat 链路一致）
 			if resp.StatusCode == http.StatusTooManyRequests {
@@ -326,8 +321,8 @@ func chatToCompletionResponse(chatBody []byte, fallbackModel string) ([]byte, er
 		Created int64  `json:"created"`
 		Model   string `json:"model"`
 		Choices []struct {
-			Index        int    `json:"index"`
-			Message      struct {
+			Index   int `json:"index"`
+			Message struct {
 				Content string `json:"content"`
 			} `json:"message"`
 			FinishReason string `json:"finish_reason"`

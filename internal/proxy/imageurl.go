@@ -17,7 +17,8 @@ import (
 //   {"type":"image_url","image_url":"DATA_URI"}             → 不动（已是平铺）
 //   {"type":"image","image_url":{...}} / {"type":"image","image_url":"..."} → 同样处理（image 类型）
 //
-// 返回修改后的 body 与是否发生修改（无 image_url 时零开销，原样返回）。
+// 默认不执行（NormalizeImageURL=false），仅当上游配置 normalize_image_url=true 时才开启。
+// 原因是 OpenAI 标准格式为嵌套对象；vllm 等少数上游只认平铺字符串才需要此开关。
 func normalizeImageURLFlat(body []byte) ([]byte, bool) {
 	msgs := gjson.GetBytes(body, "messages")
 	if !msgs.IsArray() {

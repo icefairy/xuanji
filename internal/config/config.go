@@ -151,6 +151,10 @@ type Upstream struct {
 	// （如 reasoning 等特定参数）按需使用。
 	// 存储用 config 表键 upstream.<name>.strip_fields（逗号分隔或 JSON 数组），不动 upstreams 表结构。
 	StripFields []string `yaml:"strip_fields"`
+	// NormalizeImageURL 转发前是否把嵌套 image_url 对象格式拍平为字符串格式。
+	// false（默认）= 保留 OpenAI 标准嵌套格式 {image_url:{url}}；
+	// true = 对非 Dots 上游做拍平，兼容 vllm 等只认平铺字符串 {image_url:"..."} 的接口。
+	NormalizeImageURL bool `yaml:"normalize_image_url"`
 	// Arrears 欠费标记：true=该上游因「余额不足」类错误被自动标记。
 	// 路由硬排除 + 健康检查停止，等待人工充值后经「测试上游」成功自动清除。
 	Arrears bool `yaml:"arrears"`
