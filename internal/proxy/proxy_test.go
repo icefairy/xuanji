@@ -147,9 +147,10 @@ func TestChatCompletions_Upstream5xxMapping(t *testing.T) {
 	})
 	defer upstream.Close()
 
+	// 5xx 一律可重试（retryableStatus），单上游无候选时耗尽 → 网关返回 502 all upstreams failed
 	rec := doChat(t, h, `{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"hello"}]}`)
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 500", rec.Code)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502 (all upstreams exhausted); body=%s", rec.Code, rec.Body.String())
 	}
 	if got := gjson.Get(rec.Body.String(), "error.type").String(); got != "server_error" {
 		t.Errorf("error.type = %q, want server_error", got)

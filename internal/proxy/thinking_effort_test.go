@@ -25,7 +25,7 @@ func testEffortCfg(auto, force bool) *config.Config {
 func TestApplyBestEffort_Off(t *testing.T) {
 	cfg := testEffortCfg(false, false)
 	body := []byte(`{"model":"mimo-v2.5","messages":[]}`)
-	nb, changed := applyBestEffort(body, "mimo-v2.5", cfg)
+	nb, changed := applyBestEffort(body, "mimo-v2.5", "mimo-v2.5", cfg)
 	if changed {
 		t.Fatalf("开关全关不应修改 body")
 	}
@@ -38,7 +38,7 @@ func TestApplyBestEffort_AutoInject(t *testing.T) {
 	cfg := testEffortCfg(true, false)
 	// 客户端未传 → 注入推荐值 medium
 	body := []byte(`{"model":"mimo-v2.5","messages":[]}`)
-	nb, changed := applyBestEffort(body, "mimo-v2.5", cfg)
+	nb, changed := applyBestEffort(body, "mimo-v2.5", "mimo-v2.5", cfg)
 	if !changed {
 		t.Fatalf("应注入推荐值")
 	}
@@ -47,7 +47,7 @@ func TestApplyBestEffort_AutoInject(t *testing.T) {
 	}
 	// 客户端已传 → auto 不覆盖
 	body = []byte(`{"model":"mimo-v2.5","reasoning_effort":"low","messages":[]}`)
-	nb, changed = applyBestEffort(body, "mimo-v2.5", cfg)
+	nb, changed = applyBestEffort(body, "mimo-v2.5", "mimo-v2.5", cfg)
 	if changed {
 		t.Fatalf("auto 模式不应覆盖客户端传值")
 	}
@@ -60,7 +60,7 @@ func TestApplyBestEffort_ForceOverride(t *testing.T) {
 	cfg := testEffortCfg(true, true)
 	// 客户端已传 low → 强制覆盖为 high
 	body := []byte(`{"model":"mimo-v2.5","reasoning_effort":"low","messages":[]}`)
-	nb, changed := applyBestEffort(body, "mimo-v2.5", cfg)
+	nb, changed := applyBestEffort(body, "mimo-v2.5", "mimo-v2.5", cfg)
 	if !changed {
 		t.Fatalf("force 应覆盖")
 	}
@@ -69,7 +69,7 @@ func TestApplyBestEffort_ForceOverride(t *testing.T) {
 	}
 	// 未传 → auto 注入 recommended
 	body = []byte(`{"model":"mimo-v2.5","messages":[]}`)
-	nb, changed = applyBestEffort(body, "mimo-v2.5", cfg)
+	nb, changed = applyBestEffort(body, "mimo-v2.5", "mimo-v2.5", cfg)
 	if !changed {
 		t.Fatalf("auto 应注入")
 	}
@@ -82,7 +82,7 @@ func TestApplyBestEffort_Wildcard(t *testing.T) {
 	cfg := testEffortCfg(true, false)
 	// deepseek-* 匹配 deepseek-v4-flash
 	body := []byte(`{"model":"deepseek-v4-flash","messages":[]}`)
-	nb, changed := applyBestEffort(body, "deepseek-v4-flash", cfg)
+	nb, changed := applyBestEffort(body, "deepseek-v4-flash", "deepseek-v4-flash", cfg)
 	if !changed {
 		t.Fatalf("通配应匹配")
 	}
@@ -91,7 +91,7 @@ func TestApplyBestEffort_Wildcard(t *testing.T) {
 	}
 	// sensenova-* 匹配 sensenova-6.7-flash-lite
 	body = []byte(`{"model":"sensenova-6.7-flash-lite","messages":[]}`)
-	nb, changed = applyBestEffort(body, "sensenova-6.7-flash-lite", cfg)
+	nb, changed = applyBestEffort(body, "sensenova-6.7-flash-lite", "sensenova-6.7-flash-lite", cfg)
 	if !changed {
 		t.Fatalf("通配应匹配")
 	}
@@ -100,7 +100,7 @@ func TestApplyBestEffort_Wildcard(t *testing.T) {
 	}
 	// 无匹配 → 不修改
 	body = []byte(`{"model":"unknown-model","messages":[]}`)
-	if nb, changed = applyBestEffort(body, "unknown-model", cfg); changed {
+	if nb, changed = applyBestEffort(body, "unknown-model", "unknown-model", cfg); changed {
 		t.Fatalf("无匹配不应修改")
 	}
 }
@@ -124,6 +124,51 @@ func TestMatchEffortPattern(t *testing.T) {
 		if got := matchEffortPattern(c.pattern, c.model); got != c.want {
 			t.Fatalf("matchEffortPattern(%q,%q)=%v want %v", c.pattern, c.model, got, c.want)
 		}
+	}
+}
+
+// upstreamModel（映射后真实模型名）优先于客户端模型名匹配 effort 配置。
+// 实际故障场景：客户端传聚合名 flash → model_mapping 映射为 agnes-2.5-flash →
+// 用户按 agnes-2.5-flash 配置 recommended=high，旧行为拿 flash 匹配不上导致不注入。
+func TestApplyBestEffort_UpstreamModelMatch(t *testing.T) {
+	cfg := &config.Config{
+		Proxy: config.Proxy{
+			AutoBestEffort: true,
+			EffortConfigs: []config.EffortConfig{
+				{Model: "agnes-2.5-flash", Recommended: "high"},
+			},
+		},
+	}
+	// 客户端 model=flash 无法直接命中，靠 upstreamModel 命中
+	body := []byte(`{"model":"flash","messages":[]}`)
+	nb, changed := applyBestEffort(body, "flash", "agnes-2.5-flash", cfg)
+	if !changed {
+		t.Fatalf("upstreamModel 应命中配置并注入")
+	}
+	if got := gjson.GetBytes(nb, "reasoning_effort").String(); got != "high" {
+		t.Fatalf("期望 high, got %s", got)
+	}
+}
+
+// upstreamModel 命中的配置优先于客户端 model 命中的配置（配置顺序靠前者胜出）。
+func TestApplyBestEffort_UpstreamModelPriority(t *testing.T) {
+	cfg := &config.Config{
+		Proxy: config.Proxy{
+			AutoBestEffort: true,
+			EffortConfigs: []config.EffortConfig{
+				{Model: "agnes-2.5-flash", Recommended: "medium"},
+				{Model: "flash", Recommended: "low"},
+			},
+		},
+	}
+	// 两条都能命中（upstreamModel 命中第一条、model 命中第二条），应取 upstreamModel 命中的那条
+	body := []byte(`{"model":"flash","messages":[]}`)
+	nb, changed := applyBestEffort(body, "flash", "agnes-2.5-flash", cfg)
+	if !changed {
+		t.Fatalf("应命中配置并注入")
+	}
+	if got := gjson.GetBytes(nb, "reasoning_effort").String(); got != "medium" {
+		t.Fatalf("期望 upstreamModel 优先命中 medium, got %s", got)
 	}
 }
 

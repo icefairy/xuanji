@@ -379,16 +379,16 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 				fmt.Sscanf(rest, "%d", &status)
 			}
 			h.recorder.Record(store.Record{
-				Timestamp:    time.Now(),
-				Upstream:     up.Name,
-				Model:        model,
-				Endpoint:     "chat",
-				Status:       status,
-				DurationMS:   time.Since(start).Milliseconds(),
-				APIKey:       h.recordAPIKey(r),
-				ClientAddr:   r.RemoteAddr,
-				UserAgent:    r.UserAgent(),
-				ErrorDetail:  "retryable error: " + ferr.Error(),
+				Timestamp:   time.Now(),
+				Upstream:    up.Name,
+				Model:       model,
+				Endpoint:    "chat",
+				Status:      status,
+				DurationMS:  time.Since(start).Milliseconds(),
+				APIKey:      h.recordAPIKey(r),
+				ClientAddr:  r.RemoteAddr,
+				UserAgent:   r.UserAgent(),
+				ErrorDetail: "retryable error: " + ferr.Error(),
 			})
 		}
 		h.log.Warn("upstream failed, trying next",
@@ -527,6 +527,24 @@ func (h *Handler) clearUpstreamBlacklist(up *config.Upstream, model string) {
 	for _, n := range names {
 		h.fastFail.MarkSuccess(up.Name, n)
 	}
+}
+
+// retryableStatus 判断上游 HTTP 状态码是否应触发故障转移重试。
+// 所有 5xx 服务端错误一律可重试：501/505/52x（Cloudflare「A Timeout Occurred」等）
+// 与 504 同为上游侧瞬态故障，不应因不在配置白名单而原样透传给客户端
+// （2026-08-30 日志实测：bai 返回 524 未触发 failover，客户端直接收到
+// Cloudflare 错误页，无 fastfail 也无 failover 日志）。
+// 4xx 按配置 retry_statuses 白名单判断（401/403/404 等：另一上游可能可用）。
+func (h *Handler) retryableStatus(code int) bool {
+	if code >= 500 {
+		return true
+	}
+	for _, c := range h.cfg.Retry.RetryStatuses {
+		if c == code {
+			return true
+		}
+	}
+	return false
 }
 
 // isConnIssue 判断错误是否为连接类错误（网络不可达/超时/连接拒绝）。
@@ -846,7 +864,7 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 	if nb, changed := stripPromptCacheParams(reqBody); changed {
 		reqBody = nb
 	}
-	if nb, changed := applyBestEffort(reqBody, model, h.cfg); changed {
+	if nb, changed := applyBestEffort(reqBody, model, upstreamModel, h.cfg); changed {
 		reqBody = nb
 	}
 	if nb, changed := normalizeThinkingEffort(reqBody, upstreamModel); changed {
@@ -858,7 +876,7 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 	}
 	// image_url 拍平：OpenAI 标准嵌套对象 {image_url:{url}} → 上游认识的平铺字符串 {image_url:url}。
 	// vllm/agnes 等后端不认嵌套对象，收到报 400 Unexpected item type；Dots 例外（要求标准嵌套，跳过拍平）。
-	if !up.IsDots() {
+	if !up.IsDots() && up.NormalizeImageURL {
 		if nb, changed := normalizeImageURLFlat(reqBody); changed {
 			reqBody = nb
 		}
@@ -945,14 +963,8 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 	case resp.StatusCode >= 400:
 		// 读响应体用于关键词匹配
 		respBody, _ := io.ReadAll(resp.Body)
-		// 判断是否应重试
-		shouldRetry := false
-		for _, code := range h.cfg.Retry.RetryStatuses {
-			if resp.StatusCode == code {
-				shouldRetry = true
-				break
-			}
-		}
+		// 判断是否应重试：5xx 一律可重试（retryableStatus），4xx 按配置白名单
+		shouldRetry := h.retryableStatus(resp.StatusCode)
 		// 关键词匹配：状态码不在 retry_statuses 中但响应体含关键词
 		if !shouldRetry {
 			bodyStr := strings.ToLower(string(respBody))
@@ -1102,8 +1114,10 @@ func isMultimodalRequest(body []byte) bool {
 
 // normalizeThinking 统一两种思考 token 语义（在 usage 解析后、落库前调用）：
 // OpenAI 标准风格（agnes/o1）：completion_tokens 已含 reasoning，total = prompt + completion
-//   → 把 completionTokens 减去 thinkingTokens（归一化为“不含思考”），
-//   billingCompletion 保留原始值供计费（这类上游按含思考的 completion 收费）。
+//
+//	→ 把 completionTokens 减去 thinkingTokens（归一化为“不含思考”），
+//	billingCompletion 保留原始值供计费（这类上游按含思考的 completion 收费）。
+//
 // DeepSeek 风格：completion 不含思考、thinking 独立 → 不做任何事。
 // 归一化后全链路统一：Tokens = prompt + completion + thinking 不重复；
 // TokensPerSec = (completion + thinking) / duration 正确；日志页“输出/思考”分列展示。
@@ -1542,13 +1556,8 @@ func (h *Handler) forwardRerank(w http.ResponseWriter, r *http.Request, body []b
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
-		shouldRetry := false
-		for _, code := range h.cfg.Retry.RetryStatuses {
-			if resp.StatusCode == code {
-				shouldRetry = true
-				break
-			}
-		}
+		// 5xx 一律可重试（retryableStatus），4xx 按配置白名单
+		shouldRetry := h.retryableStatus(resp.StatusCode)
 		if shouldRetry {
 			if h.fastFail != nil {
 				h.fastFail.MarkFailedWithReason(up.Name, upstreamModel, fmt.Sprintf("status=%d", resp.StatusCode))
@@ -1709,13 +1718,8 @@ func (h *Handler) forwardEmbedding(w http.ResponseWriter, r *http.Request, body 
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
-		shouldRetry := false
-		for _, code := range h.cfg.Retry.RetryStatuses {
-			if resp.StatusCode == code {
-				shouldRetry = true
-				break
-			}
-		}
+		// 5xx 一律可重试（retryableStatus），4xx 按配置白名单
+		shouldRetry := h.retryableStatus(resp.StatusCode)
 		if shouldRetry {
 			if h.fastFail != nil {
 				h.fastFail.MarkFailedWithReason(up.Name, upstreamModel, fmt.Sprintf("status=%d", resp.StatusCode))
