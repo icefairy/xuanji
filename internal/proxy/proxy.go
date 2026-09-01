@@ -355,8 +355,9 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		up := candidates[i]
 		handled, retryable, ferr, _, _, _, _ := h.forwardOnce(rec, r, body, up, model, stream, false)
 		// 429 限流不是上游故障（几秒后可自愈），不降低健康状态；
+		// 客户端断连（context.Canceled）也不是上游故障，不计入失败计数；
 		// 只有真实故障（5xx/连接错误）才触发 MarkFailure 影响健康等级。
-		if ferr != nil && h.health != nil && !strings.Contains(ferr.Error(), "rate limited") {
+		if ferr != nil && h.health != nil && !strings.Contains(ferr.Error(), "rate limited") && !isClientCanceled(ferr) {
 			h.health.MarkFailure(up.Name)
 		}
 		// 连接类错误（网络不可达/超时/连接拒绝）说明可能是本地网络问题而非上游故障；
@@ -545,6 +546,15 @@ func (h *Handler) retryableStatus(code int) bool {
 		}
 	}
 	return false
+}
+
+// isClientCanceled 判断错误是否由客户端主动断连引起（请求 context 取消）。
+// 客户端断连不是上游故障：不应计入上游健康失败计数（MarkFailure 连续 2 次误标
+// degraded、5 次 dead 会把健康上游踢出转发候选）。与 forwardOnce 中
+// 「context.Canceled 不标记 fastfail」及 isConnIssue 的排除口径保持一致
+// （2026-08-31 日志实测：10 例 canceled 使 bai/基元律动 fails 误增被标 degraded）。
+func isClientCanceled(err error) bool {
+	return err != nil && errors.Is(err, context.Canceled)
 }
 
 // isConnIssue 判断错误是否为连接类错误（网络不可达/超时/连接拒绝）。
@@ -1461,7 +1471,8 @@ func (h *Handler) Rerank(w http.ResponseWriter, r *http.Request) {
 		}
 		up := candidates[i]
 		handled, retryable, ferr := h.forwardRerank(rec, r, body, up, model)
-		if ferr != nil && h.health != nil {
+		// 客户端断连（context.Canceled）不是上游故障，不计入健康失败计数
+		if ferr != nil && h.health != nil && !isClientCanceled(ferr) {
 			h.health.MarkFailure(up.Name)
 		}
 		// 客户端断连（context.Canceled）不算连接类错误（isConnIssue 内部排除）
@@ -1623,7 +1634,8 @@ func (h *Handler) Embeddings(w http.ResponseWriter, r *http.Request) {
 		}
 		up := candidates[i]
 		handled, retryable, ferr := h.forwardEmbedding(rec, r, body, up, model)
-		if ferr != nil && h.health != nil {
+		// 客户端断连（context.Canceled）不是上游故障，不计入健康失败计数
+		if ferr != nil && h.health != nil && !isClientCanceled(ferr) {
 			h.health.MarkFailure(up.Name)
 		}
 		// 客户端断连（context.Canceled）不算连接类错误（isConnIssue 内部排除）

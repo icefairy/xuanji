@@ -12,7 +12,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -87,14 +86,13 @@ func (h *Handler) Completions(w http.ResponseWriter, r *http.Request) {
 		}
 		up := candidates[i]
 		handled, retryable, ferr := h.forwardCompletion(rec, r, chatBody, up, model)
-		if ferr != nil && h.health != nil {
+		// 客户端断连（context.Canceled）不是上游故障，不计入健康失败计数（与 chat 链路一致）
+		if ferr != nil && h.health != nil && !isClientCanceled(ferr) {
 			h.health.MarkFailure(up.Name)
 		}
-		if ferr != nil {
-			var netErr net.Error
-			if errors.As(ferr, &netErr) || errors.Is(ferr, context.DeadlineExceeded) {
-				connIssues = true
-			}
+		// 连接类错误判定与 chat 链路对齐：用 isConnIssue 排除客户端断连
+		if isConnIssue(ferr) {
+			connIssues = true
 		}
 		if handled {
 			upstream = up.Name

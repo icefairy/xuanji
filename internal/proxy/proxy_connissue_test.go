@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/icefairy/xuanji/internal/config"
+	"github.com/icefairy/xuanji/internal/health"
 	"github.com/icefairy/xuanji/internal/router"
 )
 
@@ -113,5 +114,82 @@ func TestChatCompletions_ClientDisconnectKeepsBlacklist(t *testing.T) {
 	// 客户端断连不清空黑名单：真实模型仍应处于拉黑状态
 	if !ff.IsBlacklisted("up", "real-model") {
 		t.Error("fastfail blacklist entry was cleared on client disconnect (context.Canceled misclassified as conn issue)")
+	}
+}
+
+// TestIsClientCanceled 验证客户端断连判定：错误链含 context.Canceled 即为客户端取消
+// （*url.Error 包装后仍可被 errors.Is 穿透），与网络故障（reset/refused/timeout）区分开。
+func TestIsClientCanceled(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil error", nil, false},
+		{"bare context.Canceled", context.Canceled, true},
+		{
+			// forwardOnce 实际返回形态：fmt.Errorf 包 *url.Error(context.Canceled)
+			"upstream request failed (canceled)",
+			fmt.Errorf("upstream request failed: %w", &url.Error{Op: "Post", URL: "http://x/v1/chat/completions", Err: context.Canceled}),
+			true,
+		},
+		{"deadline exceeded is not cancel", context.DeadlineExceeded, false},
+		{
+			"connection reset is not cancel",
+			fmt.Errorf("upstream request failed: %w", &url.Error{Op: "Post", URL: "http://x", Err: errors.New("connection reset by peer")}),
+			false,
+		},
+	}
+	for _, tt := range tests {
+		if got := isClientCanceled(tt.err); got != tt.want {
+			t.Errorf("%s: isClientCanceled = %v, want %v", tt.name, got, tt.want)
+		}
+	}
+}
+
+// TestChatCompletions_ClientDisconnectKeepsHealth 验证客户端断连（context canceled）
+// 不计入上游健康失败计数：断连是客户端行为而非上游故障，连续 2 次会把健康上游
+// 误标 degraded（MarkFailure 一次即 degraded），导致后续请求被健康过滤误伤
+// （2026-08-31 日志实测：10 例 canceled 使 bai/基元律动 fails 误增）。
+// 修复前：循环里 MarkFailure 对任何 ferr 无条件调用，canceled 也计入。
+func TestChatCompletions_ClientDisconnectKeepsHealth(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(entered)
+		<-release // 阻塞直到测试收尾，客户端 cancel 后 Do 返回 canceled
+	}))
+	defer up.Close()
+	defer close(release)
+
+	cfg := &config.Config{
+		Upstreams: []config.Upstream{
+			{Name: "up", BaseURL: up.URL, APIKey: "sk-test", Models: []string{"m"}},
+		},
+		Routing: config.Routing{
+			DefaultStrategy: "primary_backup",
+			Rules:           []config.Rule{{Model: "m", Upstreams: []string{"up"}, Strategy: "primary_backup"}},
+		},
+		Retry: config.Retry{MaxRetries: 3, RetryStatuses: []int{429, 500, 502, 503, 504}},
+	}
+	hc := health.New(cfg)
+	defer hc.Close()
+	h := New(cfg, router.New(cfg), hc)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"m","messages":[{"role":"user","content":"hi"}]}`)).WithContext(ctx)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	go func() {
+		<-entered
+		time.Sleep(20 * time.Millisecond)
+		cancel() // 客户端断连
+	}()
+	h.ChatCompletions(rec, req)
+
+	// 客户端断连不算上游故障：健康状态必须保持 healthy（未 degraded/dead）
+	if st := hc.Status("up"); st != health.StateHealthy {
+		t.Errorf("health status = %q, want healthy (client disconnect must not count as upstream failure)", st)
 	}
 }
