@@ -86,8 +86,8 @@ func (h *Handler) Completions(w http.ResponseWriter, r *http.Request) {
 		}
 		up := candidates[i]
 		handled, retryable, ferr := h.forwardCompletion(rec, r, chatBody, up, model)
-		// 客户端断连（context.Canceled）不是上游故障，不计入健康失败计数（与 chat 链路一致）
-		if ferr != nil && h.health != nil && !isClientCanceled(ferr) {
+		// 客户端断连/透传的 4xx（handled=true）不是上游故障，不计入健康失败计数（与 chat 链路一致）
+		if ferr != nil && !handled && h.health != nil && !isClientCanceled(ferr) {
 			h.health.MarkFailure(up.Name)
 		}
 		// 连接类错误判定与 chat 链路对齐：用 isConnIssue 排除客户端断连

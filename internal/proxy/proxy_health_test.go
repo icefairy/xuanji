@@ -360,3 +360,49 @@ func TestRerankFailoverOnNonWhitelisted5xx(t *testing.T) {
 		t.Fatalf("status = %d, want 200 (rerank must failover on non-whitelisted 5xx); body=%s", rec.Code, rec.Body.String())
 	}
 }
+
+// TestChatCompletions_ClientErrorNotMarkFailure 验证不可重试 4xx（客户端请求问题，
+// 如 nginx 413 请求体过大/400 参数错误）不触发 MarkFailure 降级：
+// 413 是客户端图像请求体过大、上游正常拒绝并回 413，不是上游故障。
+// 修复前：forwardOnce 透传 413 返回 handled=true+ferr 非 nil，
+// 循环无条件 MarkFailure 把 bai 降级 degraded（2026-09-01 日志实测 413→degraded）。
+// 修复后：仅真实上游故障（连接错误/重试失败的 5xx/超时）才计入健康失败。
+func TestChatCompletions_ClientErrorNotMarkFailure(t *testing.T) {
+	var upHits atomic.Int32
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upHits.Add(1)
+		// nginx 风格 413：客户端请求体过大被拒
+		w.WriteHeader(http.StatusRequestEntityTooLarge)
+		fmt.Fprint(w, `<html><head><title>413 Request Entity Too Large</title></head></html>`)
+	}))
+	defer up.Close()
+
+	// 单上游 + 健康检查器：确保 status 变化完全来自 MarkFailure
+	cfg := &config.Config{
+		Upstreams: []config.Upstream{
+			{Name: "up413", BaseURL: up.URL, APIKey: "x", Priority: 10, Weight: 100},
+		},
+		Routing: config.Routing{
+			DefaultStrategy: "primary_backup",
+			Rules:           []config.Rule{{Model: "m", Upstreams: []string{"up413"}, Strategy: "primary_backup"}},
+		},
+		Retry: config.Retry{MaxRetries: 3, RetryStatuses: []int{429, 500, 502, 503, 504}},
+	}
+	hc := health.New(cfg)
+	defer hc.Close()
+	h := New(cfg, router.New(cfg), hc)
+
+	// 请求 413（透传给客户端）
+	rec := doChat(t, h, `{"model":"m","messages":[{"role":"user","content":"hi"}]}`)
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want 413 passthrough", rec.Code)
+	}
+
+	// 客户端错误不应把上游降级：健康状态必须保持 healthy
+	if st := hc.Status("up413"); st != health.StateHealthy {
+		t.Errorf("health status = %q, want healthy (4xx client error must not mark upstream failure)", st)
+	}
+	if upHits.Load() != 1 {
+		t.Errorf("upstream hits = %d, want 1", upHits.Load())
+	}
+}
