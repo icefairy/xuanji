@@ -356,8 +356,9 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		handled, retryable, ferr, _, _, _, _ := h.forwardOnce(rec, r, body, up, model, stream, false)
 		// 429 限流不是上游故障（几秒后可自愈），不降低健康状态；
 		// 客户端断连（context.Canceled）也不是上游故障，不计入失败计数；
-		// 只有真实故障（5xx/连接错误）才触发 MarkFailure 影响健康等级。
-		if ferr != nil && h.health != nil && !strings.Contains(ferr.Error(), "rate limited") && !isClientCanceled(ferr) {
+		// 不可重试 4xx（如 413 请求体过大）已透传给客户端，同样不是上游故障。
+		// 仅当响应未写出（handled=false，即连接错误/重试失败的 5xx/超时）才计入。
+		if ferr != nil && !handled && h.health != nil && !strings.Contains(ferr.Error(), "rate limited") && !isClientCanceled(ferr) {
 			h.health.MarkFailure(up.Name)
 		}
 		// 连接类错误（网络不可达/超时/连接拒绝）说明可能是本地网络问题而非上游故障；
@@ -1471,8 +1472,8 @@ func (h *Handler) Rerank(w http.ResponseWriter, r *http.Request) {
 		}
 		up := candidates[i]
 		handled, retryable, ferr := h.forwardRerank(rec, r, body, up, model)
-		// 客户端断连（context.Canceled）不是上游故障，不计入健康失败计数
-		if ferr != nil && h.health != nil && !isClientCanceled(ferr) {
+		// 客户端断连/透传的 4xx（handled=true）不是上游故障，不计入健康失败计数
+		if ferr != nil && !handled && h.health != nil && !isClientCanceled(ferr) {
 			h.health.MarkFailure(up.Name)
 		}
 		// 客户端断连（context.Canceled）不算连接类错误（isConnIssue 内部排除）
@@ -1634,8 +1635,8 @@ func (h *Handler) Embeddings(w http.ResponseWriter, r *http.Request) {
 		}
 		up := candidates[i]
 		handled, retryable, ferr := h.forwardEmbedding(rec, r, body, up, model)
-		// 客户端断连（context.Canceled）不是上游故障，不计入健康失败计数
-		if ferr != nil && h.health != nil && !isClientCanceled(ferr) {
+		// 客户端断连/透传的 4xx（handled=true）不是真实上游故障，不计入健康失败计数
+		if ferr != nil && !handled && h.health != nil && !isClientCanceled(ferr) {
 			h.health.MarkFailure(up.Name)
 		}
 		// 客户端断连（context.Canceled）不算连接类错误（isConnIssue 内部排除）
