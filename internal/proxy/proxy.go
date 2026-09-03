@@ -344,10 +344,14 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	retryCount := 0
 	maxRetries := h.cfg.Retry.MaxRetries
 	connIssues := false // 是否有连接类错误（网络断/超时），用于判断全局网络问题
+	aborted := false    // 循环被提前 break（客户端断连/不可重试）：候选未全部耗尽，
+	// 此时不得把"部分候选失败"误判为"全部候选失败+全局网络故障"而清空 fastfail 黑名单
+	// （2026-09-02 实测：client disconnected 后 cleared=8 误清，黑名单解除后下次立即重打故障上游）
 	for i := 0; i < len(candidates) && retryCount <= maxRetries; i++ {
 		// 客户端已断开（context canceled）：不再尝试任何上游，也不标记 fastfail——
 		// 否则一次断连会把所有候选全拉黑 60 分钟（2026-08-02 实测：6 个上游全被误拉黑）
 		if r.Context().Err() != nil {
+			aborted = true
 			h.log.Warn("client disconnected, aborting retry loop",
 				"model", model, "error", r.Context().Err())
 			break
@@ -414,7 +418,11 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	// 反而导致网络恢复后要等 probe（35 分钟一轮）逐个解除。
 	// 清空本规则涉及上游的黑名单，让网络恢复后立即可用（2026-08-02 修复）。
 	// 仅 HTTP 错误（上游真实故障，如 502/429）不清空——单上游规则依赖黑名单跳过故障上游。
-	if connIssues && h.fastFail != nil {
+	// 注意：循环因客户端断连/不可重试错误 break 提前结束时（aborted=true）不得清空——
+	// 此时候选未全部耗尽，"全局网络故障"判定不成立（2026-09-02 修复：断连后 cleared=8 误清）。
+	// 客户端已断开（context canceled）时请求未真正完成：不得清空黑名单
+	// （取消发生在部分候选尝试之后，与"全部候选耗尽"的全局网络判定语义不符）
+	if connIssues && !aborted && r.Context().Err() == nil && h.fastFail != nil {
 		cleared := 0
 		for _, up := range candidates {
 			// 网络问题清空该上游 model 相关的全部黑名单（客户端名 + 所有真实模型名）
@@ -1490,8 +1498,10 @@ func (h *Handler) Rerank(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
-	// 全部候选失败 + 含连接类错误 = 全局网络问题，清空黑名单让网络恢复后立即可用
-	if connIssues && h.fastFail != nil {
+	// 全部候选失败 + 含连接类错误 = 全局网络问题；且客户端未断开（ctx 未取消）时才清空黑名单
+	// （2026-09-02 修复：客户端断连提前结束请求时不得清空，
+	//   避免把"未穷尽候选"误判为"全部候选耗尽+全局网络故障"而误解除故障上游黑名单）
+	if connIssues && r.Context().Err() == nil && h.fastFail != nil {
 		cleared := 0
 		for _, up := range candidates {
 			h.clearUpstreamBlacklist(up, model)
@@ -1653,8 +1663,10 @@ func (h *Handler) Embeddings(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
-	// 全部候选失败 + 含连接类错误 = 全局网络问题，清空黑名单让网络恢复后立即可用
-	if connIssues && h.fastFail != nil {
+	// 全部候选失败 + 含连接类错误 = 全局网络问题；且客户端未断开（ctx 未取消）时才清空黑名单
+	// （2026-09-02 修复：客户端断连提前结束请求时不得清空，
+	//   避免把"未穷尽候选"误判为"全部候选耗尽+全局网络故障"而误解除故障上游黑名单）
+	if connIssues && r.Context().Err() == nil && h.fastFail != nil {
 		cleared := 0
 		for _, up := range candidates {
 			h.clearUpstreamBlacklist(up, model)
