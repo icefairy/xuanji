@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -86,7 +87,9 @@ func TestChatCompletions_ClientDisconnectKeepsBlacklist(t *testing.T) {
 			DefaultStrategy: "primary_backup",
 			Rules:           []config.Rule{{Model: "m", Upstreams: []string{"up"}, Strategy: "primary_backup"}},
 		},
-		Retry: config.Retry{MaxRetries: 3, RetryStatuses: []int{429, 500, 502, 503, 504}},
+		Retry: config.Retry{MaxRetries: 10, RetryStatuses: []int{429, 500, 502, 503, 504}},
+		// MaxRetries 放大：避免 up-conn1 快速失败在 cancel 触发前耗尽重试次数，
+		// 导致循环“自然结束”而非“断连 aborted”——那会把测试变成非确定路径。
 	}
 	h := New(cfg, router.New(cfg), nil)
 	ff := NewFastFailCache(time.Minute)
@@ -183,7 +186,7 @@ func TestChatCompletions_ClientDisconnectKeepsHealth(t *testing.T) {
 	rec := httptest.NewRecorder()
 	go func() {
 		<-entered
-		time.Sleep(20 * time.Millisecond)
+		time.Sleep(5 * time.Millisecond)
 		cancel() // 客户端断连
 	}()
 	h.ChatCompletions(rec, req)
@@ -191,5 +194,75 @@ func TestChatCompletions_ClientDisconnectKeepsHealth(t *testing.T) {
 	// 客户端断连不算上游故障：健康状态必须保持 healthy（未 degraded/dead）
 	if st := hc.Status("up"); st != health.StateHealthy {
 		t.Errorf("health status = %q, want healthy (client disconnect must not count as upstream failure)", st)
+	}
+}
+
+// TestChatCompletions_ConnIssueThenCancelKeepsBlacklist 验证修复：
+// 请求中已有真实连接类失败（connIssues=true，如 bai 超时）之后，
+// 若因客户端断连（context canceled）提前 break 退出循环，
+// 不得把"客户端取消"误判为"全部候选耗尽且全局网络故障"而清空 fastfail 黑名单
+// （清空语义要求：循环自然走完，全部候选均尝试且失败）。
+// 修复前：2026-09-02 日志实测 "upstream=dots ... context canceled" 后打出
+// cleared=8 误清日志，故障上游黑名单被错误解除，下次请求立即重打故障上游。
+func TestChatCompletions_ConnIssueThenBreakKeepsBlacklist(t *testing.T) {
+	// up-conn：真实连接失败（端口无服务监听 → dial refused）→ connIssues=true
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadAddr := l.Addr().String()
+	l.Close() // 立刻关闭：请求该地址必然 connection refused
+	// up-block：阻塞式慢上游，客户端 cancel 后 client.Do 立即返回 canceled
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	upBlock := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		once.Do(func() { close(entered) }) // 循环重置后可能再次打 up-block，只 close 一次
+		<-release
+	}))
+	defer upBlock.Close()
+	defer close(release)
+
+	cfg := &config.Config{
+		Upstreams: []config.Upstream{
+			// Weight=100 确保 up-conn1 总是候选第一（select 按 weight 降序）：
+			// 必须先真实执行一次 dial（refused→fastfail 标记）再碰到阻塞上游，
+			// 否则 cancel 后 client.Do 因 ctx 已取消直接返回、根本不拨号、
+			// 不产生失败标记，测试无法复现"连接失败后断连"场景。
+			{Name: "up-conn1", BaseURL: "http://" + deadAddr, APIKey: "x", Weight: 100},
+			{Name: "up-block", BaseURL: upBlock.URL, APIKey: "sk-test", Weight: 1},
+		},
+		Routing: config.Routing{
+			DefaultStrategy: "primary_backup",
+			Rules:           []config.Rule{{Model: "m", Upstreams: []string{"up-conn1", "up-block"}, Strategy: "primary_backup"}},
+		},
+		Retry: config.Retry{MaxRetries: 3, RetryStatuses: []int{429, 500, 502, 503, 504}},
+	}
+	h := New(cfg, router.New(cfg), nil)
+	ff := NewFastFailCache(time.Minute)
+	h.SetFastFail(ff)
+
+	// 发起请求：up-1 快速连接失败（被 fastfail 标记），随后循环走向
+	// up-block（阻塞中客户端取消）→ 循环因断连提前 break 退出。
+	// 修复前：connIssues 已因 up-1 为 true → break 后外层误判
+	// "全部候选耗尽+全局网络故障"清空黑名单 → up-1 黑名单被解除
+	// （2026-09-02 生产日志实测：client disconnected 后 cleared=8 误清）。
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"m","messages":[{"role":"user","content":"hi"}]}`)).WithContext(ctx)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	go func() {
+		<-entered
+		time.Sleep(20 * time.Millisecond)
+		cancel()
+	}()
+	h.ChatCompletions(rec, req)
+
+	// 循环因客户端断连提前 break（候选未全部耗尽）：本次请求内被 fastfail
+	// 标记的 up-conn1 必须保留在黑名单中，不能因"全局网络故障"误清
+	// （2026-09-02 生产日志实测：client disconnected 后 cleared=8 误清）。
+	if !ff.IsBlacklisted("up-conn1", "m") {
+		t.Error("up-conn1 blacklist entry cleared after client disconnect (fastfail just marked in this request should persist)")
 	}
 }

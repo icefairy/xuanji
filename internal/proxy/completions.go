@@ -104,9 +104,9 @@ func (h *Handler) Completions(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
-	// 全部候选失败 + 含连接类错误 = 全局网络问题，清空黑名单让网络恢复后立即可用
-	//（与 chat/rerank/embedding 链路一致）
-	if connIssues && h.fastFail != nil {
+	// 全部候选失败 + 含连接类错误 = 全局网络问题；且客户端未断开（ctx 未取消）时才清空黑名单
+	//（2026-09-02 修复：客户端断连提前结束请求时不得清空，与 chat 链路一致）
+	if connIssues && r.Context().Err() == nil && h.fastFail != nil {
 		cleared := 0
 		for _, up := range candidates {
 			h.clearUpstreamBlacklist(up, model)
