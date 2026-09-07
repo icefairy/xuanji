@@ -4,7 +4,6 @@
 #   2) 合并 public 分支到 main（历史惯例 "public 合入 main"）
 #   3) 推送 public 与 main 到所有远端（gitea 关口代直连局域网；gitee 走代理；github 走 SSH）
 set -uo pipefail
-export GIT_SSH_COMMAND="ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o ConnectTimeout=20"
 
 REPO=/data/codes/xuanji
 LOG=/var/log/xuanji-nightly.log
@@ -44,11 +43,11 @@ ts() { date '+%Y-%m-%d %H:%M:%S'; }
       [ "$r" = "gitea" ] && extra=(-c http.proxy= -c https.proxy=)
       # 显式 refspec，避免 gitee/github 的 push 配置(public→main)把 
       # public 误推到 main 导致 public 分支从不更新
-      timeout 300 git "${extra[@]}" push "$r" "refs/heads/$b:refs/heads/$b" 2>&1 && continue
+      git "${extra[@]}" push "$r" "refs/heads/$b:refs/heads/$b" 2>&1 && continue
       # 瞬时故障（408/断流）重试一次
       echo "     retry $b -> $r"
       sleep 3
-      timeout 300 git "${extra[@]}" push "$r" "refs/heads/$b:refs/heads/$b" 2>&1
+      git "${extra[@]}" push "$r" "refs/heads/$b:refs/heads/$b" 2>&1
     done
   done
 
