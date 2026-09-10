@@ -138,3 +138,78 @@ func TestUpdateUpstream_PartialExplicitFieldStillChanges(t *testing.T) {
 		t.Errorf("tier/priority/weight 被清空")
 	}
 }
+
+// TestUpdateUpstream_TimeoutRoundTripInList 回归测试（2026-09-10 编辑超时保存后回显 0）：
+// GET /admin/upstreams 响应曾缺 timeout 字段，前端编辑表单回显 0，
+// 再次保存时 parseInt||0 把已配置值误清零。保证列表响应回传 timeout。
+func TestUpdateUpstream_TimeoutRoundTripInList(t *testing.T) {
+	s, err := store.Open(t.TempDir() + "/xuanji.db")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer s.Close()
+
+	cfg := testConfig()
+	cfg.Upstreams = append(cfg.Upstreams, config.Upstream{Name: "test-up", BaseURL: "http://unused", APIKey: "k"})
+	hc := health.New(cfg)
+	defer hc.Close()
+	h := New(cfg, hc)
+	h.SetStore(s)
+
+	if err := s.CreateUpstream(&store.UpstreamRow{
+		Name:    "test-up",
+		Type:    "openai",
+		BaseURL: "https://old.example.com/v1",
+		APIKey:  "sk-old",
+	}); err != nil {
+		t.Fatalf("create upstream: %v", err)
+	}
+
+	// PUT 显式设 timeout=120
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/admin/upstreams/test-up",
+		strings.NewReader(`{"timeout":120}`))
+	req.SetPathValue("name", "test-up")
+	h.UpdateUpstream(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("update status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+
+	// GET 列表必须回传 timeout（前端编辑表单靠它回显）
+	rr = httptest.NewRecorder()
+	h.Upstreams(rr, httptest.NewRequest(http.MethodGet, "/admin/upstreams", nil))
+	var out []upstreamResponse
+	decodeBody(t, rr, &out)
+	var found bool
+	for _, u := range out {
+		if u.Name == "test-up" {
+			if u.Timeout != 120 {
+				t.Errorf("timeout = %d, want 120（GET 列表必须回传）", u.Timeout)
+			}
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("test-up 未出现在列表中")
+	}
+
+	// 稀疏 PUT（不带 timeout，如权重内联编辑 saveWeight）不得把 120 清掉
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPut, "/admin/upstreams/test-up",
+		strings.NewReader(`{"weight":55}`))
+	req.SetPathValue("name", "test-up")
+	h.UpdateUpstream(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("sparse update status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	got, gerr := s.GetUpstream("test-up")
+	if gerr != nil {
+		t.Fatalf("get upstream: %v", gerr)
+	}
+	if got.Timeout != 120 {
+		t.Errorf("稀疏 PUT 后 timeout = %d, want 120（未传应保留原值）", got.Timeout)
+	}
+	if got.Weight != 55 {
+		t.Errorf("weight = %d, want 55", got.Weight)
+	}
+}

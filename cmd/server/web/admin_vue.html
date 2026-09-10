@@ -1327,7 +1327,7 @@
             上一页
           </button>
           <span style="font-size: 13px; color: #606266"
-            >{{ logPage }} / {{ logTotalPage }}</span
+            >第 {{ logPage }} / {{ logTotalPage }} 页 · 本页 {{ logs.length }} 条 / 共 {{ logTotal }} 条</span
           >
           <button
             class="btn"
@@ -5387,6 +5387,9 @@ curl -sS "$BASE/v1/messages" \\
             },
             editUpstream: function (row) {
               this.editForm = JSON.parse(JSON.stringify(row));
+              // timeout：旧版后端 GET 不返回该字段（未升级时 undefined），补默认 0（跟随全局），
+              // 避免输入框空白；doEditUpstream 的 parseInt||0 也依赖此值存在
+              if (this.editForm.timeout === undefined) this.editForm.timeout = 0;
               // model_mapping 可能是对象或字符串，统一成 JSON 字符串便于编辑
               if (
                 this.editForm.model_mapping &&
