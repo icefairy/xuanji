@@ -20,7 +20,10 @@
 //   - GLM-5.x 等较新 GLM（含阿里云百炼托管）：顶层 reasoning_effort 原生支持，
 //     枚举 none/minimal/low/medium/high/xhigh（实测百炼 max 直接 400
 //     "must be one of: 'none', 'minimal', 'low', 'medium', 'high', 'xhigh'"），
-//     仅需把 max 降为 xhigh，其余档位原样透传；不注入 thinking 字段。
+//     max 降为 xhigh；none 转为 GLM 系标准 thinking.type=disabled
+//     （部分换皮上游如 tokenrhythm glm-5.3-flash 不认识顶层 reasoning_effort，
+//     透传 none 会被静默忽略照常思考；若上游是强制思考模型会返回明确 400
+//     REASONING_REQUIRED，好过静默失败）；其余档位原样透传。
 //   - Qwen3 / Qwen3.5 / Qwen3.6 / Qwen3.7：顶层 enable_thinking 开关 + thinking_budget 限思考长度，
 //     无 reasoning_effort 档位（Qwen3.5 开源小模型默认禁用思考需显式开启；Qwen3.6 默认思考可关闭；
 //     Qwen3 支持 /think /no_think 软切换，Qwen3.6 不支持）。Qwen2.5 无思考模式，不匹配本族。
@@ -192,17 +195,34 @@ func applySenseNova(body []byte, effort string) ([]byte, bool) {
 // applyGlmX 较新 GLM（glm-5.x 等，含阿里云百炼托管）：reasoning_effort 原生支持，
 // 但枚举只有 none/minimal/low/medium/high/xhigh，**没有 max**（实测百炼 max 直接 400
 // "'reasoning_effort' must be one of: 'none', 'minimal', 'low', 'medium', 'high', 'xhigh'"）。
-// 因此仅把 max 降为 xhigh（xhigh 在支持 max 的上游同样有效，降档无损）；
-// 其余档位原样透传，不注入 thinking 字段（是否支持开关未实测，保持最小改动）。
+//   - max → xhigh（xhigh 在支持 max 的上游同样有效，降档无损）
+//   - none/off → 删 reasoning_effort + thinking.type=disabled（GLM 系标准关思考开关）：
+//     认识 thinking.type 的上游正确关闭；不认识顶层 reasoning_effort 的换皮上游
+//     （如 tokenrhythm glm-5.3-flash）透传 none 会被静默忽略照常思考，必须转开关；
+//     强制思考模型（如 tokenrhythm glm-5.3-flash 实测）会返回明确 400
+//     REASONING_REQUIRED「当前模型必须开启深度思考」——明确失败好过静默失败，
+//     且 4xx 属客户端错误透传，不触发重试/熔断。
+//   - 其余档位原样透传，不注入其他字段。
 func applyGlmX(body []byte, effort string) ([]byte, bool) {
-	if effort != "max" {
-		return body, false
+	switch effort {
+	case "none", "off":
+		nb, err := sjson.DeleteBytes(body, "reasoning_effort")
+		if err != nil {
+			return body, false
+		}
+		nb, err = sjson.SetBytes(nb, "thinking", map[string]string{"type": "disabled"})
+		if err != nil {
+			return body, false
+		}
+		return nb, true
+	case "max":
+		nb, err := sjson.SetBytes(body, "reasoning_effort", "xhigh")
+		if err != nil {
+			return body, false
+		}
+		return nb, true
 	}
-	nb, err := sjson.SetBytes(body, "reasoning_effort", "xhigh")
-	if err != nil {
-		return body, false
-	}
-	return nb, true
+	return body, false
 }
 
 // applyAgnes AgnesAI（sglang 托管）：reasoning_effort 原生支持，但枚举是
