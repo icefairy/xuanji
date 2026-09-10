@@ -155,7 +155,9 @@ func TestNormalizeThinkingEffort_KimiK2AndGLM(t *testing.T) {
 
 // TestNormalizeThinkingEffort_GLM5x 阿里云百炼托管 glm-5.1/5.2 实测：reasoning_effort 枚举
 // 无 max（400 "must be one of: 'none', 'minimal', 'low', 'medium', 'high', 'xhigh'"），
-// max 需降为 xhigh，其余档位（none/minimal/low/medium/high/xhigh）原样透传，不注入 thinking 字段；
+// max 需降为 xhigh；none 转为 thinking.type=disabled（tokenrhythm glm-5.3-flash 实测
+// 不认识顶层 reasoning_effort，透传 none 被静默忽略照常思考，强制思考模型则 400
+// REASONING_REQUIRED —— 明确失败好过静默失败）；其余档位原样透传；
 // 且 glm-4.5/4.6 仍走 switch-only 老逻辑（不被 glm-x 抢占）。
 func TestNormalizeThinkingEffort_GLM5x(t *testing.T) {
 	for _, model := range []string{"glm-5.1", "glm-5.2"} {
@@ -171,8 +173,23 @@ func TestNormalizeThinkingEffort_GLM5x(t *testing.T) {
 		if gjson.Get(nb, "thinking").Exists() {
 			t.Fatalf("%s: should not inject thinking field (body=%s)", model, nb)
 		}
+		// none/off → 转为 thinking.type=disabled 并删 reasoning_effort
+		for _, effort := range []string{"none", "off"} {
+			b := `{"model":"` + model + `","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"` + effort + `"}`
+			nb2, changed2 := normalizeThinkingEffort([]byte(b), model)
+			if !changed2 {
+				t.Errorf("%s effort=%s 应转换为 thinking.type=disabled", model, effort)
+				continue
+			}
+			if gjson.GetBytes(nb2, "reasoning_effort").Exists() {
+				t.Errorf("%s effort=%s: reasoning_effort 应被删除 (body=%s)", model, effort, nb2)
+			}
+			if got := gjson.GetBytes(nb2, "thinking.type").String(); got != "disabled" {
+				t.Errorf("%s effort=%s: thinking.type=%q, want disabled (body=%s)", model, effort, got, nb2)
+			}
+		}
 		// 其余档位原样透传
-		for _, effort := range []string{"none", "minimal", "low", "medium", "high", "xhigh"} {
+		for _, effort := range []string{"minimal", "low", "medium", "high", "xhigh"} {
 			b := `{"model":"` + model + `","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"` + effort + `"}`
 			nb2, changed2 := normalizeThinkingEffort([]byte(b), model)
 			if changed2 || string(nb2) != b {
