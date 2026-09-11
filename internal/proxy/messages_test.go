@@ -118,3 +118,110 @@ func TestChatCompletions_MergeSystemMessages(t *testing.T) {
 		t.Fatalf("第一位不是 system: %s", received)
 	}
 }
+
+func TestCleanOrphanToolMessages(t *testing.T) {
+	cases := []struct {
+		name    string
+		body    string
+		wantChg bool
+		wantMsg int    // 清理后 messages 条数
+		wantID  string // 第一个 tool 消息的 tool_call_id（用于验证正常消息保留）
+	}{
+		{
+			name:    "正常tool消息带id保留",
+			body:    `{"model":"m","messages":[{"role":"user","content":"u"},{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"f","arguments":"{}"}}]},{"role":"tool","tool_call_id":"call_1","content":"r"}]}`,
+			wantChg: false,
+			wantMsg: 3,
+			wantID:  "call_1",
+		},
+		{
+			name:    "孤儿tool消息被删除",
+			body:    `{"model":"m","messages":[{"role":"user","content":"u"},{"role":"tool","content":"orphan"},{"role":"assistant","content":"a"}]}`,
+			wantChg: true,
+			wantMsg: 2,
+			wantID:  "",
+		},
+		{
+			name:    "空tool_call_id的tool消息被删",
+			body:    `{"model":"m","messages":[{"role":"tool","tool_call_id":"","content":"empty-id"},{"role":"user","content":"u"}]}`,
+			wantChg: true,
+			wantMsg: 1,
+			wantID:  "",
+		},
+		{
+			name:    "混合：只删孤儿保留正常",
+			body:    `{"model":"m","messages":[{"role":"tool","tool_call_id":"ok","content":"fine"},{"role":"tool","content":"bad"},{"role":"user","content":"u"}]}`,
+			wantChg: true,
+			wantMsg: 2,
+			wantID:  "ok",
+		},
+		{
+			name:    "无messages不动",
+			body:    `{"model":"m","prompt":"x"}`,
+			wantChg: false,
+		},
+		{
+			name:    "大数组性能：大量消息仅一个孤儿",
+			body:    `{"model":"m","messages":[{"role":"tool","tool_call_id":"kill","content":"x"},` + strings.Repeat(`{"role":"tool","tool_call_id":"keep_1","content":"r"},`, 1000) + `{"role":"assistant","content":"end"}]}`,
+			wantChg: false,
+			wantMsg: 1002,
+			wantID:  "kill", // 首条带 id 的正常 tool 消息必须在最前保留
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out, changed := CleanOrphanToolMessages([]byte(tc.body))
+			if changed != tc.wantChg {
+				t.Fatalf("changed = %v, want %v", changed, tc.wantChg)
+			}
+			msgs := gjson.GetBytes(out, "messages").Array()
+			if len(msgs) != tc.wantMsg {
+				t.Fatalf("messages 条数 = %d, want %d", len(msgs), tc.wantMsg)
+			}
+			// 验证没有任何孤儿 tool 消息残留
+			for i, m := range msgs {
+				if m.Get("role").String() == "tool" && m.Get("tool_call_id").String() == "" {
+					t.Errorf("残留孤儿 tool 消息 at index=%d: %s", i, m.Raw)
+				}
+			}
+			if tc.wantID != "" {
+				// 验证第一个 tool 消息的 tool_call_id 保留
+				for _, m := range msgs {
+					if m.Get("role").String() == "tool" {
+						if got := m.Get("tool_call_id").String(); got != tc.wantID {
+							t.Errorf("第一个 tool 消息 tool_call_id = %q, want %q", got, tc.wantID)
+						}
+						break
+					}
+				}
+			}
+		})
+	}
+}
+
+// 端到端：孤儿 tool 消息经 ChatCompletions 转发前被清理，上游不再收到缺 tool_call_id 的消息
+// （修复 agnes 等 sglang 托管上游 strict schema 校验 400）
+func TestChatCompletions_CleanOrphanToolMessages(t *testing.T) {
+	var received string
+	upstream, h := newTestHandler(t, func(w http.ResponseWriter, r *http.Request) {
+		data, _ := io.ReadAll(r.Body)
+		received = string(data)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, `{"id":"x","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":2,"total_tokens":7}}`)
+	})
+	defer upstream.Close()
+
+	// 消息链中混入一条缺 tool_call_id 的孤儿 tool 消息（上游若收到会 400）
+	rec := doChat(t, h, `{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"hi"},{"role":"tool","content":"orphan"},{"role":"assistant","content":"ok"}],"max_tokens":10}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	msgs := gjson.GetBytes([]byte(received), "messages").Array()
+	for i, m := range msgs {
+		if m.Get("role").String() == "tool" {
+			t.Fatalf("上游不应收到任何孤儿(或缺id) tool 消息 at index=%d: %s", i, m.Raw)
+		}
+	}
+}

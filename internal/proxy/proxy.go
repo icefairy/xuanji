@@ -858,6 +858,12 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 			return true, false, nil, 0, 0, 0, 0
 		}
 	}
+	// 孤儿 tool 消息清理：移除 role=tool 但缺少/空 tool_call_id 的残留消息，
+	// 规避 agnes 等 sglang 托管上游对 tool 消息的严格 schema 校验 400
+	// （"missing field `tool_call_id`"）。在归一化链最前执行，仅清理不影响其余字段。
+	if nb, changed := CleanOrphanToolMessages(reqBody); changed {
+		reqBody = nb
+	}
 	// 思考深度归一化：客户端标准 reasoning_effort → 目标模型实际思考参数
 	// （DeepSeek 透传/适配档位、商汤转 output_config.effort、Kimi/GLM 转 thinking.type 等）
 	// 先按最佳思考等级配置注入/覆盖（auto=补推荐值，force=强制覆盖），再归一化。
