@@ -35,7 +35,7 @@ func TestMetricsRange(t *testing.T) {
 
 	cases := []struct {
 		rangeParam string
-		wantTotal int64
+		wantTotal  int64
 	}{
 		{"today", 1},
 		{"3d", 3},  // 今天 + 2 天前
