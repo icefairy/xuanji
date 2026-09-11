@@ -62,7 +62,7 @@ func (h *Handler) ImageGenerations(w http.ResponseWriter, r *http.Request) {
 	candidates := h.selectCandidates(upstreams, strategy, model)
 	for i, up := range candidates {
 		handled, retryable, ferr := h.forwardMediaJSON(rec, r, r.Context(), body, up, model, mediaImagePath, "images", i == len(candidates)-1)
-		if ferr != nil && h.health != nil {
+		if h.shouldMarkUpstreamFailure(handled, ferr) {
 			h.health.MarkFailure(up.Name)
 		}
 		if handled {
@@ -122,7 +122,7 @@ func (h *Handler) AudioSpeech(w http.ResponseWriter, r *http.Request) {
 		} else {
 			handled, retryable, ferr = h.forwardMediaJSON(rec, r, r.Context(), body, up, model, mediaAudioSpeechPath, "audio", i == len(candidates)-1)
 		}
-		if ferr != nil && h.health != nil {
+		if h.shouldMarkUpstreamFailure(handled, ferr) {
 			h.health.MarkFailure(up.Name)
 		}
 		if handled {
@@ -182,7 +182,7 @@ func (h *Handler) AudioTranscriptions(w http.ResponseWriter, r *http.Request) {
 	candidates := h.selectCandidates(upstreams, strategy, model)
 	for i, up := range candidates {
 		handled, retryable, ferr := h.forwardAudioTranscription(rec, r, rawBody, up, model, "audio", i == len(candidates)-1)
-		if ferr != nil && h.health != nil {
+		if h.shouldMarkUpstreamFailure(handled, ferr) {
 			h.health.MarkFailure(up.Name)
 		}
 		if handled {
@@ -239,7 +239,7 @@ func (h *Handler) forwardMediaJSON(w http.ResponseWriter, r *http.Request, ctx c
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, target, bytes.NewReader(reqBody))
 	if err != nil {
 		if last {
-			writeError(w, http.StatusInternalServerError, "failed to build upstream request: "+err.Error(), "server_error", "")
+			writeError(w, http.StatusInternalServerError, "failed to build upstream request", "server_error", "")
 			return true, false, nil
 		}
 		return false, true, fmt.Errorf("build upstream request: %w", err)
@@ -250,7 +250,7 @@ func (h *Handler) forwardMediaJSON(w http.ResponseWriter, r *http.Request, ctx c
 	resp, err := h.client.Do(req)
 	if err != nil {
 		if last {
-			writeError(w, http.StatusBadGateway, "upstream request failed: "+err.Error(), "server_error", "upstream_unreachable")
+			writeError(w, http.StatusBadGateway, upstreamErrorMessage(err), "server_error", "upstream_unreachable")
 			return true, false, nil
 		}
 		return false, true, fmt.Errorf("upstream request failed: %w", err)
@@ -368,7 +368,7 @@ func (h *Handler) forwardAudioTranscription(w http.ResponseWriter, r *http.Reque
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, target, reqBody)
 	if err != nil {
 		if last {
-			writeError(w, http.StatusInternalServerError, "failed to build upstream request: "+err.Error(), "server_error", "")
+			writeError(w, http.StatusInternalServerError, "failed to build upstream request", "server_error", "")
 			return true, false, nil
 		}
 		return false, true, fmt.Errorf("build upstream request: %w", err)
@@ -379,7 +379,7 @@ func (h *Handler) forwardAudioTranscription(w http.ResponseWriter, r *http.Reque
 	resp, err := h.client.Do(req)
 	if err != nil {
 		if last {
-			writeError(w, http.StatusBadGateway, "upstream request failed: "+err.Error(), "server_error", "upstream_unreachable")
+			writeError(w, http.StatusBadGateway, upstreamErrorMessage(err), "server_error", "upstream_unreachable")
 			return true, false, nil
 		}
 		return false, true, fmt.Errorf("upstream request failed: %w", err)
@@ -452,7 +452,7 @@ func (h *Handler) forwardMimoTTS(w http.ResponseWriter, ctx context.Context, bod
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, target, bytes.NewReader(reqBody))
 	if err != nil {
 		if last {
-			writeError(w, http.StatusInternalServerError, "failed to build upstream request: "+err.Error(), "server_error", "")
+			writeError(w, http.StatusInternalServerError, "failed to build upstream request", "server_error", "")
 			return true, false, nil
 		}
 		return false, true, fmt.Errorf("build upstream request: %w", err)
@@ -463,7 +463,7 @@ func (h *Handler) forwardMimoTTS(w http.ResponseWriter, ctx context.Context, bod
 	resp, err := h.client.Do(req)
 	if err != nil {
 		if last {
-			writeError(w, http.StatusBadGateway, "upstream request failed: "+err.Error(), "server_error", "upstream_unreachable")
+			writeError(w, http.StatusBadGateway, upstreamErrorMessage(err), "server_error", "upstream_unreachable")
 			return true, false, nil
 		}
 		return false, true, fmt.Errorf("upstream request failed: %w", err)
@@ -484,7 +484,7 @@ func (h *Handler) forwardMimoTTS(w http.ResponseWriter, ctx context.Context, bod
 		h.writeUpstreamError(w, resp)
 		return true, false, nil
 	default:
-		respBody, rerr := io.ReadAll(resp.Body)
+		respBody, rerr := readUpstreamBody(resp.Body)
 		if rerr != nil {
 			if last {
 				writeError(w, http.StatusBadGateway, "failed to read upstream response: "+rerr.Error(), "server_error", "upstream_unreachable")

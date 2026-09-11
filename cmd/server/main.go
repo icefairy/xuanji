@@ -116,10 +116,11 @@ func admJWTSecret(st *store.Store) string {
 
 // appState 持有运行时可热替换的组件。
 type appState struct {
-	mu  sync.RWMutex
-	hc  *health.Checker
-	srv *http.Server
-	qm  *quota.Service // 配额策略（组×模型 白名单+模型级配额）
+	mu        sync.RWMutex
+	hc        *health.Checker
+	srv       *http.Server
+	qm        *quota.Service // 配额策略（组×模型 白名单+模型级配额）
+	stopProbe func()         // fastfail 冷却清理探针停止函数（热重载时替换，防 goroutine 泄漏）
 }
 
 var (
@@ -211,6 +212,11 @@ func main() {
 		Addr:              addr,
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
+		// 限制读取请求头+请求体的总时长，抵御慢速 body 占连接（slowloris）。
+		// 不影响 SSE：读超时只约束请求方向，不约束流式响应。
+		ReadTimeout: 5 * time.Minute,
+		IdleTimeout: 120 * time.Second,
+		// 不设置 WriteTimeout：SSE 流式响应可能持续数分钟，写超时会把长流截断。
 	}
 
 	state.mu.Lock()
@@ -223,7 +229,8 @@ func main() {
 		signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 		<-quit
 		slog.Info("shutting down")
-		hc.Close()
+		closeCurrentHealth()
+		stopFastFailProbe()
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = srv.Shutdown(ctx)
@@ -256,7 +263,28 @@ func main() {
 		slog.Error("server error", "error", err)
 		os.Exit(1)
 	}
-	hc.Close()
+	closeCurrentHealth()
+	stopFastFailProbe()
+}
+
+// closeCurrentHealth 关闭当前健康检查器（热重载后指向最新实例，避免关闭已失效的启动实例）。
+func closeCurrentHealth() {
+	state.mu.RLock()
+	hc := state.hc
+	state.mu.RUnlock()
+	if hc != nil {
+		hc.Close()
+	}
+}
+
+// stopFastFailProbe 停止当前 fastfail 冷却清理探针（幂等）。
+func stopFastFailProbe() {
+	state.mu.Lock()
+	if state.stopProbe != nil {
+		state.stopProbe()
+		state.stopProbe = nil
+	}
+	state.mu.Unlock()
 }
 
 // dailyStatsTicker 后台维护每日统计预聚合表（daily_stats）。
@@ -341,9 +369,24 @@ func backupOnce(storeInst *store.Store) {
 	slog.Info("auto backup done", "name", name, "pruned", removed)
 }
 
+// maxRequestBodyBytes 是单个请求体的上限（64MB）。多模态请求可能携带较大 base64
+// 图片/音频，故给足空间；同时防止超大 body 打爆内存（此前所有入口均无限制）。
+const maxRequestBodyBytes = 64 << 20
+
+// limitRequestBody 包装 mux，限制请求体大小。超限时读取返回错误，
+// 各 handler 会以 4xx 拒绝请求，避免 OOM。
+func limitRequestBody(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Body != nil {
+			r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // buildServeMux 构造 HTTP 路由 mux。
 // qm 为配额策略服务（nil 时不启用配额检查）。
-func buildServeMux(cfg *config.Config, rt *router.Router, hc *health.Checker, rec *store.Recorder, storeInst *store.Store, apiKeys *auth.APIKeys, qm *quota.Service) *http.ServeMux {
+func buildServeMux(cfg *config.Config, rt *router.Router, hc *health.Checker, rec *store.Recorder, storeInst *store.Store, apiKeys *auth.APIKeys, qm *quota.Service) http.Handler {
 	// 上游 User-Agent：配置为空时默认用 pi agent 的 UA（可在系统设置自定）。
 	// 启动与热重载都经过 buildServeMux，这里统一生效。
 	ua := cfg.Proxy.UserAgent
@@ -542,7 +585,14 @@ func buildServeMux(cfg *config.Config, rt *router.Router, hc *health.Checker, re
 	// 对话调试（/admin/chat）注入完整转发链路与路由探测器：走完整网关路由链路
 	admHandler.SetProxy(pxHandler, rt)
 	stopProbe := pxHandler.StartFastFailProbe(time.Duration(cfg.Retry.FastFailProbeMinutes) * time.Minute)
-	_ = stopProbe
+	// 停止上一次构建启动的探针后替换。buildServeMux 在启动与每次热重载都会执行，
+	// 若不停止旧探针，每次 reload 都会泄漏一个 ticker goroutine。
+	state.mu.Lock()
+	if state.stopProbe != nil {
+		state.stopProbe()
+	}
+	state.stopProbe = stopProbe
+	state.mu.Unlock()
 	tz := proxy.NewTokenizer()
 	pxHandler.SetTokenizer(tz)
 	if dl, derr := storeInst.ListDiscounts(); derr == nil {
@@ -642,11 +692,18 @@ func buildServeMux(cfg *config.Config, rt *router.Router, hc *health.Checker, re
 	// 归属路由基于创建时落库的 video_jobs 记录，无需配额检查）
 	mux.HandleFunc("GET /v1/videos/{id}", apiKeys.Middleware(pxHandler.VideoGetByID))
 
-	return mux
+	return limitRequestBody(mux)
 }
+
+// reloadMu 串行化热重载：管理端改配置与欠费回调都可能触发 reload，
+// 并发重建组件会导致旧 health checker 被双重 Close、新 checker 泄漏。
+var reloadMu sync.Mutex
 
 // reloadConfig 从 DB 重新加载配置并重建所有组件。
 func reloadConfig(storeInst *store.Store, rec *store.Recorder) error {
+	reloadMu.Lock()
+	defer reloadMu.Unlock()
+
 	state.mu.RLock()
 	oldHC := state.hc
 	state.mu.RUnlock()
@@ -793,6 +850,7 @@ func ensureAdminAPIKey(s *store.Store) error {
 	if err := s.SetConfig("admin.api_key", key); err != nil {
 		return err
 	}
-	slog.Info("generated admin api key", "key", key)
+	// 只打印前缀，避免明文管理凭证进入日志/采集系统（完整 key 可在系统设置页查看）。
+	slog.Info("generated admin api key", "key_prefix", key[:8]+"...")
 	return nil
 }

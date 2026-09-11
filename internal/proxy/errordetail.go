@@ -171,7 +171,7 @@ func truncateLogLine(s string, max int) string {
 // （避免 double-read 与丢 body）。适用于 media/video/rerank/embeddings 等
 // 未单独解析响应体的转发端点；chat 主路径已自行读取 body 后直接调用 LogUpstreamErrorDetail。
 func (h *Handler) consumeUpstreamError(resp *http.Response, up *config.Upstream, model, upstreamModel string, reqBody []byte) {
-	respBody, _ := io.ReadAll(resp.Body)
+	respBody, _ := readUpstreamBody(resp.Body)
 	resp.Body = io.NopCloser(bytes.NewReader(respBody))
 	LogUpstreamErrorDetail(h.log, up, model, upstreamModel, resp.StatusCode, reqBody, respBody)
 }

@@ -17,6 +17,7 @@ import (
 
 	"github.com/icefairy/xuanji/internal/config"
 	"github.com/icefairy/xuanji/internal/health"
+	"github.com/icefairy/xuanji/internal/httputil"
 	"github.com/icefairy/xuanji/internal/router"
 	"github.com/icefairy/xuanji/internal/store"
 )
@@ -224,14 +225,14 @@ func (h *Handler) passthrough(w http.ResponseWriter, r *http.Request, up *config
 
 	resp, err := h.client.Do(req)
 	if err != nil {
-		writeOllamaError(w, http.StatusBadGateway, "upstream request failed: "+err.Error())
+		writeOllamaError(w, http.StatusBadGateway, httputil.UpstreamErrorMessage(err))
 		return 0, false, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
 		msg := ""
-		if data, rerr := io.ReadAll(resp.Body); rerr == nil {
+		if data, rerr := httputil.ReadBody(resp.Body); rerr == nil {
 			var e struct {
 				Error string `json:"error"`
 			}
@@ -376,7 +377,7 @@ func (h *Handler) openAIForward(w http.ResponseWriter, r *http.Request, kind str
 
 	if resp.StatusCode >= 400 {
 		msg := ""
-		if data, rerr := io.ReadAll(resp.Body); rerr == nil {
+		if data, rerr := httputil.ReadBody(resp.Body); rerr == nil {
 			var e struct {
 				Error string `json:"error"`
 			}
@@ -403,7 +404,7 @@ func (h *Handler) openAIForward(w http.ResponseWriter, r *http.Request, kind str
 				h.log.Debug("ollama chat stream convert", "error", err)
 			}
 		} else {
-			data, rerr := io.ReadAll(resp.Body)
+			data, rerr := httputil.ReadBody(resp.Body)
 			if rerr != nil {
 				writeOllamaError(w, http.StatusBadGateway, "read upstream response failed")
 				return
@@ -418,7 +419,7 @@ func (h *Handler) openAIForward(w http.ResponseWriter, r *http.Request, kind str
 			_, _ = w.Write(out)
 		}
 	case "embed":
-		data, rerr := io.ReadAll(resp.Body)
+		data, rerr := httputil.ReadBody(resp.Body)
 		if rerr != nil {
 			writeOllamaError(w, http.StatusBadGateway, "read upstream response failed")
 			return

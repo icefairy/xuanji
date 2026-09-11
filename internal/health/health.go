@@ -123,6 +123,10 @@ type Checker struct {
 
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
+
+	// lifecycleMu 保护 Start/Close 对 cancel 的读写，使 Close 可并发/重复安全调用
+	// （热重载与管理端关闭可能同时触发 Close）。
+	lifecycleMu sync.Mutex
 }
 
 // SetProbeRecorder 注入探测结果记录器（应在 Start 之前调用）。
@@ -163,15 +167,19 @@ func New(cfg *config.Config) *Checker {
 // Start 启动对每个上游的定时健康检查。dead 的上游以 interval/2 的间隔探测。
 func (c *Checker) Start() {
 	ctx, cancel := context.WithCancel(context.Background())
+	c.lifecycleMu.Lock()
 	c.cancel = cancel
+	c.lifecycleMu.Unlock()
 	for _, st := range c.states {
 		c.wg.Add(1)
 		go c.loop(ctx, st)
 	}
 }
 
-// Close 停止所有健康检查并等待 goroutine 退出。可安全重复调用。
+// Close 停止所有健康检查并等待 goroutine 退出。可安全重复/并发调用。
 func (c *Checker) Close() {
+	c.lifecycleMu.Lock()
+	defer c.lifecycleMu.Unlock()
 	if c.cancel == nil {
 		return
 	}
