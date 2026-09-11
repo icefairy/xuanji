@@ -206,6 +206,11 @@ func Open(path string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
+	// SQLite 单写者：限制连接池上限，避免无界增长占用内存，并降低高并发下
+	// 锁竞争放大；WAL + busy_timeout(5000) 已能在写冲突时排队重试，不会因连接
+	// 并发而频繁返回 SQLITE_BUSY。
+	db.SetMaxOpenConns(8)
+	db.SetMaxIdleConns(4)
 	s := &Store{db: db, path: path}
 	if err := s.init(); err != nil {
 		db.Close()
@@ -429,6 +434,9 @@ func (s *Store) init() error {
 	// 迁移：request_log 加 api_key 列（按下游 Key 统计）
 	s.db.Exec("ALTER TABLE request_log ADD COLUMN api_key TEXT NOT NULL DEFAULT ''")
 	s.db.Exec("CREATE INDEX IF NOT EXISTS idx_request_log_apikey ON request_log(api_key)")
+	// 配额窗口检查热路径复合索引（api_key 列已存在）：WindowTokenSum/WindowTokenEntries
+	// 按 (api_key, ts) 过滤，避免对 request_log 全表聚合。
+	s.db.Exec("CREATE INDEX IF NOT EXISTS idx_request_log_key_ts ON request_log(api_key, ts)")
 	// 迁移：request_log 加上游真实模型名列（计费按上游真实名查价）
 	s.db.Exec("ALTER TABLE request_log ADD COLUMN upstream_model TEXT NOT NULL DEFAULT ''")
 	// 迁移：request_log 加 cost 列（本次请求费用，元）
@@ -461,6 +469,8 @@ func (s *Store) init() error {
 	// 超长会话内存缓存淘汰/重启丢失后无法从 DB 恢复，DeepSeek thinking 模式
 	// 回传校验 400（reasoning_content must be passed back）。
 	migrateReasoningCacheSchema(s.db)
+	// prune 按 created_at 范围删除，建索引避免全表扫描。
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_reasoning_cache_created_at ON reasoning_cache(created_at)`)
 
 	// model_token_limits 表：从上游 400 错误自动学习的模型 token 上限（按 上游+真实模型 唯一）。
 	// 目的：客户端 agent 按模型窗口自动填 max_tokens / max_completion_tokens 超大值时上游报
@@ -725,7 +735,7 @@ func (s *Store) PruneReasoningCache(retainDays int) (int64, error) {
 	if retainDays <= 0 {
 		return 0, nil
 	}
-	cutoff := time.Now().UTC().AddDate(0, 0, -retainDays).Format(time.RFC3339)
+	cutoff := time.Now().UTC().AddDate(0, 0, -retainDays).Format("2006-01-02 15:04:05")
 	res, err := s.db.Exec(`DELETE FROM reasoning_cache WHERE created_at < ?`, cutoff)
 	if err != nil {
 		return 0, err
@@ -2258,15 +2268,23 @@ func (s *Store) UpdateGroup(id uint, name, allowedModels, remark string) error {
 }
 
 // DeleteGroup 删除组（组内 key 的 group_id 置 0，不删 key）。
+// 三步写操作放进同一事务，避免中途失败留下孤儿配额/指向已删组的 key。
 func (s *Store) DeleteGroup(id uint) error {
-	if _, err := s.db.Exec(`DELETE FROM group_model_quota WHERE group_id = ?`, id); err != nil {
+	tx, err := s.db.Begin()
+	if err != nil {
 		return err
 	}
-	if _, err := s.db.Exec(`UPDATE api_tokens SET group_id = 0 WHERE group_id = ?`, id); err != nil {
+	defer tx.Rollback()
+	if _, err := tx.Exec(`DELETE FROM group_model_quota WHERE group_id = ?`, id); err != nil {
 		return err
 	}
-	_, err := s.db.Exec(`DELETE FROM groups WHERE id = ?`, id)
-	return err
+	if _, err := tx.Exec(`UPDATE api_tokens SET group_id = 0 WHERE group_id = ?`, id); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM groups WHERE id = ?`, id); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // ListGroupQuotas 列出某组的所有模型配额行。

@@ -16,6 +16,7 @@ import (
 
 	"github.com/icefairy/xuanji/internal/config"
 	"github.com/icefairy/xuanji/internal/health"
+	"github.com/icefairy/xuanji/internal/httputil"
 	"github.com/icefairy/xuanji/internal/proxy"
 	"github.com/icefairy/xuanji/internal/router"
 	"github.com/icefairy/xuanji/internal/store"
@@ -217,7 +218,7 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, claudeReq 
 	resp, err := h.client.Do(req)
 	if err != nil {
 		if last {
-			writeClaudeError(w, http.StatusBadGateway, "upstream request failed: "+err.Error())
+			writeClaudeError(w, http.StatusBadGateway, httputil.UpstreamErrorMessage(err))
 			return true, false, nil, 0, 0
 		}
 		return false, true, fmt.Errorf("upstream request failed: %w", err), 0, 0
@@ -231,7 +232,7 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, claudeReq 
 		return true, false, nil, 0, 0
 	case resp.StatusCode >= 500 || resp.StatusCode == http.StatusTooManyRequests:
 		if last {
-			respBody, rerr := io.ReadAll(resp.Body)
+			respBody, rerr := httputil.ReadBody(resp.Body)
 			if rerr == nil {
 				resp.Body = io.NopCloser(bytes.NewReader(respBody))
 				proxy.LogUpstreamErrorDetail(h.log, up, model, upModel, resp.StatusCode, reqBody, respBody)
@@ -243,7 +244,7 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, claudeReq 
 		return false, true, fmt.Errorf("upstream error: %s", resp.Status), 0, 0
 	case resp.StatusCode >= 400:
 		// 打精简错误日志（请求摘要 + 上游响应，messages 过长自动裁剪、图片打码）
-		respBody, rerr := io.ReadAll(resp.Body)
+		respBody, rerr := httputil.ReadBody(resp.Body)
 		if rerr == nil {
 			resp.Body = io.NopCloser(bytes.NewReader(respBody))
 			proxy.LogUpstreamErrorDetail(h.log, up, model, upModel, resp.StatusCode, reqBody, respBody)
@@ -252,7 +253,7 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, claudeReq 
 		return true, false, nil, 0, 0
 	default:
 		// 非流式：OpenAI 响应 → Anthropic 响应
-		data, rerr := io.ReadAll(resp.Body)
+		data, rerr := httputil.ReadBody(resp.Body)
 		if rerr != nil {
 			writeClaudeError(w, http.StatusBadGateway, "failed to read upstream response")
 			return true, false, nil, 0, 0
@@ -286,7 +287,7 @@ func (h *Handler) streamConvert(w http.ResponseWriter, resp *http.Response) {
 // writeUpstreamClaudeError 把上游错误响应转为 Anthropic 错误格式。
 func (h *Handler) writeUpstreamClaudeError(w http.ResponseWriter, resp *http.Response) {
 	message := ""
-	if data, err := io.ReadAll(resp.Body); err == nil {
+	if data, err := httputil.ReadBody(resp.Body); err == nil {
 		var openAIErr struct {
 			Error struct {
 				Message string `json:"message"`

@@ -59,7 +59,7 @@ func (h *Handler) VideoCreate(w http.ResponseWriter, r *http.Request) {
 	candidates := h.selectCandidates(upstreams, strategy, model)
 	for i, up := range candidates {
 		handled, retryable, ferr := h.forwardVideoJSON(rec, r, r.Context(), body, up, model, "videos", i == len(candidates)-1)
-		if ferr != nil && h.health != nil {
+		if h.shouldMarkUpstreamFailure(handled, ferr) {
 			h.health.MarkFailure(up.Name)
 		}
 		if handled {
@@ -177,7 +177,7 @@ func (h *Handler) videoQueryByID(w http.ResponseWriter, r *http.Request, videoID
 
 	for i, up := range cands {
 		handled, retryable, ferr := h.forwardVideoQuery(rec, r, videoID, modelName, up, model, "videos", i == len(cands)-1)
-		if ferr != nil && h.health != nil {
+		if h.shouldMarkUpstreamFailure(handled, ferr) {
 			h.health.MarkFailure(up.Name)
 		}
 		if handled {
@@ -233,7 +233,7 @@ func (h *Handler) forwardVideoJSON(w http.ResponseWriter, r *http.Request, ctx c
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, target, bytes.NewReader(reqBody))
 	if err != nil {
 		if last {
-			writeError(w, http.StatusInternalServerError, "failed to build upstream request: "+err.Error(), "server_error", "")
+			writeError(w, http.StatusInternalServerError, "failed to build upstream request", "server_error", "")
 			return true, false, nil
 		}
 		return false, true, fmt.Errorf("build upstream request: %w", err)
@@ -244,7 +244,7 @@ func (h *Handler) forwardVideoJSON(w http.ResponseWriter, r *http.Request, ctx c
 	resp, err := h.client.Do(req)
 	if err != nil {
 		if last {
-			writeError(w, http.StatusBadGateway, "upstream request failed: "+err.Error(), "server_error", "upstream_unreachable")
+			writeError(w, http.StatusBadGateway, upstreamErrorMessage(err), "server_error", "upstream_unreachable")
 			return true, false, nil
 		}
 		return false, true, fmt.Errorf("upstream request failed: %w", err)
@@ -267,7 +267,7 @@ func (h *Handler) forwardVideoJSON(w http.ResponseWriter, r *http.Request, ctx c
 	default:
 		// 读出成功响应体提取 video_id 落库归属后写回客户端：
 		// 任务 JSON 很小（KB 级），先读全量无压力。
-		respBody, rerr := io.ReadAll(resp.Body)
+		respBody, rerr := readUpstreamBody(resp.Body)
 		if rerr != nil {
 			writeError(w, http.StatusBadGateway, "failed to read upstream response: "+rerr.Error(), "server_error", "upstream_unreachable")
 			return true, false, nil
@@ -332,7 +332,7 @@ func (h *Handler) forwardVideoQuery(w http.ResponseWriter, r *http.Request, vide
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, target, nil)
 	if err != nil {
 		if last {
-			writeError(w, http.StatusInternalServerError, "failed to build upstream request: "+err.Error(), "server_error", "")
+			writeError(w, http.StatusInternalServerError, "failed to build upstream request", "server_error", "")
 			return true, false, nil
 		}
 		return false, true, fmt.Errorf("build upstream request: %w", err)
@@ -342,7 +342,7 @@ func (h *Handler) forwardVideoQuery(w http.ResponseWriter, r *http.Request, vide
 	resp, err := h.client.Do(req)
 	if err != nil {
 		if last {
-			writeError(w, http.StatusBadGateway, "upstream request failed: "+err.Error(), "server_error", "upstream_unreachable")
+			writeError(w, http.StatusBadGateway, upstreamErrorMessage(err), "server_error", "upstream_unreachable")
 			return true, false, nil
 		}
 		return false, true, fmt.Errorf("upstream request failed: %w", err)

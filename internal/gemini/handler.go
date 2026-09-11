@@ -16,6 +16,7 @@ import (
 
 	"github.com/icefairy/xuanji/internal/config"
 	"github.com/icefairy/xuanji/internal/health"
+	"github.com/icefairy/xuanji/internal/httputil"
 	"github.com/icefairy/xuanji/internal/proxy"
 	"github.com/icefairy/xuanji/internal/router"
 	"github.com/icefairy/xuanji/internal/store"
@@ -219,7 +220,7 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 	resp, derr := h.client.Do(req)
 	if derr != nil {
 		if last {
-			writeOpenAIError(w, http.StatusBadGateway, "upstream request failed: "+derr.Error())
+			writeOpenAIError(w, http.StatusBadGateway, httputil.UpstreamErrorMessage(derr))
 			return true, false, nil
 		}
 		return false, true, fmt.Errorf("upstream request failed: %w", derr)
@@ -233,7 +234,7 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 		return true, false, nil
 	case resp.StatusCode >= 500 || resp.StatusCode == http.StatusTooManyRequests:
 		if last {
-			respBody, rerr := io.ReadAll(resp.Body)
+			respBody, rerr := httputil.ReadBody(resp.Body)
 			if rerr == nil {
 				resp.Body = io.NopCloser(bytes.NewReader(respBody))
 				proxy.LogUpstreamErrorDetail(h.log, up, model, upModel, resp.StatusCode, reqBody, respBody)
@@ -245,7 +246,7 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 		return false, true, fmt.Errorf("upstream error: %s", resp.Status)
 	case resp.StatusCode >= 400:
 		// 打精简错误日志（请求摘要 + 上游响应，messages 过长自动裁剪、图片打码）
-		respBody, rerr := io.ReadAll(resp.Body)
+		respBody, rerr := httputil.ReadBody(resp.Body)
 		if rerr == nil {
 			resp.Body = io.NopCloser(bytes.NewReader(respBody))
 			proxy.LogUpstreamErrorDetail(h.log, up, model, upModel, resp.StatusCode, reqBody, respBody)
@@ -254,7 +255,7 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 		return true, false, nil
 	default:
 		// 非流式：Gemini 响应 → OpenAI 响应
-		data, rerr := io.ReadAll(resp.Body)
+		data, rerr := httputil.ReadBody(resp.Body)
 		if rerr != nil {
 			writeOpenAIError(w, http.StatusBadGateway, "failed to read upstream response")
 			return true, false, nil
@@ -287,7 +288,7 @@ func (h *Handler) streamConvert(w http.ResponseWriter, resp *http.Response) {
 func (h *Handler) writeUpstreamOpenAIError(w http.ResponseWriter, resp *http.Response) {
 	message := ""
 	status := "INTERNAL"
-	if data, err := io.ReadAll(resp.Body); err == nil {
+	if data, err := httputil.ReadBody(resp.Body); err == nil {
 		var gErr GeminiError
 		if json.Unmarshal(data, &gErr) == nil && gErr.Error.Message != "" {
 			message = gErr.Error.Message

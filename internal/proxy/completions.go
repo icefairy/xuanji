@@ -259,7 +259,7 @@ func (h *Handler) forwardCompletion(w http.ResponseWriter, r *http.Request, body
 	if h.fastFail != nil {
 		h.fastFail.MarkSuccess(up.Name, upstreamModel)
 	}
-	respBody, rerr := io.ReadAll(resp.Body)
+	respBody, rerr := readUpstreamBody(resp.Body)
 	if rerr != nil {
 		h.log.Debug("read completions upstream body", "error", rerr)
 	}

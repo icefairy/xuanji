@@ -20,6 +20,7 @@ import (
 
 	"github.com/icefairy/xuanji/internal/config"
 	"github.com/icefairy/xuanji/internal/health"
+	"github.com/icefairy/xuanji/internal/httputil"
 	"github.com/icefairy/xuanji/internal/router"
 	"github.com/icefairy/xuanji/internal/store"
 	"github.com/tidwall/gjson"
@@ -28,6 +29,15 @@ import (
 
 // upstreamTimeout 是上游连接与（非流式）整体请求的超时时间。
 const upstreamTimeout = 60 * time.Second
+
+// maxUpstreamBodyBytes 是网关读取单个上游响应体的上限（64MB），见 httputil.MaxBodyBytes。
+const maxUpstreamBodyBytes = httputil.MaxBodyBytes
+
+// readUpstreamBody 读书上游响应体并施加上限（实现见 httputil.ReadBody）。
+// 超过上限时返回已读到的前缀 + 错误，调用方应视为上游失败，而非把残缺 body 当成功透传。
+func readUpstreamBody(r io.Reader) ([]byte, error) {
+	return httputil.ReadBody(r)
+}
 
 // upstreamTimeoutFor 返回可配置的上游超时（retry.upstream_timeout 秒），未配置时回退 60s。
 func upstreamTimeoutFor(cfg *config.Config) time.Duration {
@@ -566,6 +576,25 @@ func isClientCanceled(err error) bool {
 	return err != nil && errors.Is(err, context.Canceled)
 }
 
+// shouldMarkUpstreamFailure 判断一次候选失败是否应记入上游健康失败（media/video 复用）。
+// 与 ChatCompletions 主循环保持一致：仅当响应未写出（handled=false）、非 429 限流、
+// 非客户端断连时才计入。避免一次客户端断连或普通限流把健康上游误拉黑。
+func (h *Handler) shouldMarkUpstreamFailure(handled bool, ferr error) bool {
+	if ferr == nil || handled || h.health == nil {
+		return false
+	}
+	msg := ferr.Error()
+	if strings.Contains(msg, "429") || strings.Contains(msg, "rate limited") {
+		return false
+	}
+	return !isClientCanceled(ferr)
+}
+
+// upstreamErrorMessage 生成可安全返回给客户端的上游错误摘要（实现见 httputil）。
+func upstreamErrorMessage(err error) string {
+	return httputil.UpstreamErrorMessage(err)
+}
+
 // isConnIssue 判断错误是否为连接类错误（网络不可达/超时/连接拒绝）。
 // 客户端主动断连（context.Canceled）不算：它是本地取消而非网络故障。
 // 修复前 *url.Error（实现 net.Error 接口）包装的 context.Canceled 会被 errors.As 误命中，
@@ -789,6 +818,8 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 	// 流式转发期间客户端提前断开（streamCopy 写响应失败）：日志状态记为 499，
 	// 避免"中断"被误记为 200 污染统计（客户端实际收到 200 头后断流）。
 	var streamInterrupted bool
+	// 上游流读取异常（截断）：日志状态记为 502（响应已发出无法改状态码）。
+	var streamErr error
 	// TTFT（Time To First Token）：首个 data chunk 到达时间 - 请求开始时间
 	var ttftMS int64
 	// 思考 token 数（DeepSeek R1 等模型的 thinking_tokens）
@@ -814,6 +845,13 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 		}
 		if streamInterrupted && status >= 200 && status < 400 {
 			status = 499
+		}
+		// 上游流读取异常（截断）：响应已发 200，但按上游失败记 502，不计入成功。
+		if streamErr != nil && status >= 200 && status < 400 {
+			status = http.StatusBadGateway
+			if errorDetail == "" {
+				errorDetail = "upstream stream read error: " + streamErr.Error()
+			}
 		}
 		cost := 0.0
 		if status >= 200 && status < 400 && (promptTokens > 0 || completionTokens > 0) {
@@ -947,7 +985,8 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, target, bytes.NewReader(reqBody))
 	if err != nil {
 		if last {
-			writeError(w, http.StatusInternalServerError, "failed to build upstream request: "+err.Error(), "server_error", "")
+			h.log.Warn("build upstream request failed", "upstream", up.Name, "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to build upstream request", "server_error", "")
 			return true, false, nil, 0, 0, 0, 0
 		}
 		if h.fastFail != nil {
@@ -962,7 +1001,8 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 	resp, err := h.client.Do(req)
 	if err != nil {
 		if last {
-			writeError(w, http.StatusBadGateway, "upstream request failed: "+err.Error(), "server_error", "upstream_unreachable")
+			h.log.Warn("upstream request failed", "upstream", up.Name, "error", err)
+			writeError(w, http.StatusBadGateway, upstreamErrorMessage(err), "server_error", "upstream_unreachable")
 			return true, false, nil, 0, 0, 0, 0
 		}
 		// 客户端断连（context.Canceled）不算上游故障，不标记 fastfail——
@@ -982,12 +1022,12 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 		if h.fastFail != nil {
 			h.fastFail.MarkSuccess(up.Name, upstreamModel)
 		}
-		streamInterrupted, ttftMS = h.streamCopy(w, resp, &promptTokens, &completionTokens, &promptCacheHitTokens, &promptCacheMissTokens, start, &thinkingTokens, &thinkingEmbedded)
+		streamInterrupted, ttftMS, streamErr = h.streamCopy(w, resp, &promptTokens, &completionTokens, &promptCacheHitTokens, &promptCacheMissTokens, start, &thinkingTokens, &thinkingEmbedded)
 		normalizeThinking(&thinkingEmbedded, &thinkingTokens, &completionTokens, &billingCompletion)
 		return true, false, nil, promptTokens, completionTokens, promptCacheHitTokens, promptCacheMissTokens
 	case resp.StatusCode >= 400:
 		// 读响应体用于关键词匹配
-		respBody, _ := io.ReadAll(resp.Body)
+		respBody, _ := readUpstreamBody(resp.Body)
 		// 判断是否应重试：5xx 一律可重试（retryableStatus），4xx 按配置白名单
 		shouldRetry := h.retryableStatus(resp.StatusCode)
 		// 关键词匹配：状态码不在 retry_statuses 中但响应体含关键词
@@ -1043,13 +1083,22 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 		h.writeUpstreamError(w, resp)
 		return true, false, fmt.Errorf("upstream error: %s", resp.Status), 0, 0, 0, 0
 	default:
+		// 先读响应体（施加上限）：读失败/超限不能当成功透传，否则客户端会收到
+		// 200 + 残缺 body（此前仅 Debug 记日志后继续写 200）。
+		respBody, rerr := readUpstreamBody(resp.Body)
+		if rerr != nil {
+			h.log.Warn("read upstream body failed", "upstream", up.Name, "error", rerr)
+			if !isClientCanceled(rerr) && h.fastFail != nil {
+				h.fastFail.MarkFailedWithReason(up.Name, upstreamModel, "read body: "+rerr.Error())
+			}
+			if last {
+				writeError(w, http.StatusBadGateway, "failed to read upstream response", "server_error", "upstream_error")
+				return true, false, fmt.Errorf("read upstream body: %w", rerr), 0, 0, 0, 0
+			}
+			return false, true, fmt.Errorf("read upstream body: %w", rerr), 0, 0, 0, 0
+		}
 		if h.fastFail != nil {
 			h.fastFail.MarkSuccess(up.Name, upstreamModel)
-		}
-		// 读取响应体用于 usage 解析，再整体透传
-		respBody, rerr := io.ReadAll(resp.Body)
-		if rerr != nil {
-			h.log.Debug("read upstream body", "error", rerr)
 		}
 		// 空内容完成（思考型 max_tokens 不足被截断，content 空 + finish_reason=length）：
 		// HTTP 200 但响应无效，非最后候选时切换下一个
@@ -1253,8 +1302,10 @@ func extractMessages(body []byte) []map[string]string {
 // 处理 "usage":null 的中间 chunk（Exists() 对 null 也返回 true，需 IsObject() 过滤）。
 // 返回 interrupted：客户端在流结束前断开（写响应失败），调用方应把日志状态记为 499
 // （Nginx 语义 client closed request），避免把"中断"误记为 200 污染统计。
+// 返回 readErr：上游流读取异常（单行超 1MB 的 bufio.ErrTooLong、连接中断等）。
+// 响应头已发出无法改状态码，但调用方应把日志状态记为 502，避免把截断的流当成功。
 // 返回 ttftMS：首 token 时间（第一个 data chunk 到达时间 - 调用方传入的 start），0 表示非流式或无数据。
-func (h *Handler) streamCopy(w http.ResponseWriter, resp *http.Response, promptTokens, completionTokens, promptCacheHit, promptCacheMiss *int64, start time.Time, thinkingTokens *int64, thinkingEmbedded *bool) (interrupted bool, ttftMS int64) {
+func (h *Handler) streamCopy(w http.ResponseWriter, resp *http.Response, promptTokens, completionTokens, promptCacheHit, promptCacheMiss *int64, start time.Time, thinkingTokens *int64, thinkingEmbedded *bool) (interrupted bool, ttftMS int64, readErr error) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
@@ -1272,7 +1323,7 @@ func (h *Handler) streamCopy(w http.ResponseWriter, resp *http.Response, promptT
 	for scanner.Scan() {
 		line := scanner.Text()
 		if _, werr := w.Write([]byte(line + "\n")); werr != nil {
-			return true, ttftMS
+			return true, ttftMS, nil
 		}
 		// 记录 TTFT：第一个 data: 行到达的时间
 		if firstChunk && strings.HasPrefix(line, "data: ") {
@@ -1335,6 +1386,12 @@ func (h *Handler) streamCopy(w http.ResponseWriter, resp *http.Response, promptT
 			}
 		}
 	}
+	// 上游流读取异常：单行超 1MB（bufio.ErrTooLong）、连接中断等。响应已开始无法改
+	// 状态码，但必须显式返回错误让调用方记为 502，避免截断的流被当作正常结束。
+	streamErr := scanner.Err()
+	if streamErr != nil {
+		h.log.Warn("upstream stream read error", "error", streamErr, "ttft_ms", ttftMS)
+	}
 	// 流可能没有 [DONE]（客户端中断/上游异常关闭）：EOF 时同样补写最终累积的 reasoning
 	// （PutAll 含空串语义，同 [DONE]）
 	if cacheEnabled {
@@ -1345,13 +1402,13 @@ func (h *Handler) streamCopy(w http.ResponseWriter, resp *http.Response, promptT
 			h.reasoning.PutFingerprint(contentBuf.String(), reasoningBuf.String())
 		}
 	}
-	return false, ttftMS
+	return false, ttftMS, streamErr
 }
 
 // writeUpstreamError 把上游的 4xx/5xx 响应映射为 OpenAI 标准错误格式。
 func (h *Handler) writeUpstreamError(w http.ResponseWriter, resp *http.Response) {
 	message := ""
-	if data, err := io.ReadAll(resp.Body); err == nil {
+	if data, err := readUpstreamBody(resp.Body); err == nil {
 		message = gjson.GetBytes(data, "error.message").String()
 	}
 	if message == "" {
