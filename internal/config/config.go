@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -686,5 +687,29 @@ func UpstreamUserAgent() string {
 func ApplyUpstreamUserAgent(req *http.Request) {
 	if ua := UpstreamUserAgent(); ua != "" {
 		req.Header.Set("User-Agent", ua)
+	}
+}
+
+// NewUpstreamTransport 构造一个直连上游的独立 http.Transport，供健康探测 / 管理端
+// 「测试上游」等旁路请求使用，不复用包级 http.DefaultTransport 的全局连接池。
+//
+// 背景（2026-09-12 生产实例）：8 个 agnes 上游 BaseURL 相同，健康检查与测试接口此前
+// 共用 http.Client{}（→ http.DefaultTransport），同 host 连接池里一条被网络静默黑洞的
+// 连接（无 FIN/RST，TCP 重传成倍退避，实测 bytes_retrans 17KB / cwnd=1 / recv-q 持续
+// 积压）会被同一轮的全部探测复用，导致 8 个上游在同一秒锁步超时判 dead（日志实测
+// 11:17~11:30 每轮都是 8 条同时失败），恢复也在同一秒——而真实对话转发走自定义
+// Transport 从未受影响。
+//
+// 两道防线：
+//   - DisableKeepAlives：每次请求新建连接，彻底消除「复用到已死空闲连接」的可能。
+//     旁路请求频率低（健康探测 120s 一轮、测试为人工触发），握手开销可忽略。
+//   - 自定义 DialContext：net/http 会因此自动禁用 HTTP/2（实测降级 HTTP/1.1），
+//     避免多路复用连接被单点黑洞时同时拖垮多个在途请求。
+func NewUpstreamTransport() *http.Transport {
+	return &http.Transport{
+		DialContext:         (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		TLSHandshakeTimeout: 10 * time.Second,
+		DisableKeepAlives:   true,
+		MaxIdleConnsPerHost: 1,
 	}
 }

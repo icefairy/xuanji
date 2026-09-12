@@ -3,7 +3,6 @@ package router
 
 import (
 	"errors"
-	"math/rand"
 	"strings"
 
 	"github.com/icefairy/xuanji/internal/config"
@@ -77,15 +76,18 @@ func (r *Router) FindRule(model string) *config.Rule {
 // MapModel 对 model 应用 upstream 的 model_mapping，返回上游真实模型名；
 // 无映射或上游为 nil 时原样返回。
 //
-// 一对多映射：模型映射值用竖线 | 分隔多个真实模型名，随机选一个（零侵入改动）。
-// 例：{"deepseek-v4-flash": "sensenova-6.7-flash-lite|deepseek-v4-flash"}
+// 一对多映射：模型映射值用竖线 | 分隔多个真实模型名，按书写顺序取第一个
+// （前一个配额用完了才用后一个，全局通用语义）。
+// 例：{"deepseek-v4-flash": "deepseek-v4.1-flash|deepseek-v4-flash"}
+// 注：真正转发路径走 proxy.pickAvailableModel（会跳过 fastfail 黑名单），
+// 本函数用于非重试链路与降级 fallback。
 func (r *Router) MapModel(upstream *config.Upstream, model string) string {
 	if upstream == nil {
 		return model
 	}
 	if mapped, ok := upstream.ModelMapping[model]; ok {
 		if parts := strings.Split(mapped, "|"); len(parts) > 1 {
-			return parts[rand.Intn(len(parts))]
+			return parts[0]
 		}
 		return mapped
 	}

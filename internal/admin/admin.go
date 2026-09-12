@@ -77,6 +77,13 @@ func upstreamTestTimeoutFor(up *config.Upstream, cfg *config.Config) time.Durati
 	return 30 * time.Second
 }
 
+// upstreamTestClient 返回管理端测试/拉取模型用的直连 HTTP 客户端。
+// 独立 Transport：不共享 http.DefaultTransport 全局连接池（见 config.NewUpstreamTransport
+// 注释：同 host 的 keepalive 死连接会让所有共享池的上游一起超时）。
+func upstreamTestClient(timeout time.Duration) *http.Client {
+	return &http.Client{Timeout: timeout, Transport: config.NewUpstreamTransport()}
+}
+
 // New 基于配置与健康检查器构建管理 Handler。start 记录服务启动时刻，
 // 供 /admin/status 计算 uptime。
 func New(cfg *config.Config, hc *health.Checker) *Handler {
