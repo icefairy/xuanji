@@ -406,3 +406,82 @@ func TestChatCompletions_ClientErrorNotMarkFailure(t *testing.T) {
 		t.Errorf("upstream hits = %d, want 1", upHits.Load())
 	}
 }
+
+// TestChatCompletions_UpstreamModelNotFoundNotMarkFailure 验证上游报「模型名不存在」
+// （400 invalid model: model name not found）时不计入上游健康失败。
+//
+// 背景（2026-09-12 日志实测）：路由规则把 glm-5.3 指向 wechat，但 wechat 只声明支持
+// deepseek 系模型 → 客户端每次请求 glm-5.3 都收到 400 invalid model。400 在
+// retry_statuses 白名单内（可重试），forwardOnce 走可重试分支无条件标记上游失败，
+// ChatCompletions 循环又 MarkFailure → wechat 被拉到 state=dead fails=30
+// （当天 150 次 mark_failed），而同一天 wechat 健康探测 704 次全部 healthy
+// ——上游本身完全正常，只是合法拒绝了它不提供的模型。
+//
+// 修复：客户端请求本身的问题（模型名不存在/输入超长）识别为 client request error，
+// 不计入上游健康失败（health 保持 healthy）。
+func TestChatCompletions_UpstreamModelNotFoundNotMarkFailure(t *testing.T) {
+	var upHits atomic.Int32
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upHits.Add(1)
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprint(w, `{"error":{"message":"invalid model: model name not found","code":400}}`)
+	}))
+	defer up.Close()
+
+	cfg := &config.Config{
+		Upstreams: []config.Upstream{
+			{Name: "up-model-miss", BaseURL: up.URL, APIKey: "x", Priority: 10, Weight: 100},
+		},
+		Routing: config.Routing{
+			DefaultStrategy: "primary_backup",
+			Rules:           []config.Rule{{Model: "m", Upstreams: []string{"up-model-miss"}, Strategy: "primary_backup"}},
+		},
+		// 400 在重试白名单内（与线上 retry_statuses 一致）：走可重试分支
+		Retry: config.Retry{MaxRetries: 1, RetryStatuses: []int{400, 429, 500, 502, 503, 504}},
+	}
+	hc := health.New(cfg)
+	defer hc.Close()
+	h := New(cfg, router.New(cfg), hc)
+
+	rec := doChat(t, h, `{"model":"m","messages":[{"role":"user","content":"hi"}]}`)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502 (all candidates failed); body=%s", rec.Code, rec.Body.String())
+	}
+	if st := hc.Status("up-model-miss"); st != health.StateHealthy {
+		t.Errorf("health status = %q, want healthy (400 invalid model 是客户端模型名问题，不是上游故障)", st)
+	}
+	if n := upHits.Load(); n != 1 {
+		t.Errorf("upstream hits = %d, want 1", n)
+	}
+}
+
+// TestChatCompletions_InputTooLongNotMarkFailure 验证上游报「输入超长」
+// （400 The input (N tokens) is longer than the model's context length (M tokens)）
+// 时同样不计入上游健康失败——该错误 2026-09-04 起持续出现，属客户端输入问题，
+// 网关透传设计（tokenlimit 只 clamp completion 数值），但不应把上游打成 degraded/dead。
+func TestChatCompletions_InputTooLongNotMarkFailure(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprint(w, `{"object":"error","message":"The input (277702 tokens) is longer than the model's context length (262144 tokens).","type":"BadRequestError","code":400}`)
+	}))
+	defer up.Close()
+
+	cfg := &config.Config{
+		Upstreams: []config.Upstream{
+			{Name: "up-too-long", BaseURL: up.URL, APIKey: "x", Priority: 10, Weight: 100},
+		},
+		Routing: config.Routing{
+			DefaultStrategy: "primary_backup",
+			Rules:           []config.Rule{{Model: "m", Upstreams: []string{"up-too-long"}, Strategy: "primary_backup"}},
+		},
+		Retry: config.Retry{MaxRetries: 1, RetryStatuses: []int{400, 429, 500, 502, 503, 504}},
+	}
+	hc := health.New(cfg)
+	defer hc.Close()
+	h := New(cfg, router.New(cfg), hc)
+
+	doChat(t, h, `{"model":"m","messages":[{"role":"user","content":"hi"}]}`)
+	if st := hc.Status("up-too-long"); st != health.StateHealthy {
+		t.Errorf("health status = %q, want healthy (输入超长是客户端问题，不应把上游打成 dead/degraded)", st)
+	}
+}

@@ -384,6 +384,7 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		// 仅当响应未写出（handled=false，即连接错误/重试失败的 5xx/超时）才计入。
 		// 竖线降级哨兵错误（配额用尽换模型）也不算上游故障：上游在线，只是该模型额度耗尽。
 		if ferr != nil && !handled && h.health != nil && !errors.Is(ferr, errOrderedModelExhausted) &&
+			!errors.Is(ferr, errClientRequest) &&
 			!strings.Contains(ferr.Error(), "rate limited") && !isClientCanceled(ferr) {
 			h.health.MarkFailure(up.Name)
 		}
@@ -975,8 +976,16 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 			status = 499
 		}
 		// 上游流读取异常（截断）：响应已发 200，但按上游失败记 502，不计入成功。
+		// 例外：读取错误是 context.Canceled 时说明是客户端主动断连（请求 context 取消
+		// 连带中断上游 body 读取），属 client closed request，按 499 记而非 502——
+		// 否则客户端断连会被当成上游故障污染可用率统计
+		// （2026-09-12 日志实测：16 例 stream read error context canceled 全被记 502）。
 		if streamErr != nil && status >= 200 && status < 400 {
-			status = http.StatusBadGateway
+			if isClientCanceled(streamErr) {
+				status = 499
+			} else {
+				status = http.StatusBadGateway
+			}
 			if errorDetail == "" {
 				errorDetail = "upstream stream read error: " + streamErr.Error()
 			}
@@ -1205,6 +1214,15 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 				h.log.Info("upstream rate limited (429), cooldown instead of fastfail",
 					"upstream", up.Name, "model", upstreamModel)
 				return false, true, fmt.Errorf("upstream rate limited: %s", resp.Status), 0, 0, 0, 0
+			}
+			// 客户端请求本身的问题（模型名不存在/输入超长）：上游只是合法拒绝了该请求，
+			// 上游本身健康——不标 fastfail（否则健康上游被踢出候选 5 分钟以上）。
+			// 仍返回可重试（换一个支持该模型的上游可能成功），但包装哨兵错误让调用方
+			// 跳过 MarkFailure（见 errClientRequest）。
+			if isClientRequestError(resp.StatusCode, respBody) {
+				h.log.Info("upstream rejected client request (not an upstream failure)",
+					"upstream", up.Name, "model", upstreamModel, "status", resp.StatusCode)
+				return false, true, &clientRequestError{fmt.Errorf("upstream error: %s", resp.Status)}, 0, 0, 0, 0
 			}
 			if h.fastFail != nil {
 				h.fastFail.MarkFailedWithReason(up.Name, upstreamModel,
