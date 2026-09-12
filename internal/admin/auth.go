@@ -90,7 +90,7 @@ func (h *Handler) ChangePassword(w http.ResponseWriter, r *http.Request) {
 // JWTSecret 读取或生成 JWT 签名密钥（config 表 admin.jwt_secret）。
 func (h *Handler) JWTSecret() string {
 	if h.store == nil {
-		return "xuanji-default-secret"
+		return generateToken()
 	}
 	v, _ := h.store.GetConfig("admin.jwt_secret")
 	if v != "" {
