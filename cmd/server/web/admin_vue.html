@@ -1528,8 +1528,15 @@
             </tr>
           </thead>
           <tbody>
-            <tr v-for="s in upstreamStats">
-              <td>{{ s.name }}</td>
+            <template v-for="s in upstreamStats">
+            <tr
+              @click="expandUpstream(s.name)"
+              style="cursor: pointer"
+              :title="expandedUpstream === s.name ? '点击收起' : '点击展开该上游各模型的速度明细'"
+            >
+              <td>
+                {{ s.name }}{{ expandedUpstream === s.name ? ' ▼' : ' ▶' }}
+              </td>
               <td>
                 <span
                   class="badge"
@@ -1569,6 +1576,63 @@
               </td>
               <td>{{ fmtMoney(costByUpstream(s.name)) }}</td>
             </tr>
+            <tr v-show="expandedUpstream === s.name">
+              <td colspan="12" style="padding: 12px; background: #fafafa">
+                <div
+                  style="color: #909399; font-size: 12px; margin-bottom: 8px"
+                >
+                  该上游各真实模型明细（{{ metricsRangeLabel }}）：同一上游下不同模型速度差异大，
+                  平均在一起看不出快慢，此处按模型拆分
+                </div>
+                <div v-if="!upstreamModels[s.name]" style="text-align: center">
+                  加载中…
+                </div>
+                <div
+                  v-else-if="upstreamModels[s.name].length === 0"
+                  style="text-align: center"
+                >
+                  该上游暂无模型使用记录
+                </div>
+                <table v-else style="margin: 0">
+                  <thead>
+                    <tr>
+                      <th>模型（上游真实名）</th>
+                      <th>请求数</th>
+                      <th>成功率</th>
+                      <th>Tokens/秒</th>
+                      <th>平均输出</th>
+                      <th>TTFT(ms)</th>
+                      <th>延迟(ms)</th>
+                      <th>Tokens</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="m in upstreamModels[s.name]" :key="m.model">
+                      <td>{{ m.model }}</td>
+                      <td>{{ m.requests }}</td>
+                      <td>
+                        {{ m.requests > 0 ? fmtNum(m.successes/m.requests*100, 1)+'%'
+                        : '-' }}
+                      </td>
+                      <td>
+                        <b>{{ m.tokens_per_sec ? fmtNum(m.tokens_per_sec, 1) : '-' }}</b>
+                      </td>
+                      <td :title="'总输出 ' + (m.output_tokens||0) + ' tokens'">
+                        {{ m.avg_output_tokens ? fmtNum(m.avg_output_tokens, 0) : '-' }}
+                      </td>
+                      <td>{{ m.avg_ttft_ms ? fmtNum(m.avg_ttft_ms, 0) : '-' }}</td>
+                      <td>{{ m.avg_latency_ms ? fmtNum(m.avg_latency_ms, 0) : '-' }}</td>
+                      <td>
+                        <span :title="'精确值: ' + (m.total_tokens || 0)"
+                          >{{ fmtTokens(m.total_tokens) }}</span
+                        >
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </td>
+            </tr>
+            </template>
           </tbody>
         </table>
         <div
@@ -2446,7 +2510,7 @@
         </table>
         <div style="color: #909399; font-size: 12px; margin-top: 4px">
           可编辑项：上游请求超时(秒)、故障冷却(分)、后台探测间隔(分)、最大重试次数、触发重试的
-          HTTP 状态码(逗号分隔)、重试关键词(逗号分隔)。保存后自动热重载生效。
+          HTTP 状态码(逗号分隔)、重试关键词(逗号分隔)、上游告警 Webhook 地址与触发阈值。保存后自动热重载生效。
         </div>
 
         <div
@@ -3333,6 +3397,8 @@
             showLogColsDialog: false,
             summary: {},
             upstreamStats: [],
+            upstreamModels: {}, // 上游名 → 该上游各真实模型明细（懒加载）
+            expandedUpstream: null,
             apiKeyStats: [],
             expandedAPIKey: null,
             apiKeyModels: {},
@@ -3353,6 +3419,8 @@
               "proxy.cooldown_seconds",
               "proxy.cooldown_upstreams",
               "proxy.normalize_developer_role",
+              "alert.webhook_url",
+              "alert.consecutive_fails",
             ],
             showConfigDialog: false,
             configForm: { key: "", value: "" },
@@ -4049,6 +4117,37 @@ curl -sS "$BASE/v1/messages" \\
               return result;
             },
             // 展开/收起指定 API Key 的模型分布饼图
+            // 展开/收起单个上游的「各真实模型」明细行（懒加载 + 缓存）。
+            expandUpstream: function (name) {
+              if (this.expandedUpstream === name) {
+                this.expandedUpstream = null;
+                return;
+              }
+              this.expandedUpstream = name;
+              this.loadUpstreamModels(name, false);
+            },
+            // 加载某上游的各模型统计（force=true 时无视缓存重拉，换时间范围后用）。
+            loadUpstreamModels: function (name, force) {
+              var self = this;
+              if (!force && self.upstreamModels[name]) return;
+              var url =
+                "/admin/metrics/upstream-models?range=" +
+                self.metricsRange +
+                "&upstream=" +
+                encodeURIComponent(name);
+              // 用 XMLHttpRequest 而非 axios：与其他展开行一致，不依赖异步加载的库
+              var xhr = new XMLHttpRequest();
+              xhr.open("GET", url, true);
+              xhr.setRequestHeader("Authorization", "Bearer " + self.token);
+              xhr.responseType = "json";
+              xhr.onload = function () {
+                self.$set(self.upstreamModels, name, xhr.response || []);
+              };
+              xhr.onerror = function () {
+                self.$set(self.upstreamModels, name, []);
+              };
+              xhr.send();
+            },
             expandAPIKey: function (key) {
               if (this.expandedAPIKey === key) {
                 this.expandedAPIKey = null;
@@ -4955,6 +5054,10 @@ curl -sS "$BASE/v1/messages" \\
                 .api("/admin/metrics/upstreams?range=" + self.metricsRange)
                 .then(function (r) {
                   self.upstreamStats = r.data || [];
+                  // 行数据刷新后，已展开的上游明细同步重拉（换 range 后数字要跟着变）
+                  if (self.expandedUpstream) {
+                    self.loadUpstreamModels(self.expandedUpstream, true);
+                  }
                 })
                 .catch(function () {});
               self

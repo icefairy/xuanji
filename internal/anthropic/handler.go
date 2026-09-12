@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -63,9 +62,7 @@ func (h *Handler) SetTimeout(d time.Duration) {
 
 // New 创建 Anthropic 协议 Handler。
 func New(rt *router.Router, hc *health.Checker) *Handler {
-	transport := &http.Transport{
-		DialContext: (&net.Dialer{Timeout: upstreamTimeout}).DialContext,
-	}
+	transport := config.NewForwardTransport(upstreamTimeout)
 	return &Handler{
 		router:  rt,
 		health:  hc,

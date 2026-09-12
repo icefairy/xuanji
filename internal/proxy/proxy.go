@@ -90,9 +90,7 @@ type Handler struct {
 // New 创建转发 Handler，共享一个 60s 连接超时的 HTTP 客户端。
 // health 用于健康过滤与失败切换；为 nil 时退化为只转发路由列表第一个上游。
 func New(cfg *config.Config, rt *router.Router, hc *health.Checker) *Handler {
-	transport := &http.Transport{
-		DialContext: (&net.Dialer{Timeout: upstreamTimeoutFor(cfg)}).DialContext,
-	}
+	transport := config.NewForwardTransport(upstreamTimeoutFor(cfg))
 	return &Handler{
 		cfg:       cfg,
 		router:    rt,

@@ -410,6 +410,25 @@ type APIKeyModelUsage struct {
 	Count int64  `json:"count"`
 }
 
+// upstreamModelMetrics 是「上游 × 真实模型」维度的统计行。
+// 动机：一个上游往往提供多个模型（快慢差异大），只看上游级平均 tokens/s
+// 会把快慢模型搅在一起，看不出哪个模型真正快。按上游+模型拆分后可单独比较。
+type upstreamModelMetrics struct {
+	Upstream       string  `json:"upstream"`
+	Model          string  `json:"model"`
+	Requests       int64   `json:"requests"`
+	Successes      int64   `json:"successes"`
+	Failures       int64   `json:"failures"`
+	SuccessRate    float64 `json:"success_rate"`
+	AvgLatencyMS   float64 `json:"avg_latency_ms"`
+	AvgTTFTMS      float64 `json:"avg_ttft_ms"`
+	TokensPerSec   float64 `json:"tokens_per_sec"` // 平均每秒生成 token 数
+	TotalTokens    int64   `json:"total_tokens"`
+	OutputTokens   int64   `json:"output_tokens"` // 输出 token（含思考），tokens/秒 的分子
+	ThinkingTokens int64   `json:"thinking_tokens"`
+	AvgOutput      float64 `json:"avg_output_tokens"` // 平均每请求输出 token 数
+}
+
 // fmtCST 把 RFC3339（UTC）转成东八区标准时间 "2006-01-02 15:04:05"。
 // 解析失败时原样返回（老数据/异常数据不炸页面）。
 func fmtCST(ts string) string {

@@ -1781,6 +1781,11 @@ func (s *Store) SeedDefaults() error {
 		// 客户端程序分析（默认关；开启后按间隔定时按 UA/端口查进程识别 client_addr 对应程序）
 		"proxy.client_analysis":          "false",
 		"proxy.client_analysis_interval": "600",
+		// 上游健康告警（默认关：webhook_url 留空不发送）
+		// 配置 webhook_url 后：上游连续探测失败达 consecutive_fails 次（转为 degraded/dead）
+		// 或从故障恢复时 POST 一条 JSON 告警。
+		"alert.webhook_url":       "",
+		"alert.consecutive_fails": "3",
 	}
 	if count == 0 {
 		// 首次启动：全量插入
@@ -2356,16 +2361,16 @@ func (s *Store) DeleteGroupQuota(groupID uint, model string) error {
 
 // DimStat 是单维度（上游/Key/模型）的单日汇总。
 type DimStat struct {
-	Requests           int64   `json:"requests"`
-	Successes          int64   `json:"successes"`
-	Tokens             int64   `json:"tokens"`
-	Cost               float64 `json:"cost"`
-	SumDurationMS      int64   `json:"sum_duration_ms"`
-	SumTTFTMS         int64   `json:"sum_ttft_ms"`      // 首 token 时间总和（用于计算平均 TTFT）
-	ThinkingTokens   int64   `json:"thinking_tokens"`    // 思考 token 数（DeepSeek R1 等模型的思考 token）
-	CompletionTokens   int64   `json:"completion_tokens"` // 输出 token 数（用于计算 tokens/秒）
-	CacheHitTokens     int64   `json:"cache_hit_tokens"`
-	CacheMissTokens    int64   `json:"cache_miss_tokens"`
+	Requests         int64   `json:"requests"`
+	Successes        int64   `json:"successes"`
+	Tokens           int64   `json:"tokens"`
+	Cost             float64 `json:"cost"`
+	SumDurationMS    int64   `json:"sum_duration_ms"`
+	SumTTFTMS        int64   `json:"sum_ttft_ms"`       // 首 token 时间总和（用于计算平均 TTFT）
+	ThinkingTokens   int64   `json:"thinking_tokens"`   // 思考 token 数（DeepSeek R1 等模型的思考 token）
+	CompletionTokens int64   `json:"completion_tokens"` // 输出 token 数（用于计算 tokens/秒）
+	CacheHitTokens   int64   `json:"cache_hit_tokens"`
+	CacheMissTokens  int64   `json:"cache_miss_tokens"`
 }
 
 // DayStats 是 daily_stats 表的一行。
@@ -2373,7 +2378,7 @@ type DayStats struct {
 	Date             string
 	Requests         int64
 	Successes        int64
-	ThinkingTokens   int64  // 思考 token 数总和
+	ThinkingTokens   int64 // 思考 token 数总和
 	Tokens           int64
 	PromptTokens     int64
 	CompletionTokens int64
@@ -2381,7 +2386,7 @@ type DayStats struct {
 	CacheMissTokens  int64
 	Cost             float64
 	SumDurationMS    int64
-	SumTTFTMS       int64  // 首 token 时间总和
+	SumTTFTMS        int64 // 首 token 时间总和
 	ByUpstream       map[string]*DimStat
 	ByAPIKey         map[string]*DimStat
 	ByModel          map[string]*DimStat

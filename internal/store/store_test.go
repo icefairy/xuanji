@@ -202,8 +202,8 @@ func TestSeedDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetAllConfig: %v", err)
 	}
-	if len(all) != 15 {
-		t.Errorf("defaults count = %d, want 15 (%v)", len(all), all)
+	if len(all) != 17 {
+		t.Errorf("defaults count = %d, want 17 (%v)", len(all), all)
 	}
 	if all["server.port"] != "8787" {
 		t.Errorf("server.port = %q, want 8787", all["server.port"])
@@ -243,6 +243,13 @@ func TestSeedDefaults(t *testing.T) {
 	}
 	if all["proxy.client_analysis_interval"] != "600" {
 		t.Errorf("proxy.client_analysis_interval = %q, want 600", all["proxy.client_analysis_interval"])
+	}
+	// 上游健康告警（默认关：webhook_url 空串 + 连续失败阈值 3）
+	if all["alert.webhook_url"] != "" {
+		t.Errorf("alert.webhook_url = %q, want empty", all["alert.webhook_url"])
+	}
+	if all["alert.consecutive_fails"] != "3" {
+		t.Errorf("alert.consecutive_fails = %q, want 3", all["alert.consecutive_fails"])
 	}
 
 	// 已有数据时不覆盖

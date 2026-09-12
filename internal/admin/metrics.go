@@ -192,9 +192,82 @@ func (h *Handler) existingUpstreamSet() map[string]bool {
 	return set
 }
 
+// MetricsUpstreamModels 返回「上游 × 上游真实模型」维度的统计（支持 ?range=...）。
+// 用于分辨同一上游下不同模型的真实速度（tokens/s）、延迟与用量——
+// 上游级平均值会把快慢模型混在一起，看不出差异。
+//
+// 数据源为 request_log 实时聚合（保留 30 天）；该查询在本机 6 万行实测 ~40ms，
+// 且粒度太细不适合放进 daily_stats（会随模型数膨胀），故不走预聚合。
+// 结果按 total_tokens 倒序，缓存 60s。
+func (h *Handler) MetricsUpstreamModels(w http.ResponseWriter, r *http.Request) {
+	if h.store == nil {
+		h.writeCached(w, r, []upstreamModelMetrics{})
+		return
+	}
+	since := metricsSince(r)
+	q := `SELECT rl.upstream,
+	             COALESCE(NULLIF(rl.upstream_model, ''), '(未知)') AS mdl,
+	             COUNT(*),
+	             COALESCE(SUM(CASE WHEN rl.status < 400 THEN 1 ELSE 0 END), 0),
+	             COALESCE(SUM(rl.tokens), 0),
+	             COALESCE(SUM(rl.duration_ms), 0),
+	             COALESCE(SUM(rl.ttft_ms), 0),
+	             COALESCE(SUM(rl.completion_tokens), 0),
+	             COALESCE(SUM(rl.thinking_tokens), 0)
+	      FROM request_log rl`
+	var args []any
+	if since != "" {
+		q += ` WHERE rl.ts >= ?`
+		args = append(args, since)
+	}
+	q += ` GROUP BY rl.upstream, mdl ORDER BY 5 DESC`
+	rows, err := h.store.DB().Query(q, args...)
+	if err != nil {
+		h.writeCached(w, r, []upstreamModelMetrics{})
+		return
+	}
+	defer rows.Close()
+	out := []upstreamModelMetrics{}
+	for rows.Next() {
+		var m upstreamModelMetrics
+		var sumDuration, sumTTFT, completion, thinking int64
+		if err := rows.Scan(&m.Upstream, &m.Model, &m.Requests, &m.Successes,
+			&m.TotalTokens, &sumDuration, &sumTTFT, &completion, &thinking); err != nil {
+			continue
+		}
+		m.Failures = m.Requests - m.Successes
+		m.ThinkingTokens = thinking
+		// 输出 token（含思考）：与上游级 TokensPerSec 口径一致（见 MetricsUpstreams 注释）。
+		// 写入时已归一化，completion + thinking 等于实际生成量，不重复计数。
+		m.OutputTokens = completion + thinking
+		if m.Requests > 0 {
+			m.SuccessRate = float64(m.Successes) / float64(m.Requests)
+			m.AvgLatencyMS = float64(sumDuration) / float64(m.Requests)
+			if sumTTFT > 0 {
+				m.AvgTTFTMS = float64(sumTTFT) / float64(m.Requests)
+			}
+			m.AvgOutput = float64(m.OutputTokens) / float64(m.Requests)
+		}
+		// tokens/秒：与上游级 MetricsUpstreams 相同的口径（全部请求时长），保证可比。
+		if sumDuration > 0 && m.OutputTokens > 0 {
+			m.TokensPerSec = float64(m.OutputTokens) / (float64(sumDuration) / 1000.0)
+		}
+		out = append(out, m)
+	}
+	if u := r.URL.Query().Get("upstream"); u != "" {
+		filtered := out[:0]
+		for _, x := range out {
+			if x.Upstream == u {
+				filtered = append(filtered, x)
+			}
+		}
+		out = filtered
+	}
+	h.writeCached(w, r, out)
+}
+
 // MetricsByAPIKey 返回按下游 API Key 聚合的统计（支持 ?range=...）。
 // 用于区分不同 AI 程序/客户端的使用量，看哪个 Key 用得多。
-// MetricsByAPIKey 返回按下游 API Key 聚合的统计（支持 ?range=...）。
 // 历史天走 daily_stats 预聚合，今天实时聚合，结果缓存 60s。
 func (h *Handler) MetricsByAPIKey(w http.ResponseWriter, r *http.Request) {
 	if h.store == nil {
