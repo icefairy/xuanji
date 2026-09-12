@@ -190,6 +190,7 @@ func main() {
 	rt := router.New(cfg)
 	hc := health.New(cfg)
 	hc.SetProbeRecorder(probeRecorder(storeInst))
+	hc.SetAlerter(health.NewWebhookAlerter(cfg.Alert))
 	hc.Start()
 
 	state.mu.Lock()
@@ -474,6 +475,7 @@ func buildServeMux(cfg *config.Config, rt *router.Router, hc *health.Checker, re
 	mux.HandleFunc("PUT /admin/config", adminAuth(admHandler.UpdateConfig))
 	mux.HandleFunc("GET /admin/metrics/summary", adminAuth(admHandler.MetricsSummary))
 	mux.HandleFunc("GET /admin/metrics/upstreams", adminAuth(admHandler.MetricsUpstreams))
+	mux.HandleFunc("GET /admin/metrics/upstream-models", adminAuth(admHandler.MetricsUpstreamModels))
 	mux.HandleFunc("GET /admin/metrics/hourly", adminAuth(admHandler.MetricsHourly))
 	mux.HandleFunc("GET /admin/metrics/daily", adminAuth(admHandler.MetricsDaily))
 	mux.HandleFunc("GET /admin/metrics/keys", adminAuth(admHandler.MetricsByAPIKey))
@@ -724,6 +726,7 @@ func reloadConfig(storeInst *store.Store, rec *store.Recorder) error {
 	rt := router.New(newCfg)
 	hc := health.New(newCfg)
 	hc.SetProbeRecorder(probeRecorder(rec.Store()))
+	hc.SetAlerter(health.NewWebhookAlerter(newCfg.Alert))
 	hc.Start()
 
 	state.mu.Lock()

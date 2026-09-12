@@ -120,6 +120,7 @@ type Checker struct {
 	states map[string]*upstreamState
 
 	recorder ProbeRecorder // 可选：持久化探测结果
+	alerter  Alerter       // 可选：健康状态变化告警
 
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
@@ -245,6 +246,7 @@ func (c *Checker) checkOnce(ctx context.Context, st *upstreamState) {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	prev := st.current
 	switch {
 	case out.ok:
 		st.fails = 0
@@ -257,6 +259,7 @@ func (c *Checker) checkOnce(ctx context.Context, st *upstreamState) {
 			"fails", st.fails,
 			"latency", st.latency.String(),
 		)
+		c.notifyStateChange(st, prev, "")
 	case out.timedOut:
 		// 超时直接判 dead，原因固定为 timeout
 		st.fails = deadAfterFails
@@ -264,6 +267,7 @@ func (c *Checker) checkOnce(ctx context.Context, st *upstreamState) {
 		st.latency = 0
 		st.ProbeFail++
 		c.logProbeFailure(st, out)
+		c.notifyStateChange(st, prev, out.reason)
 	default:
 		st.fails++
 		st.latency = 0
@@ -281,7 +285,18 @@ func (c *Checker) checkOnce(ctx context.Context, st *upstreamState) {
 			return
 		}
 		c.logProbeFailure(st, out)
+		c.notifyStateChange(st, prev, out.reason)
 	}
+}
+
+// notifyStateChange 在健康状态发生实质变化时通知告警器。
+// 调用方已持 c.mu，而 Alerter 实现约定不阻塞（内部异步投递），
+// 且此处仅读取局部值，不会造成死锁或拖慢探测。
+func (c *Checker) notifyStateChange(st *upstreamState, prev State, reason string) {
+	if c.alerter == nil || prev == st.current {
+		return
+	}
+	c.alerter.UpstreamStateChanged(st.up.Name, prev, st.current, reason, st.fails)
 }
 
 // logProbeFailure 记录健康检查失败详情（状态已恶化为 degraded/dead 时调用）。
@@ -681,6 +696,7 @@ func (c *Checker) MarkFailure(name string) {
 	if !ok {
 		return
 	}
+	prev := st.current
 	st.fails++
 	switch {
 	case st.fails >= deadAfterFails:
@@ -693,4 +709,5 @@ func (c *Checker) MarkFailure(name string) {
 		"state", st.current,
 		"fails", st.fails,
 	)
+	c.notifyStateChange(st, prev, "proxy forward failed")
 }

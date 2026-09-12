@@ -60,6 +60,20 @@ type Config struct {
 	Retry     Retry      `yaml:"retry"`
 	Proxy     Proxy      `yaml:"proxy"`
 	Storage   Storage    `yaml:"storage"`
+	Alert     Alert      `yaml:"alert"`
+}
+
+// Alert 是上游健康告警配置。健康检查发现上游转为 degraded / dead（或恢复健康）时
+// 推送一条 JSON 到 WebhookURL，便于在黑洞、欠费、上游倒闭等故障发生时及时发现，
+// 而不是等用户报错。
+type Alert struct {
+	// WebhookURL 是告警接收地址（POST JSON）。留空则关闭告警。
+	// 兼容通用 Webhook（如企业微信/钉钉/飞书机器人、自建通知服务）。
+	WebhookURL string `yaml:"webhook_url"`
+	// ConsecutiveFails 是触发告警所需的连续失败轮数（默认 3，且不低于阈值的硬下限 3）。
+	// 设为 1 即第一次失败就告警；探测失败 2 次才 degraded、5 次才 dead，
+	// 默认 3 次意味着在刚恶化为 degraded 时就提前知会，早于真正 dead。
+	ConsecutiveFails int `yaml:"consecutive_fails"`
 }
 
 // Proxy 描述转发层的可选行为开关。
@@ -505,6 +519,18 @@ func LoadFromDB(s *store.Store) (*Config, error) {
 	if v, ok := all["proxy.user_agent"]; ok {
 		cfg.Proxy.UserAgent = strings.TrimSpace(v)
 	}
+	// 上游健康告警（alert.webhook_url / alert.consecutive_fails）
+	if v, ok := all["alert.webhook_url"]; ok {
+		cfg.Alert.WebhookURL = strings.TrimSpace(v)
+	}
+	if v, ok := all["alert.consecutive_fails"]; ok {
+		if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
+			cfg.Alert.ConsecutiveFails = n
+		}
+	}
+	if cfg.Alert.ConsecutiveFails < 1 {
+		cfg.Alert.ConsecutiveFails = 3
+	}
 
 	// 默认值
 	if cfg.Server.Port == 0 {
@@ -687,6 +713,24 @@ func UpstreamUserAgent() string {
 func ApplyUpstreamUserAgent(req *http.Request) {
 	if ua := UpstreamUserAgent(); ua != "" {
 		req.Header.Set("User-Agent", ua)
+	}
+}
+
+// ForwardTransportIdleTimeout 是真实转发连接池中空闲连接的存活时间。
+//
+// 上游或中间 NAT/LB 常在连接空闲几十秒后静默回收（不发 FIN/RST），
+// 复用这样的「幽灵连接」会卡住请求直到超时（详见 NewUpstreamTransport 注释中的
+// 2026-09-12 黑洞复盘）。30s 后主动关闭空闲连接，代价仅是空闲后首个请求多一次
+// TLS 握手（毫秒级），远小于复用死连接等到上游超时的开销。
+const ForwardTransportIdleTimeout = 30 * time.Second
+
+// NewForwardTransport 构造真实转发（chat/completions、anthropic、gemini、ollama）
+// 使用的 http.Transport。与 NewUpstreamTransport（旁路探测，逐次新建连接）不同，
+// 转发请求频率高、连接复用收益大，因此保留 keep-alive，仅限制空闲连接寿命。
+func NewForwardTransport(dialTimeout time.Duration) *http.Transport {
+	return &http.Transport{
+		DialContext:     (&net.Dialer{Timeout: dialTimeout}).DialContext,
+		IdleConnTimeout: ForwardTransportIdleTimeout,
 	}
 }
 
