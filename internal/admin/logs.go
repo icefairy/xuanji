@@ -34,8 +34,10 @@ func (h *Handler) RequestLogs(w http.ResponseWriter, r *http.Request) {
 		args = append(args, up)
 	}
 	if m := r.URL.Query().Get("model"); m != "" {
-		where += " AND model = ?"
-		args = append(args, m)
+		// 同时匹配客户端模型名与上游真实模型名：日志「模型」列显示真实名，
+		// 但用户可能按客户端名筛选（反之亦然），两者都命中才符合直觉。
+		where += " AND (model = ? OR upstream_model = ?)"
+		args = append(args, m, m)
 	}
 	// 端点筛选：识别还在调用老版接口（如 /v1/completions → endpoint=completions）的程序
 	if ep := r.URL.Query().Get("endpoint"); ep != "" {
@@ -112,7 +114,9 @@ func (h *Handler) RequestLogs(w http.ResponseWriter, r *http.Request) {
 		}
 		rows2.Close()
 	}
-	if rows3, err := h.store.DB().Query("SELECT DISTINCT model FROM request_log ORDER BY model"); err == nil {
+	if rows3, err := h.store.DB().Query("SELECT DISTINCT model FROM request_log " +
+		"UNION SELECT DISTINCT upstream_model FROM request_log WHERE upstream_model != '' " +
+		"ORDER BY 1"); err == nil {
 		for rows3.Next() {
 			var v string
 			if rows3.Scan(&v) == nil && v != "" {

@@ -458,7 +458,7 @@ func (h *Handler) UpstreamModels(w http.ResponseWriter, r *http.Request) {
 		httpReq.Header.Set("Authorization", "Bearer "+up.APIKey)
 	}
 
-	client := &http.Client{Timeout: upstreamTestTimeoutFor(up, h.cfg)}
+	client := upstreamTestClient(upstreamTestTimeoutFor(up, h.cfg))
 	resp, err := client.Do(httpReq)
 	if err != nil {
 		writeJSON(w, map[string]string{"error": "请求失败: " + err.Error()})
@@ -574,7 +574,7 @@ func (h *Handler) TestUpstream(w http.ResponseWriter, r *http.Request) {
 		httpReq.Header.Set("Authorization", "Bearer "+up.APIKey)
 	}
 
-	client := &http.Client{Timeout: upstreamTestTimeoutFor(up, h.cfg)}
+	client := upstreamTestClient(upstreamTestTimeoutFor(up, h.cfg))
 	started := time.Now()
 	resp, err := client.Do(httpReq)
 	if err != nil {

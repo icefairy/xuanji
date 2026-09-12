@@ -354,7 +354,10 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 	retryCount := 0
 	maxRetries := h.cfg.Retry.MaxRetries
 	connIssues := false // 是否有连接类错误（网络断/超时），用于判断全局网络问题
-	aborted := false    // 循环被提前 break（客户端断连/不可重试）：候选未全部耗尽，
+	// handledModelFallback 限制“同一上游内换真实模型”的降级次数，防止死循环。
+	// 上界取 maxRetries+1（候选真实模型数不会超过这个量级）。
+	handledModelFallback := 0
+	aborted := false // 循环被提前 break（客户端断连/不可重试）：候选未全部耗尽，
 	// 此时不得把"部分候选失败"误判为"全部候选失败+全局网络故障"而清空 fastfail 黑名单
 	// （2026-09-02 实测：client disconnected 后 cleared=8 误清，黑名单解除后下次立即重打故障上游）
 	for i := 0; i < len(candidates) && retryCount <= maxRetries; i++ {
@@ -368,11 +371,22 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		}
 		up := candidates[i]
 		handled, retryable, ferr, _, _, _, _ := h.forwardOnce(rec, r, body, up, model, stream, false)
+		// 竖线多模型映射降级：当前真实模型配额用尽（429 + 配额关键词），
+		// 已在 forwardOnce 内拉黑该真实模型 → 原地重试同一上游（pickAvailableModel
+		// 会自动选下一个可用的真实模型），而不是跳到下一个上游。
+		// 加 budget 防护：避免候选异常时死循环（每次重试 budget--，耗尽则按普通失败继续）。
+		if errors.Is(ferr, errOrderedModelExhausted) && handledModelFallback < maxRetries+1 {
+			handledModelFallback++
+			i-- // 下一轮循环 i++ 回到同一上游
+			continue
+		}
 		// 429 限流不是上游故障（几秒后可自愈），不降低健康状态；
 		// 客户端断连（context.Canceled）也不是上游故障，不计入失败计数；
 		// 不可重试 4xx（如 413 请求体过大）已透传给客户端，同样不是上游故障。
 		// 仅当响应未写出（handled=false，即连接错误/重试失败的 5xx/超时）才计入。
-		if ferr != nil && !handled && h.health != nil && !strings.Contains(ferr.Error(), "rate limited") && !isClientCanceled(ferr) {
+		// 竖线降级哨兵错误（配额用尽换模型）也不算上游故障：上游在线，只是该模型额度耗尽。
+		if ferr != nil && !handled && h.health != nil && !errors.Is(ferr, errOrderedModelExhausted) &&
+			!strings.Contains(ferr.Error(), "rate limited") && !isClientCanceled(ferr) {
 			h.health.MarkFailure(up.Name)
 		}
 		// 连接类错误（网络不可达/超时/连接拒绝）说明可能是本地网络问题而非上游故障；
@@ -394,17 +408,27 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 				rest := ferr.Error()[idx+len("upstream error: "):]
 				fmt.Sscanf(rest, "%d", &status)
 			}
+			// 中间失败的真实模型名：降级哨兵直接携带；普通错误取当前可用首模型
+			// （发生 429/连接错误时大概率就是刚打过的那一个）。
+			failedModel := ""
+			var exhausted *orderedModelExhaustedError
+			if errors.As(ferr, &exhausted) {
+				failedModel = exhausted.model
+			} else {
+				failedModel = h.pickAvailableModel(up, model)
+			}
 			h.recorder.Record(store.Record{
-				Timestamp:   time.Now(),
-				Upstream:    up.Name,
-				Model:       model,
-				Endpoint:    "chat",
-				Status:      status,
-				DurationMS:  time.Since(start).Milliseconds(),
-				APIKey:      h.recordAPIKey(r),
-				ClientAddr:  r.RemoteAddr,
-				UserAgent:   r.UserAgent(),
-				ErrorDetail: "retryable error: " + ferr.Error(),
+				Timestamp:     time.Now(),
+				Upstream:      up.Name,
+				Model:         model,
+				UpstreamModel: failedModel,
+				Endpoint:      "chat",
+				Status:        status,
+				DurationMS:    time.Since(start).Milliseconds(),
+				APIKey:        h.recordAPIKey(r),
+				ClientAddr:    r.RemoteAddr,
+				UserAgent:     r.UserAgent(),
+				ErrorDetail:   "retryable error: " + ferr.Error(),
 			})
 		}
 		h.log.Warn("upstream failed, trying next",
@@ -456,6 +480,83 @@ func realModels(up *config.Upstream, model string) []string {
 		return strings.Split(mapped, "|")
 	}
 	return []string{model}
+}
+
+// errOrderedModelExhausted 是一个哨兵错误：竖线多模型映射下，
+// 当前真实模型配额用尽（429 + 配额关键词），应在同一上游内换下一个真实模型重试。
+// 调用方（ChatCompletions 主循环）识别后不推进上游索引，直接重试当前上游。
+// 用 errors.As 取 *orderedModelExhaustedError 可拿到用尽的具体模型名（记日志用）。
+var errOrderedModelExhausted = errors.New("ordered model mapping: current real model quota exhausted")
+
+// orderedModelExhaustedError 携带用尽的真实模型名，便于调用方写入请求日志的
+// upstream_model 字段（用户需知道真实转发到哪个模型）。
+type orderedModelExhaustedError struct{ model string }
+
+func (e *orderedModelExhaustedError) Error() string { return errOrderedModelExhausted.Error() }
+
+// Is 让 errors.Is(err, errOrderedModelExhausted) 对携带模型名的包装值仍成立。
+func (e *orderedModelExhaustedError) Is(target error) bool { return target == errOrderedModelExhausted }
+
+// orderedModelFallbackAvailable 判断当前 429 是否应降级到同一上游的下一个真实模型。
+// 满足全部条件才降级（否则保持原有 429 处理：冷却 + 切下一个上游）：
+//   - 竖线候选数 > 1（单模型无降级余地）；
+//   - 响应体命中配额/限流关键词（纯并发限流不降级，几秒后自愈）；
+//   - 拉黑当前真实模型后确实还有另一个可用候选（否则空转重试无意义）。
+//
+// 降级时把当前真实模型标记进 fastfail 冷却（分钟级），使后续请求直接跳过它——
+// 这正是“前者用完了（429）再用后者”的语义；冷却到期后自动回试第一个。
+// 对所有上游、所有模型的竖线映射通用。
+func (h *Handler) orderedModelFallbackAvailable(up *config.Upstream, model, upstreamModel string, respBody []byte) bool {
+	if up == nil || h.fastFail == nil {
+		return false
+	}
+	if len(realModels(up, model)) < 2 {
+		return false
+	}
+	if !isRateLimitExhausted(respBody) {
+		return false
+	}
+	h.fastFail.MarkFailedWithReason(up.Name, upstreamModel,
+		"quota exhausted (429): "+truncateLogStr(string(respBody), 200))
+	// 拉黑后仍无其它可用候选（两个模型都用尽）→ 不降级，
+	// 交回正常 429 处理（冷却 + 切下一个上游），避免在同一上游空转重试。
+	next := h.pickAvailableModel(up, model)
+	if next == "" || next == upstreamModel {
+		return false
+	}
+	h.log.Info("ordered model mapping: real model quota exhausted, falling back to next in same upstream",
+		"upstream", up.Name, "model", model, "real_model", upstreamModel, "next_model", next)
+	return true
+}
+
+// rateLimitExhaustedKeywords 是“配额用尽”判定关键词（小写匹配）。
+// 比欠费关键词宽松（额外含“今日/次数上限”类措辞），但不含纯并发限流词，
+// 避免把“稍后重试即可”的临时限流当成模型不可用而拉黑。
+var rateLimitExhaustedKeywords = []string{
+	"rate limit",
+	"quota",
+	"套餐用完了",
+	"余额不足",
+	"exceeded",
+	"今日",
+	"次数已达",
+	"上限",
+	"insufficient",
+}
+
+// isRateLimitExhausted 判断 429 响应体是否表示“配额/额度用尽”（而非瞬时并发限流）。
+// 响应体为空时不降级（无法判定，保持原有 429 行为）。
+func isRateLimitExhausted(body []byte) bool {
+	if len(body) == 0 {
+		return false
+	}
+	lower := strings.ToLower(string(body))
+	for _, kw := range rateLimitExhaustedKeywords {
+		if strings.Contains(lower, strings.ToLower(kw)) {
+			return true
+		}
+	}
+	return false
 }
 
 // upstreamSupportsModel 判断上游是否声明提供该模型：
@@ -511,16 +612,22 @@ func upstreamSupportsModel(up *config.Upstream, model string) bool {
 }
 
 // pickAvailableModel 为该上游选择本次请求可用的真实模型名：
-// 竖线展开所有候选真实模型，过滤掉处于 fastfail 黑名单的，随机选一个；
-// 全部被拉黑或无候选时返回空串（调用方应跳过该上游）。
-// 无 fastfail 时等价于 MapModel 的随机逻辑（保持既有行为）。
+// 竖线展开所有候选真实模型，过滤掉处于 fastfail 黑名单的，再按书写顺序
+// 取第一个可用的（前一个配额用完了才用后一个）。
+//
+// 全部被拉黑时返回最后一个候选（书写顺序的兜底项），避免白打已知用尽的模型；
+// 无候选时返回空串（调用方应跳过该上游）。
 func (h *Handler) pickAvailableModel(up *config.Upstream, model string) string {
 	cands := realModels(up, model)
-	if h.fastFail == nil || up == nil {
-		if len(cands) == 0 {
+	if up == nil {
+		return model
+	}
+	if h.fastFail == nil {
+		avail := nonEmpty(cands)
+		if len(avail) == 0 {
 			return model
 		}
-		return cands[rand.Intn(len(cands))]
+		return avail[0]
 	}
 	var avail []string
 	for _, c := range cands {
@@ -532,9 +639,32 @@ func (h *Handler) pickAvailableModel(up *config.Upstream, model string) string {
 		}
 	}
 	if len(avail) == 0 {
-		return ""
+		// 全部真实模型都在冷却期：继续用最后一个候选（书写顺序的兜底项，
+		// 通常是免费/不限量的那个），而不是回退到第一个（那会白打一次已知用尽的模型）。
+		return lastNonEmpty(cands)
 	}
-	return avail[rand.Intn(len(avail))]
+	return avail[0]
+}
+
+// nonEmpty 返回去掉空串后的切片（保持原顺序）。
+func nonEmpty(in []string) []string {
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		if s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// lastNonEmpty 返回最后一个非空元素；全空时返回空串。
+func lastNonEmpty(in []string) string {
+	for i := len(in) - 1; i >= 0; i-- {
+		if in[i] != "" {
+			return in[i]
+		}
+	}
+	return ""
 }
 
 // clearUpstreamBlacklist 清除该上游 model 相关的全部 fastfail 黑名单
@@ -1028,6 +1158,13 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 	case resp.StatusCode >= 400:
 		// 读响应体用于关键词匹配
 		respBody, _ := readUpstreamBody(resp.Body)
+		// 有序多模型映射降级（优先于欠费/重试判定）：429 且命中配额关键词时，
+		// 只拉黑当前真实模型并信号调用方在同一上游内换下一个，
+		// 不把整条上游标为欠费（否则需求“先用完前者再用后者”直接失效）。
+		if resp.StatusCode == http.StatusTooManyRequests &&
+			h.orderedModelFallbackAvailable(up, model, upstreamModel, respBody) {
+			return false, true, &orderedModelExhaustedError{model: upstreamModel}, 0, 0, 0, 0
+		}
 		// 判断是否应重试：5xx 一律可重试（retryableStatus），4xx 按配置白名单
 		shouldRetry := h.retryableStatus(resp.StatusCode)
 		// 关键词匹配：状态码不在 retry_statuses 中但响应体含关键词

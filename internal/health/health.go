@@ -138,9 +138,15 @@ func (c *Checker) SetProbeRecorder(r ProbeRecorder) {
 // New 基于配置构建健康检查器，初始状态一律视为 healthy（乐观），不启动探测。
 // 调用方需调用 Start 启动定时检查，并用 Close 释放资源。
 func New(cfg *config.Config) *Checker {
+	cli := &http.Client{
+		// 独立 Transport：不与其他调用方共享连接池，避免同 host 下一条被网络
+		// 黑洞的 keepalive 连接把全部同 host 上游带成一个锁步超时（详见
+		// config.NewUpstreamTransport 注释）。
+		Transport: config.NewUpstreamTransport(),
+	}
 	c := &Checker{
 		log:    slog.Default(),
-		client: &http.Client{},
+		client: cli,
 		states: make(map[string]*upstreamState, len(cfg.Upstreams)),
 	}
 	for i := range cfg.Upstreams {

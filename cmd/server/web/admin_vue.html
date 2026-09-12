@@ -1249,7 +1249,15 @@
                   >
                 </template>
                 <template v-else-if="col.key === 'model'"
-                  >{{ l.model }}</template
+                  ><span
+                    :title="
+                      (l.upstream_model || l.model) +
+                      (l.upstream_model && l.upstream_model !== l.model
+                        ? '（客户端请求：' + l.model + '）'
+                        : '')
+                    "
+                    >{{ l.upstream_model || l.model }}</span
+                  ></template
                 >
                 <template v-else-if="col.key === 'endpoint'">
                   <span class="badge" :title="'端点 ' + (l.endpoint||'')"
@@ -3292,7 +3300,7 @@
               { key: "upstream", label: "上游" },
               { key: "client", label: "客户端" },
               { key: "endpoint", label: "端点" },
-              { key: "model", label: "模型" },
+              { key: "model", label: "模型（真实）" },
               { key: "status", label: "状态" },
               { key: "error_detail", label: "错误详情" },
               { key: "duration_ms", label: "耗时(ms)" },
