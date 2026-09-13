@@ -49,6 +49,14 @@ var clientErrReasons = []string{
 	"maximum context length",
 	"input length too long",
 	"context_length_exceeded",
+	// 请求参数校验失败（客户端传了空数组/缺必填字段等；上游正确校验后拒绝）
+	// 例（2026-09-13 实测，硅基流动 rerank/embeddings）：
+	//   `List should have at least 1 item after validation, not 0`（documents/input 为空数组）
+	//   `Field required`（缺 query/documents/input）
+	//   `The parameter is invalid. Please check again.`（参数非法）
+	"list should have at least 1 item after validation",
+	"field required",
+	"the parameter is invalid",
 }
 
 // isClientRequestError 判断一次上游 4xx 错误响应是否属于「客户端请求本身的问题」。

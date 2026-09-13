@@ -1695,8 +1695,10 @@ func (h *Handler) Rerank(w http.ResponseWriter, r *http.Request) {
 		}
 		up := candidates[i]
 		handled, retryable, ferr := h.forwardRerank(rec, r, body, up, model)
-		// 客户端断连/透传的 4xx（handled=true）不是上游故障，不计入健康失败计数
-		if ferr != nil && !handled && h.health != nil && !isClientCanceled(ferr) {
+		// 客户端断连/透传的 4xx（handled=true）不是上游故障，不计入健康失败计数；
+		// 客户端请求问题类 4xx（空 documents/缺字段等）同样不计（errClientRequest）
+		if ferr != nil && !handled && h.health != nil && !isClientCanceled(ferr) &&
+			!errors.Is(ferr, errClientRequest) {
 			h.health.MarkFailure(up.Name)
 		}
 		// 客户端断连（context.Canceled）不算连接类错误（isConnIssue 内部排除）
@@ -1796,6 +1798,16 @@ func (h *Handler) forwardRerank(w http.ResponseWriter, r *http.Request, body []b
 		// 5xx 一律可重试（retryableStatus），4xx 按配置白名单
 		shouldRetry := h.retryableStatus(resp.StatusCode)
 		if shouldRetry {
+			// 客户端请求本身的问题（空 documents/缺必填字段/模型名不存在/输入超长）：
+			// 上游只是合法拒绝了该请求，上游本身健康——不标 fastfail、不计健康失败
+			// （2026-09-13 实测：三个健康 rerank 上游被客户端 400 各拉黑 34/34/35 次）。
+			// 需先读响应体才能分类（探测上限内读取，失败不致断）。
+			respBody, _ := readUpstreamBody(resp.Body)
+			if isClientRequestError(resp.StatusCode, respBody) {
+				h.log.Info("rerank upstream rejected client request (not an upstream failure)",
+					"upstream", up.Name, "model", upstreamModel, "status", resp.StatusCode)
+				return false, true, &clientRequestError{fmt.Errorf("rerank upstream error: %s", resp.Status)}
+			}
 			if h.fastFail != nil {
 				h.fastFail.MarkFailedWithReason(up.Name, upstreamModel, fmt.Sprintf("status=%d", resp.StatusCode))
 			}
@@ -1860,8 +1872,10 @@ func (h *Handler) Embeddings(w http.ResponseWriter, r *http.Request) {
 		}
 		up := candidates[i]
 		handled, retryable, ferr := h.forwardEmbedding(rec, r, body, up, model)
-		// 客户端断连/透传的 4xx（handled=true）不是真实上游故障，不计入健康失败计数
-		if ferr != nil && !handled && h.health != nil && !isClientCanceled(ferr) {
+		// 客户端断连/透传的 4xx（handled=true）不是真实上游故障，不计入健康失败计数；
+		// 客户端请求问题类 4xx（空 input/缺字段等）同样不计（errClientRequest）
+		if ferr != nil && !handled && h.health != nil && !isClientCanceled(ferr) &&
+			!errors.Is(ferr, errClientRequest) {
 			h.health.MarkFailure(up.Name)
 		}
 		// 客户端断连（context.Canceled）不算连接类错误（isConnIssue 内部排除）
@@ -1961,6 +1975,15 @@ func (h *Handler) forwardEmbedding(w http.ResponseWriter, r *http.Request, body 
 		// 5xx 一律可重试（retryableStatus），4xx 按配置白名单
 		shouldRetry := h.retryableStatus(resp.StatusCode)
 		if shouldRetry {
+			// 客户端请求本身的问题（空 input 数组/缺必填字段/模型名不存在/输入超长）：
+			// 上游只是合法拒绝了该请求，上游本身健康——不标 fastfail、不计健康失败
+			// （2026-09-13 实测：embeddings 同类 400 抗同一个上游被反复拉黑）。
+			respBody, _ := readUpstreamBody(resp.Body)
+			if isClientRequestError(resp.StatusCode, respBody) {
+				h.log.Info("embedding upstream rejected client request (not an upstream failure)",
+					"upstream", up.Name, "model", upstreamModel, "status", resp.StatusCode)
+				return false, true, &clientRequestError{fmt.Errorf("embedding upstream error: %s", resp.Status)}
+			}
 			if h.fastFail != nil {
 				h.fastFail.MarkFailedWithReason(up.Name, upstreamModel, fmt.Sprintf("status=%d", resp.StatusCode))
 			}

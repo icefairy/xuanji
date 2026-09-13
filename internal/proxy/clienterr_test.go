@@ -51,6 +51,24 @@ func TestIsClientRequestError(t *testing.T) {
 			body:   `upstream says: model not found`,
 			want:   true,
 		},
+		{
+			name:   "rerank 空 documents（2026-09-13 实测）",
+			status: http.StatusBadRequest,
+			body:   `{"code":20015,"message":"List should have at least 1 item after validation, not 0","data":null}`,
+			want:   true,
+		},
+		{
+			name:   "缺必填字段 Field required",
+			status: http.StatusBadRequest,
+			body:   `{"code":20015,"message":"Field required","data":null}`,
+			want:   true,
+		},
+		{
+			name:   "embeddings 空 input 数组（2026-09-13 实测）",
+			status: http.StatusBadRequest,
+			body:   `{"code":20015,"message":"The parameter is invalid. Please check again.","data":null}`,
+			want:   true,
+		},
 
 		// —— 非客户端请求问题（false，保持原有语义）——
 		{
@@ -93,6 +111,12 @@ func TestIsClientRequestError(t *testing.T) {
 			name:   "400 但错误原因与请求无关（保留上游故障语义）",
 			status: http.StatusBadRequest,
 			body:   `{"error":{"message":"internal deserialization failure"}}`,
+			want:   false,
+		},
+		{
+			name:   "cfcdn rerank 端点不存在（No route for that URI，上游配置问题）",
+			status: http.StatusBadRequest,
+			body:   `{"success":false,"errors":[{"code":7000,"message":"No route for that URI"}]}`,
 			want:   false,
 		},
 	}
