@@ -2003,7 +2003,9 @@
           </div>
           <div style="color: #e6a23c; font-size: 12px; margin-bottom: 6px">
             ≙ 限额单位：M = 百万 token（如 200 = 2 亿 token；0 =
-            不限）。三个窗口各自独立，任一超限只拦该模型。
+            不限）。三个窗口各自独立，任一超限只拦该模型。<br />
+            注意：单个窗口填 0 = 该窗口<span style="font-weight: bold">不限</span>，但
+            <span style="font-weight: bold">三个窗口全填 0 保存 = 无限制</span>，等于不留这一行（表格里会消失）。
           </div>
           <table>
             <thead>
@@ -2076,8 +2078,9 @@
                     style="width: 90px"
                   />
                 </td>
-                <td style="color: #c0c4cc; font-size: 12px">
-                  （单位 M=百万 token，如 200=2 亿；三个都填 0 = 不限）
+                <td style="font-size: 12px; color: #c0c4cc">
+                  （单位 M=百万 token，如 200=2
+                  亿；要新增一行至少要填一个窗口，三个都填 0 等于无限制＝不新增）
                 </td>
                 <td>
                   <button class="btn btn-primary" @click="addGroupQuota(g)">
@@ -2090,7 +2093,7 @@
           <div style="color: #909399; font-size: 12px; margin-top: 6px">
             ✏️ 单位 M = 百万 token（200 = 2
             亿）。修改后点行尾「保存本行」或组头「💾
-            保存配额」生效；三个窗口都填 0 保存 = 移除该模型限制。
+            保存配额」生效；三个窗口都填 0 保存 = 移除该模型限制（该行消失）。
           </div>
         </div>
       </div>
@@ -6156,6 +6159,16 @@ curl -sS "$BASE/v1/messages" \\
               var m = String(g._newModel || "").trim();
               if (!m) {
                 alert("请先输入模型名（或 * 表示全模型兜底）");
+                return;
+              }
+              if (
+                !(g._new5h || 0) &&
+                !(g._newWeek || 0) &&
+                !(g._newMonth || 0)
+              ) {
+                alert(
+                  "三个窗口额度都填 0 = 不限量，等于不留这一行。\n新增前请至少填一个窗口的上限（单位 M = 百万 token，如 200 表示 2 亿）。",
+                );
                 return;
               }
               self
