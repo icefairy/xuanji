@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -476,5 +477,72 @@ upstreams:
 		if got := want[up.Name]; up.Kind != got {
 			t.Errorf("upstream %q kind = %q, want %q", up.Name, up.Kind, got)
 		}
+	}
+}
+
+// TestLoadFromDB_InvalidModelMappingLogsError 回归测试（2026-09-14 实测事故）：
+// model_mapping 是非法 JSON 时，json.Unmarshal 不做部分填充（整个 map 为空，实测
+// len(m)==0），该上游**全部**模型映射静默丢失，后续把客户端短名原样透传给上游
+// （上游回 400 "Model does not exist"）。修复后加载侧必须打 ERROR 告警，
+// 否则故障现场只能看到下游 400，看不到根因（当天排查耗时很久）。
+func TestLoadFromDB_InvalidModelMappingLogsError(t *testing.T) {
+	var buf strings.Builder
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	s := openTestStore(t)
+	// 真实事故形态：`"chat":"X""asr":"Y"` 缺逗号
+	broken := `{"bge-m3":"BAAI/bge-m3","chat":"THUDM/GLM-4-9B-0414""asr":"FunAudioLLM/SenseVoiceSmall"}`
+	if err := s.CreateUpstream(&store.UpstreamRow{
+		Name: "lxr", Type: "openai", BaseURL: "http://a.local", APIKey: "sk-a",
+		Tier: "free", Priority: 1, Weight: 100, Models: `["bge-m3","asr"]`,
+		ModelMapping: broken,
+	}); err != nil {
+		t.Fatalf("CreateUpstream: %v", err)
+	}
+
+	cfg, err := LoadFromDB(s)
+	if err != nil {
+		t.Fatalf("LoadFromDB: %v", err)
+	}
+
+	logs := buf.String()
+	if !strings.Contains(logs, "model_mapping") || !strings.Contains(logs, "ERROR") {
+		t.Errorf("非法 model_mapping 必须打 ERROR 告警，实际日志：%q", logs)
+	}
+	// 映射确实丢失（这正是要告警的危害，不要试图"修复"填充：语法错误无可靠部分解析）
+	if len(cfg.Upstreams) != 1 {
+		t.Fatalf("len(Upstreams) = %d, want 1", len(cfg.Upstreams))
+	}
+	if got := cfg.Upstreams[0].ModelMapping; len(got) != 0 {
+		t.Errorf("非法 JSON 的 ModelMapping = %v, want 空（Go 解析失败不部分填充）", got)
+	}
+}
+
+// TestLoadFromDB_ValidModelMappingNoError 反向保护：合法配置不得产生 ERROR 噪音。
+func TestLoadFromDB_ValidModelMappingNoError(t *testing.T) {
+	var buf strings.Builder
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	s := openTestStore(t)
+	if err := s.CreateUpstream(&store.UpstreamRow{
+		Name: "ok", Type: "openai", BaseURL: "http://a.local", APIKey: "sk-a",
+		Tier: "free", Priority: 1, Weight: 100, Models: `["bge-m3"]`,
+		ModelMapping: `{"bge-m3":"BAAI/bge-m3"}`,
+	}); err != nil {
+		t.Fatalf("CreateUpstream: %v", err)
+	}
+	cfg, err := LoadFromDB(s)
+	if err != nil {
+		t.Fatalf("LoadFromDB: %v", err)
+	}
+	if strings.Contains(buf.String(), "model_mapping") {
+		t.Errorf("合法 model_mapping 不应告警：%q", buf.String())
+	}
+	if got := cfg.Upstreams[0].ModelMapping["bge-m3"]; got != "BAAI/bge-m3" {
+		t.Errorf("映射丢失：got %q, want BAAI/bge-m3", got)
 	}
 }

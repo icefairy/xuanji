@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -593,7 +594,15 @@ func LoadFromDB(s *store.Store) (*Config, error) {
 			up.Models = ParseModelsString(u.Models)
 		}
 		if u.ModelMapping != "" {
-			json.Unmarshal([]byte(u.ModelMapping), &up.ModelMapping)
+			// 语法错误时 json.Unmarshal 不做事部分填充（实测 len(map)==0）：
+			// 该上游的全部模型映射会静默丢失，后续把客户端短名原样透传给上游。
+			// 2026-09-14 实测事故：admin 表单把 model_mapping 写成了缺逗号的非法 JSON，
+			// 导致该上游 rerank/embeddings/asr 全部 400 "Model does not exist"。
+			// 这里必须告警，否则故障现场只能看到下游 400，看不到根因。
+			if err := json.Unmarshal([]byte(u.ModelMapping), &up.ModelMapping); err != nil {
+				slog.Error("upstream model_mapping 不是合法 JSON，该上游全部模型映射将失效",
+					"upstream", u.Name, "error", err, "model_mapping", u.ModelMapping)
+			}
 		}
 		up.RequestOverride = u.RequestOverride
 		up.Timeout = u.Timeout

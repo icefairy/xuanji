@@ -168,6 +168,11 @@ func (h *Handler) CreateUpstream(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	if err := validateModelMappingJSON(req.ModelMapping); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		writeJSON(w, map[string]string{"error": err.Error()})
+		return
+	}
 	if err := h.store.CreateUpstream(&req); err != nil {
 		writeJSON(w, map[string]string{"error": err.Error()})
 		return
@@ -176,6 +181,26 @@ func (h *Handler) CreateUpstream(w http.ResponseWriter, r *http.Request) {
 		h.reload()
 	}
 	writeJSON(w, req)
+}
+
+// validateModelMappingJSON 校验 model_mapping 是否为合法 JSON 对象（空串=允许清空）。
+//
+// 为什么必须在写入前拦截（2026-09-14 实测事故）：admin 表单把 model_mapping 当自由
+// 文本框（placeholder='{"简单名":"上游真实模型名"}'），后端原本把它当不透明字符串直接
+// 落库。用户漏写一个逗号（`"chat":"X""asr":"Y"`）就把映射表写坏；config.LoadFromDB
+// 的 json.Unmarshal 在语法错误时 **不会部分填充**（实测 err != nil 且 len(map)==0），
+// 该上游全部模型映射静默丢失 → 请求把客户端短名原样透传 → 上游回 400
+// "Model does not exist"（当天 87 例，且被误当成上游故障拉黑）。
+func validateModelMappingJSON(mm string) error {
+	mm = strings.TrimSpace(mm)
+	if mm == "" {
+		return nil
+	}
+	var obj map[string]string
+	if err := json.Unmarshal([]byte(mm), &obj); err != nil {
+		return fmt.Errorf("model_mapping 不是合法 JSON 对象，已拒绝保存（请检查引号/逗号）: %w", err)
+	}
+	return nil
 }
 
 // UpdateUpstream 更新上游（PUT /admin/upstreams/{name}）。
@@ -293,6 +318,19 @@ func (h *Handler) UpdateUpstream(w http.ResponseWriter, r *http.Request) {
 				val = "1"
 			}
 			_ = h.store.SetConfig("upstream."+name+".per_model_billing", val)
+		}
+	}
+	// model_mapping 必须是合法 JSON 对象才能落库（拒绝必须早于 UPDATE，否则会把 DB 中
+	// 已有的好配置覆盖成坏值）。2026-09-14 实测事故：admin 表单是自由文本框，用户漏写一个
+	// 逗号（`"chat":"X""asr":"Y"`）就把映射表写坏；config.LoadFromDB 的 json.Unmarshal
+	// 语法错误时整个 map 为空（非部分填充），该上游**全部**模型映射静默丢失，
+	// 请求随后把客户端短名原样透传，上游回 400 "Model does not exist"。
+	if mm := strings.TrimSpace(req.ModelMapping); mm != "" {
+		if err := validateModelMappingJSON(mm); err != nil {
+			// 非 200 才会让前端 api() 弹出「请求失败: ...」（前端 catch 分支）
+			w.WriteHeader(http.StatusBadRequest)
+			writeJSON(w, map[string]string{"error": err.Error()})
+			return
 		}
 	}
 	if err := h.store.UpdateUpstream(name, &req); err != nil {
