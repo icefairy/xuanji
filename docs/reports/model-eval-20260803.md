@@ -88,7 +88,7 @@
 
 ```bash
 # 测商汤 Lite（走本地网关，多 key 负载均衡防 429）
-python3 eval_models.py --base http://127.0.0.1:3002 --key <璇玑key> \
+python3 eval_models.py --base http://127.0.0.1:3001 --key <璇玑key> \
     --models sensenova-6.7-flash-lite --effort low --workers 3
 
 # 测 DeepSeek 正式版（直连官方）

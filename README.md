@@ -256,7 +256,7 @@ docker run -d --name xuanji \
 ```ini
 # /etc/supervisor/conf.d/xuanji.conf
 [program:xuanji]
-command=/opt/xuanji/xuanji-server --port 3002 --db /opt/xuanji/xuanji.db
+command=/opt/xuanji/xuanji-server --port 3001 --db /opt/xuanji/xuanji.db
 directory=/opt/xuanji
 stopasgroup=true
 autorestart=true

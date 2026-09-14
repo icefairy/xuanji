@@ -56,7 +56,7 @@
 Claude Code 直接连：
 
 ```bash
-export ANTHROPIC_BASE_URL=http://你的服务器:3002
+export ANTHROPIC_BASE_URL=http://你的服务器:3001
 export ANTHROPIC_AUTH_TOKEN=网关发的Key
 ```
 
