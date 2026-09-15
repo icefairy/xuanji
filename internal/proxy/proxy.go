@@ -724,6 +724,39 @@ func upstreamErrorMessage(err error) string {
 	return httputil.UpstreamErrorMessage(err)
 }
 
+// recordRetryableFailure 补记一条失败的上游尝试（中间候选失败 / 终端失败）到请求日志。
+//
+// 背景：forwardRerank/forwardEmbedding 的 defer 只在 handled=true（已向客户端写出最终响应）
+// 时记录，而候选失败时 handled=false——若调用方不补记，这些失败在 request_log 中完全缺失。
+// 2026-09-15 实测：日志 51 次 rerank 请求（含 16 次 502），request_log 中 rerank 非 200
+// 记录 0 条，管理页成功率永远显示 100%，排障看不到失败。
+//
+// status 从错误字符串推断（"upstream error: 429"→429，连接错误→0），与 chat 链路口径一致
+// （chat 在 ChatCompletions 循环中已有同样补记，见 2026-08-29 提交 66feb25）。
+func (h *Handler) recordRetryableFailure(up *config.Upstream, model, endpoint, failedModel string, start time.Time, r *http.Request, ferr error) {
+	if h.recorder == nil || ferr == nil {
+		return
+	}
+	status := 0
+	if idx := strings.Index(ferr.Error(), "upstream error: "); idx >= 0 {
+		rest := ferr.Error()[idx+len("upstream error: "):]
+		fmt.Sscanf(rest, "%d", &status)
+	}
+	h.recorder.Record(store.Record{
+		Timestamp:     time.Now(),
+		Upstream:      up.Name,
+		Model:         model,
+		UpstreamModel: failedModel,
+		Endpoint:      endpoint,
+		Status:        status,
+		DurationMS:    time.Since(start).Milliseconds(),
+		APIKey:        h.recordAPIKey(r),
+		ClientAddr:    r.RemoteAddr,
+		UserAgent:     r.UserAgent(),
+		ErrorDetail:   "retryable error: " + ferr.Error(),
+	})
+}
+
 // isConnIssue 判断错误是否为连接类错误（网络不可达/超时/连接拒绝）。
 // 客户端主动断连（context.Canceled）不算：它是本地取消而非网络故障。
 // 修复前 *url.Error（实现 net.Error 接口）包装的 context.Canceled 会被 errors.As 误命中，
@@ -1709,6 +1742,7 @@ func (h *Handler) Rerank(w http.ResponseWriter, r *http.Request) {
 			upstream = up.Name
 			return
 		}
+		h.recordRetryableFailure(up, model, "rerank", h.pickAvailableModel(up, model), start, r, ferr)
 		h.log.Warn("rerank upstream failed, trying next",
 			"upstream", up.Name, "model", model, "error", ferr)
 		if !retryable {
@@ -1886,6 +1920,7 @@ func (h *Handler) Embeddings(w http.ResponseWriter, r *http.Request) {
 			upstream = up.Name
 			return
 		}
+		h.recordRetryableFailure(up, model, "embed", h.pickAvailableModel(up, model), start, r, ferr)
 		h.log.Warn("embedding upstream failed, trying next",
 			"upstream", up.Name, "model", model, "error", ferr)
 		if !retryable {
