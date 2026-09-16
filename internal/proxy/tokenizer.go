@@ -2,8 +2,8 @@
 package proxy
 
 import (
-	_ "embed"
 	"crypto/sha1"
+	_ "embed"
 	"fmt"
 	"os"
 	"path/filepath"

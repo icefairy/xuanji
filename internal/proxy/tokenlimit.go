@@ -32,6 +32,7 @@ import (
 // 或 "max_tokens is too large ... maximum ..." 类错误，提取两个数值：
 //   - $1 字段名（max_completion_tokens / max_tokens）
 //   - $2 模型允许的最大 completion tokens（要学习的值）
+//
 // 注意：不能匹配 "maximum context length ... your messages resulted in N" 类输入超长错误
 // （该类错误无 "too large" 字样）—— 输入超长应透传 400 让客户端自省。
 var tokenLimitTooLargeRe = regexp.MustCompile(`(?i)(max_completion_tokens|max_tokens).{0,120}?too large.{0,120}?(?:at most|maximum)[^0-9]*(\d+)`)

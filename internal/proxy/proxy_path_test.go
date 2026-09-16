@@ -51,7 +51,9 @@ func TestE2E_NonStandardBaseURL(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				gotPath = r.URL.Path
 				b, _ := io.ReadAll(r.Body)
-				var reqBody struct{ Model string `json:"model"` }
+				var reqBody struct {
+					Model string `json:"model"`
+				}
 				if json.Unmarshal(b, &reqBody) == nil {
 					gotModel = reqBody.Model
 				}

@@ -13,9 +13,10 @@ import (
 )
 
 // normalizeImageURLFlat 把 messages 中 image_url 的嵌套对象形式拍平为字符串形式：
-//   {"type":"image_url","image_url":{"url":"DATA_URI"}}     → {"type":"image_url","image_url":"DATA_URI"}
-//   {"type":"image_url","image_url":"DATA_URI"}             → 不动（已是平铺）
-//   {"type":"image","image_url":{...}} / {"type":"image","image_url":"..."} → 同样处理（image 类型）
+//
+//	{"type":"image_url","image_url":{"url":"DATA_URI"}}     → {"type":"image_url","image_url":"DATA_URI"}
+//	{"type":"image_url","image_url":"DATA_URI"}             → 不动（已是平铺）
+//	{"type":"image","image_url":{...}} / {"type":"image","image_url":"..."} → 同样处理（image 类型）
 //
 // 默认不执行（NormalizeImageURL=false），仅当上游配置 normalize_image_url=true 时才开启。
 // 原因是 OpenAI 标准格式为嵌套对象；vllm 等少数上游只认平铺字符串才需要此开关。

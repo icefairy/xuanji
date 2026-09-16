@@ -22,10 +22,10 @@ import (
 )
 
 const (
-	detailMaxMsgContent  = 300 // 摘要中单条消息正文最大保留长度
-	detailMaxMessages    = 8   // 摘要中保留的最近消息条数（更早的省略计数）
+	detailMaxMsgContent  = 300  // 摘要中单条消息正文最大保留长度
+	detailMaxMessages    = 8    // 摘要中保留的最近消息条数（更早的省略计数）
 	detailMaxErrorMsg    = 4096 // 上游 error.message 最大保留长度
-	detailMaxFallbackRaw = 800 // 非 JSON 请求/响应体兜底截断长度
+	detailMaxFallbackRaw = 800  // 非 JSON 请求/响应体兜底截断长度
 	detailMaxSummaryJSON = 4000 // request_summary 输出上限
 )
 
@@ -138,7 +138,7 @@ func summarizeUpstreamError(body []byte) string {
 			msg := e.Get("message").String()
 			tp := e.Get("type").String()
 			code := e.Get("code").String()
-	// 压缩换行/制表，便于在日志单行查看
+			// 压缩换行/制表，便于在日志单行查看
 			msg = strings.Join(strings.Fields(msg), " ")
 			var sb strings.Builder
 			sb.WriteString("message=")
@@ -165,6 +165,7 @@ func truncateLogLine(s string, max int) string {
 	}
 	return s
 }
+
 // consumeUpstreamError 读取上游 4xx/5xx 响应体：先打结构化错误详情日志
 // （请求摘要 + 响应摘要，messages 过长自动精简、图片 base64 打码），
 // 再把读取到的内容放回 resp.Body，供后续 writeUpstreamError 等透传错误响应用

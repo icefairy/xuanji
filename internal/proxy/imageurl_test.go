@@ -37,8 +37,8 @@ func TestNormalizeImageURLFlat(t *testing.T) {
 			wantFlat: `"image_url":"data:image/png;base64,CCCC"`,
 		},
 		{
-			name: "纯文本零开销",
-			body: `{"messages":[{"role":"user","content":"你好"}]}`,
+			name:     "纯文本零开销",
+			body:     `{"messages":[{"role":"user","content":"你好"}]}`,
 			wantHTTP: false,
 		},
 	}

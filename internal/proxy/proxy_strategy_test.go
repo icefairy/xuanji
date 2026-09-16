@@ -157,5 +157,5 @@ func names(ups []*config.Upstream) []string {
 	return out
 }
 
-var _ = health.New // 保留 health 依赖引用（SelectCandidates 健康过滤在真实链路生效）
+var _ = health.New       // 保留 health 依赖引用（SelectCandidates 健康过滤在真实链路生效）
 var _ = time.Millisecond // 保留 time 依赖引用
