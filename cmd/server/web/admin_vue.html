@@ -609,6 +609,13 @@
         </button>
         <button
           class="tab-btn"
+          :class="{ active: tab === 'accounts' }"
+          @click="switchTab('accounts')"
+        >
+          厂商账号
+        </button>
+        <button
+          class="tab-btn"
           :class="{ active: tab === 'settings' }"
           @click="switchTab('settings')"
         >
@@ -2225,6 +2232,149 @@
         </table>
       </div>
 
+      <div class="tab-content" v-if="tab === 'accounts'">
+        <div
+          style="
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 12px;
+            flex-wrap: wrap;
+            gap: 8px;
+          "
+        >
+          <span style="color: #909399; font-size: 13px">
+            {{ checkinInfo.window_start }}–{{ checkinInfo.window_end }}
+            （{{ checkinInfo.timezone }}，窗口内随机时刻）
+          </span>
+          <span style="display: flex; gap: 8px">
+            <label
+              style="display: flex; align-items: center; gap: 4px; font-size: 13px"
+            >
+              <input type="checkbox" v-model="autoCheckinGlobal" @change="toggleGlobalCheckin" />
+            </label>
+            <button class="btn" @click="loadVendorAccounts">刷新</button>
+            <button class="btn" @click="openOAuthLogin">OAuth 登录</button>
+            <button class="btn" @click="openImportDialog">从旧代理导入</button>
+            <button class="btn btn-primary" @click="openAddAccountDialog">
+              + 手工导入
+            </button>
+          </span>
+        </div>
+
+        <div
+          v-if="oauthLogin.url"
+          style="
+            background: #ecf5ff;
+            border: 1px solid #b3d8ff;
+            border-radius: 4px;
+            padding: 12px;
+            margin-bottom: 12px;
+            font-size: 13px;
+            line-height: 1.8;
+          "
+        >
+          <div style="font-weight: 600">
+            OAuth 登录{{ oauthLogin.pending ? '（等待完成...）' : '' }}
+          </div>
+          <div style="margin: 6px 0; word-break: break-all">
+            在任意设备浏览器打开：
+            <a :href="oauthLogin.url" target="_blank" style="color: #409eff"
+              >{{ oauthLogin.url }}</a
+            >
+          </div>
+          <div v-if="oauthLogin.error" style="color: #f56c6c">
+            {{ oauthLogin.error }}
+          </div>
+          <div style="display: flex; gap: 8px; margin-top: 6px">
+            <button class="btn" @click="oauthLogin.url = ''">关闭</button>
+          </div>
+        </div>
+
+        <table>
+          <thead>
+            <tr>
+              <th>名称</th>
+              <th>账号</th>
+              <th>状态</th>
+              <th>积分余额</th>
+              <th>令牌有效期</th>
+              <th>用量</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="a in vendorAccounts">
+              <td>{{ a.name || '-' }}</td>
+              <td>
+                <div style="font-size: 12px; color: #606266">
+                  {{ a.nickname || '-' }}
+                </div>
+                <div style="font-size: 11px; color: #c0c4cc">
+                  {{ (a.uid || '').slice(0, 8) }}
+                </div>
+              </td>
+              <td>
+                <span v-if="!a.enabled" class="badge badge-gray">禁用</span>
+                <span v-else-if="a.cooling_down" class="badge badge-orange"
+                  :title="'429 冷却中，至 ' + fmtTime(a.cooldown_until)"
+                  >冷却中</span
+                >
+                <span
+                  v-else-if="a.credit_exhausted"
+                  class="badge badge-red"
+                  title="积分已耗尽，池模式会跳过该账号"
+                  >积分耗尽</span
+                >
+                <span v-else class="badge badge-green">可用</span>
+                <span
+                  v-if="a.token_expiring_soon"
+                  class="badge badge-orange"
+                  title="令牌即将过期，下次使用前自动刷新"
+                  >待刷新</span
+                >
+              </td>
+              <td>
+                <span
+                  class="badge"
+                  :class="a.today_checked_in ? 'badge-green' : 'badge-gray'"
+                  >{{ a.today_label }}</span
+                >
+              </td>
+              <td>
+                <span v-if="a.usage_total > 0">
+                  <b>{{ a.usage_left }}</b> / {{ a.usage_total }}
+                </span>
+                <span v-else style="color: #c0c4cc" title="点「积分」查询余额"
+                  >未查询</span
+                >
+              </td>
+              <td style="font-size: 12px; color: #606266">
+                {{ a.expires_at ? fmtTime(a.expires_at) : '-' }}
+              </td>
+              <td style="font-size: 12px; color: #606266">
+                {{ a.use_count || 0 }} 次
+              </td>
+              <td>
+                <span style="display: flex; gap: 4px; flex-wrap: wrap">
+                  <button class="btn" @click="accountAction(a, 'test')" title="刷新令牌 + 查积分，成功后解除冷却">测试</button>
+                  <button class="btn" @click="accountAction(a, 'credits')" title="刷新积分余额">积分</button>
+                  <button class="btn" @click="accountAction(a, 'toggle')" title="启用 / 禁用">
+                    {{ a.enabled ? '禁用' : '启用' }}
+                  </button>
+                  <button class="btn btn-danger" @click="accountAction(a, 'delete')">删除</button>
+                </span>
+              </td>
+            </tr>
+            <tr v-if="!vendorAccounts.length">
+              <td colspan="8" style="text-align: center; color: #909399; padding: 24px">
+                暂无账号。点「OAuth 登录」扫码登录，或用「从旧代理导入」搬运已有账号。
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
       <!-- 系统设置 -->
       <div class="tab-content" v-if="tab === 'settings'">
         <div
@@ -3330,6 +3480,11 @@
             tab: "metrics",
             upstreams: [],
             rules: [],
+            vendorAccounts: [],
+            checkinInfo: { window_start: "05:00", window_end: "09:00", timezone: "Asia/Shanghai" },
+            autoCheckinGlobal: true,
+            oauthLogin: { url: "", state: "", pending: false, error: "", timer: null },
+            importDryRun: true,
             // 对话调试
             chatModel: "",
             chatParams: {
@@ -4532,6 +4687,189 @@ curl -sS "$BASE/v1/messages" \\
                 })
                 .catch(function () {});
             },
+            // 时间戳（毫秒）格式化为本地可读时间
+            fmtTime: function (ms) {
+              if (!ms) return "-";
+              var d = new Date(Number(ms));
+              if (isNaN(d.getTime())) return "-";
+              var p = function (n) {
+                return (n < 10 ? "0" : "") + n;
+              };
+              return (
+                d.getFullYear() +
+                "-" +
+                p(d.getMonth() + 1) +
+                "-" +
+                p(d.getDate()) +
+                " " +
+                p(d.getHours()) +
+                ":" +
+                p(d.getMinutes())
+              );
+            },
+            loadVendorAccounts: function () {
+              var self = this;
+              return self
+                .api("/admin/vendor-accounts")
+                .then(function (r) {
+                  var d = r.data || {};
+                  self.vendorAccounts = d.accounts || [];
+                  if (d.checkin) self.checkinInfo = d.checkin;
+                  // 全局开关从 config 读（非 vendor-accounts 接口返回）
+                  return self.api("/admin/config").then(function (cr) {
+                    var cfg = cr.data || {};
+                    var v = cfg[self.autoCheckinKey];
+                    // 未配置视为开启（与后端默认一致）
+                    self.autoCheckinGlobal = !(v === "false" || v === "0");
+                  });
+                })
+                .catch(function () {});
+            },
+            toggleGlobalCheckin: function () {
+              var self = this;
+              var body = {};
+              body[self.autoCheckinKey] = self.autoCheckinGlobal ? "true" : "false";
+              self
+                .api("/admin/config", { method: "PUT", body: body })
+                .then(function () {})
+                .catch(function () {
+                  self.autoCheckinGlobal = !self.autoCheckinGlobal; // 失败回滚
+                });
+            },
+            // 账号操作：test / credits / status / checkin / toggle / delete
+            accountAction: function (a, action) {
+              var self = this;
+              var body = undefined;
+              if (action === "toggle") {
+                body = { enabled: !a.enabled };
+              } else if (action === "delete") {
+                if (!confirm("确定删除账号「" + (a.name || a.uid) + "」？此操作不可恢复。")) {
+                  return;
+                }
+              } else if (action === "checkin") {
+              }
+              self
+                .api("/admin/vendor-accounts/" + a.id + "/" + action, {
+                  method: "POST",
+                  body: body,
+                })
+                .then(function (r) {
+                  var d = r.data || {};
+                  if (action === "credits" || action === "test") {
+                    alert(
+                      "账号：" + (a.name || a.uid) +
+                        "\n剩余积分：" + (d.usage_left != null ? d.usage_left : "-") +
+                        " / " + (d.usage_total != null ? d.usage_total : "-") +
+                        "\n今日消耗：" + (d.today_used != null ? d.today_used : "-") +
+                        (d.warning ? "\n警告：" + d.warning : "")
+                    );
+                  } else if (action === "status") {
+                    alert(
+                      "账号：" + (a.name || a.uid) +
+                    );
+                  } else if (action === "checkin") {
+                    alert(
+                      "账号：" + (a.name || a.uid) +
+                        "\n日期：" + (d.date || "-") +
+                        (d.msg ? "\n上游：" + d.msg : "")
+                    );
+                  }
+                  self.loadVendorAccounts();
+                })
+                .catch(function () {});
+            },
+            openAddAccountDialog: function () {
+              if (!rt) return;
+              var name = prompt("给这个账号起个名字（可留空）") || "";
+              var self = this;
+              self
+                .api("/admin/vendor-accounts", {
+                  method: "POST",
+                })
+                .then(function (r) {
+                  var d = r.data || {};
+                  alert(d.created ? "账号已添加" : "账号登录态已更新");
+                  self.loadVendorAccounts();
+                })
+                .catch(function () {});
+            },
+            openImportDialog: function () {
+              var self = this;
+              if (self.importDryRun) {
+                if (!confirm("将先做一次「预览」（不写入任何数据），确认继续？")) return;
+              } else {
+                if (!confirm("将从该路径导入账号（按 uid 幂等，已存在则更新登录态）。继续？")) return;
+              }
+              self
+                .api("/admin/vendor-accounts/import-legacy", {
+                  method: "POST",
+                  body: { path: self.importPath, dry_run: self.importDryRun },
+                })
+                .then(function (r) {
+                  var d = r.data || {};
+                  var lines = (d.results || []).map(function (x) {
+                    return x.name + " (" + x.action + ")" + (x.reason ? " — " + x.reason : "");
+                  });
+                  alert(
+                    (d.dry_run ? "【预览】" : "【已导入】") +
+                      "\n路径：" + d.path +
+                      "\n总数：" + d.total +
+                      "\n新增：" + d.created + "，更新：" + d.updated + "，跳过：" + d.skipped +
+                      "\n\n" + lines.join("\n")
+                  );
+                  if (!d.dry_run) self.loadVendorAccounts();
+                })
+                .catch(function () {});
+            },
+            // OAuth 登录：拉 authUrl → 轮询进度。
+            // 轮询由前端驱动（每次一个很短的请求），服务端不需要等待任务或额外进程。
+            openOAuthLogin: function () {
+              var self = this;
+              self.oauthLogin.error = "";
+              self
+                .api("/admin/vendor-oauth/start", { method: "POST" })
+                .then(function (r) {
+                  var d = r.data || {};
+                  self.oauthLogin.url = d.auth_url || "";
+                  self.oauthLogin.state = d.state || "";
+                  self.oauthLogin.pending = true;
+                  window.open(d.auth_url, "_blank");
+                  self.pollOAuth();
+                })
+                .catch(function () {});
+            },
+            pollOAuth: function () {
+              var self = this;
+              if (!self.oauthLogin.state) return;
+              if (self.oauthLogin.timer) clearTimeout(self.oauthLogin.timer);
+              self.oauthLogin.timer = setTimeout(function () {
+                self
+                  .api(
+                    "/admin/vendor-oauth/poll?state=" +
+                      encodeURIComponent(self.oauthLogin.state)
+                  )
+                  .then(function (r) {
+                    var d = r.data || {};
+                    if (d.ok) {
+                      self.oauthLogin.pending = false;
+                      self.oauthLogin.url = "";
+                      self.oauthLogin.state = "";
+                      alert("登录成功" + (d.name ? "：" + d.name : ""));
+                      self.loadVendorAccounts();
+                      return;
+                    }
+                    if (d.pending) {
+                      self.oauthLogin.error = "等待浏览器中完成登录...";
+                      self.pollOAuth(); // 继续轮询
+                      return;
+                    }
+                    self.oauthLogin.error = d.error || "登录失败";
+                  })
+                  .catch(function () {
+                    self.pollOAuth();
+                  });
+              }, 3000);
+            },
             // ---- 对话调试 ----
             scrollChatToBottom: function () {
               var el = this.$refs.chatList;
@@ -4694,6 +5032,8 @@ curl -sS "$BASE/v1/messages" \\
                   self.loadEfforts();
                 } else if (name === "tokenlimits") {
                   self.loadTokenLimits();
+                } else if (name === "accounts") {
+                  self.loadVendorAccounts();
                 } else if (name === "logs") {
                   self.loadLogs();
                 } else if (name === "metrics") {
