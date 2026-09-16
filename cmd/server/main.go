@@ -255,6 +255,8 @@ func main() {
 		go dailyStatsTicker(storeInst)
 	}
 
+	defer stopCheckin()
+
 	slog.Info("xuanji gateway listening",
 		"addr", addr,
 		"upstreams", len(cfg.Upstreams),
@@ -398,7 +400,6 @@ func buildServeMux(cfg *config.Config, rt *router.Router, hc *health.Checker, re
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", healthzHandler)
-
 	// 管理界面（Vue 页面，/admin/* 留给 JSON API）
 	// 静态资源从 webFileSystem 读取：磁盘 web/ 目录优先（开发），否则用 go:embed 嵌入资源（单二进制/Docker）。
 	webFS := webFileSystem()
@@ -565,6 +566,10 @@ func buildServeMux(cfg *config.Config, rt *router.Router, hc *health.Checker, re
 	// 对话调试：走完整网关路由链路（依赖 pxHandler，见上方 SetProxy 注入）
 	mux.HandleFunc("POST /admin/chat", adminAuth(admHandler.Chat))
 
+	// 这些能力内建在网关进程内，不再需要单独跑一个代理服务。
+	admHandler.SetVendorPool(vendorPool)
+	// 同时开放到 /api/admin/*（免登录管理 key），便于 AI 助手与脚本管理账号
+
 	olHandler := ollama.New(rt, hc)
 	olHandler.SetTimeout(time.Duration(cfg.Retry.UpstreamTimeout) * time.Second)
 	pxHandler := proxy.New(cfg, rt, hc)
@@ -584,6 +589,7 @@ func buildServeMux(cfg *config.Config, rt *router.Router, hc *health.Checker, re
 	ff := proxy.NewFastFailCache(time.Duration(cfg.Retry.FastFailMinutes) * time.Minute)
 	pxHandler.SetFastFail(ff)
 	admHandler.SetFastFail(ff)
+	// 按当前配置里出现过的 vendor 建池，逐个注入 proxy Handler。
 	// 对话调试（/admin/chat）注入完整转发链路与路由探测器：走完整网关路由链路
 	admHandler.SetProxy(pxHandler, rt)
 	stopProbe := pxHandler.StartFastFailProbe(time.Duration(cfg.Retry.FastFailProbeMinutes) * time.Minute)
@@ -856,4 +862,70 @@ func ensureAdminAPIKey(s *store.Store) error {
 	// 只打印前缀，避免明文管理凭证进入日志/采集系统（完整 key 可在系统设置页查看）。
 	slog.Info("generated admin api key", "key_prefix", key[:8]+"...")
 	return nil
+}
+
+//
+// 池按厂商标识建一次即复用：登录态、积分缓存、429 冷却都是运行期状态，
+// 不应随配置热重载而重建（否则冷却记录与轮询游标会丢失）。
+	if cfg == nil || st == nil || px == nil {
+		return
+	}
+	endpoints := map[string]string{}
+	for i := range cfg.Upstreams {
+		up := &cfg.Upstreams[i]
+			continue
+		}
+		v := up.Vendor
+		if v == "" {
+				"upstream", up.Name, "hint", "config 表键 upstream."+up.Name+".vendor")
+			continue
+		}
+		if _, ok := endpoints[v]; !ok {
+			endpoints[v] = up.VendorEndpoint
+		}
+	}
+	for vendor, endpoint := range endpoints {
+		if p := vendorPool(vendor); p != nil {
+			// 已有池：仅在 endpoint 变化时更新客户端地址
+			p.SetEndpoint(endpoint)
+			px.SetVendorPool(vendor, p)
+			continue
+		}
+		setVendorPool(vendor, p)
+		px.SetVendorPool(vendor, p)
+		slog.Info("vendor account pool registered", "vendor", vendor, "endpoint", client.Endpoint)
+	}
+}
+
+var (
+	vendorPoolsMu sync.Mutex
+)
+
+	vendorPoolsMu.Lock()
+	defer vendorPoolsMu.Unlock()
+	return vendorPools[vendor]
+}
+
+	vendorPoolsMu.Lock()
+	defer vendorPoolsMu.Unlock()
+	vendorPools[vendor] = p
+}
+
+// 之间随机取整分钟 + 秒级抖动执行，错过窗口立即补签，失败 5 分钟后重试。
+// 返回停止函数（进程退出时调用）。
+	vendorPoolsMu.Lock()
+	for k, v := range vendorPools {
+		pools[k] = v
+	}
+	vendorPoolsMu.Unlock()
+
+	for vendor, p := range pools {
+		s.Start(context.Background())
+		scheds = append(scheds, s)
+	}
+	return func() {
+		for _, s := range scheds {
+			s.Stop()
+		}
+	}
 }

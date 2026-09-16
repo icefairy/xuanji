@@ -41,6 +41,8 @@ type Handler struct {
 
 	quotaReload func() // 配额策略刷新回调（管理端改动组/分组后调用）；nil 时不刷新
 
+	// 由 main 注入；nil 时相关接口返回 503。
+
 	metricsCache    map[string]cacheEntry // 统计接口结果缓存（key=path?query）
 	metricsCacheMu  sync.RWMutex
 	metricsCacheTTL time.Duration
@@ -48,6 +50,7 @@ type Handler struct {
 
 // SetAuth 注入下游 key 鉴权器（api_tokens CRUD 后刷新内存缓存）。
 func (h *Handler) SetAuth(a *auth.APIKeys) { h.auth = a }
+
 
 // refreshAuth 在 api_tokens 增删/启停后刷新鉴权缓存，避免新 key 立即 401 / 禁用 key 仍放行。
 func (h *Handler) refreshAuth() {

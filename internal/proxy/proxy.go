@@ -85,6 +85,26 @@ type Handler struct {
 	modelArrears       map[string]bool
 	modelArrearsMu     sync.RWMutex
 	arrearsModelMarker func(upstream, model, reason string) // 模型级欠费标记回调；nil 时不落库（仅内存）
+	// 转发时按 up.Vendor 取池，选号/刷新令牌/换号重试。nil 时此类上游不可用。
+	vendorPoolsMu sync.RWMutex
+}
+
+	if vendor == "" || pool == nil {
+		return
+	}
+	h.vendorPoolsMu.Lock()
+	defer h.vendorPoolsMu.Unlock()
+	if h.vendorPools == nil {
+	}
+	h.vendorPools[vendor] = pool
+}
+
+	h.vendorPoolsMu.RLock()
+	defer h.vendorPoolsMu.RUnlock()
+	if h.vendorPools == nil {
+		return nil
+	}
+	return h.vendorPools[vendor]
 }
 
 // New 创建转发 Handler，共享一个 60s 连接超时的 HTTP 客户端。
@@ -1142,6 +1162,10 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 		if nb, serr := sjson.SetBytes(reqBody, "stream_options.include_usage", true); serr == nil {
 			reqBody = nb
 		}
+	}
+
+	// 注意：必须在通用鉴权路径之前返回，否则会用错误的 key 去打上游。
+		return h.forwardViaVendorPool(w, r, reqBody, up, model, upstreamModel, stream, last, start)
 	}
 
 	target := strings.TrimRight(up.BaseURL, "/") + "/chat/completions"
