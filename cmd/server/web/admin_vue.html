@@ -966,8 +966,11 @@
                 }}ms
                 <template v-if="m.usage"
                   ><br />tokens：输入 {{ m.usage.prompt_tokens || 0 }} / 输出 {{
-                  m.usage.completion_tokens || 0 }} / 缓存命中 {{
-                  m.usage.cache_hit_tokens || 0 }} / 未命中 {{
+                  m.usage.completion_tokens || 0
+                  }}<template v-if="m.usage.thinking_tokens"
+                    >（其中思考 {{ m.usage.thinking_tokens }}）</template
+                  > / 总计 {{ (m.usage.prompt_tokens || 0) + (m.usage.completion_tokens || 0) }}
+                  / 缓存命中 {{ m.usage.cache_hit_tokens || 0 }} / 未命中 {{
                   m.usage.cache_miss_tokens || 0 }}</template
                 >
               </div>

@@ -647,6 +647,13 @@ func extractChatReply(data []byte) string {
 }
 
 // extractChatUsage 从 OpenAI chat 响应提取 token 用量（含前缀缓存命中/未命中）。
+//
+// 注意口径：这里展示的是上游**原始** usage（completion_tokens 含思考，不做归一化），
+// 与请求日志不同——日志侧 parseUsage/normalizeThinking 会把思考从 completion 里减出、
+// 单列 thinking_tokens 并计入 tokens。因此这里必须同时给出思考 token，否则思考型模型
+// （deepseek-v4-flash 等）下「输出」会被误读。对齐关系：
+//
+//	请求日志「输出t + 思考t」== 本页「输出」
 func extractChatUsage(data []byte) map[string]int64 {
 	usage := map[string]int64{}
 	u := gjson.GetBytes(data, "usage")
@@ -655,17 +662,32 @@ func extractChatUsage(data []byte) map[string]int64 {
 	}
 	prompt := u.Get("prompt_tokens").Int()
 	completion := u.Get("completion_tokens").Int()
+	// 思考 token：与 proxy.parseUsage 同口径——优先 DeepSeek 顶层 thinking_tokens，
+	// 兜底 OpenAI 标准 completion_tokens_details.reasoning_tokens（agnes/o1 等）。
+	thinking := u.Get("thinking_tokens").Int()
+	if thinking == 0 {
+		thinking = u.Get("completion_tokens_details.reasoning_tokens").Int()
+	}
 	hit := u.Get("prompt_cache_hit_tokens").Int()
 	if hit == 0 {
 		// OpenAI 标准字段兑底（商汤等上游用 prompt_tokens_details.cached_tokens）
 		hit = u.Get("prompt_tokens_details.cached_tokens").Int()
 	}
 	miss := u.Get("prompt_cache_miss_tokens").Int()
+	// 部分上游（商汤等 OpenAI 标准）只返回 cached_tokens，不返回 prompt_cache_miss_tokens。
+	// 兜底：miss = prompt - hit。
 	if miss == 0 && hit > 0 && prompt > hit {
 		miss = prompt - hit
 	}
+	// 上游完全没有返回缓存字段时（如 agnes 首次请求无缓存可命中），按“全部未命中”
+	// 兜底 miss = prompt——与 proxy.parseUsage 同口径，否则本页显示“未命中 0”
+	// 而请求日志显示等于输入，两处对不上。
+	if hit == 0 && miss == 0 && prompt > 0 {
+		miss = prompt
+	}
 	usage["prompt_tokens"] = prompt
 	usage["completion_tokens"] = completion
+	usage["thinking_tokens"] = thinking
 	usage["cache_hit_tokens"] = hit
 	usage["cache_miss_tokens"] = miss
 	return usage
