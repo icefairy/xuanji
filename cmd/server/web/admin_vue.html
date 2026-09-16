@@ -607,7 +607,7 @@
       <div class="group-nav">
         <div class="nav-item" :class="{active: activeGroup==='core'}" @mouseenter="!isTouch && openGroup('core')" @mouseleave="!isTouch && closeGroupSoon()">
           <button class="group-btn" @click="clickGroup('core')">网关核心<svg class="caret" viewBox="0 0 10 6" width="10" height="6"><path d="M0 0l5 6 5-6z"/></svg></button>
-          <div class="dropdown" :class="{open: openGroupName==='core'}">
+          <div class="dropdown" :class="{open: openGroupName==='core'}" @mouseenter="!isTouch && cancelGroupClose()" @mouseleave="!isTouch && closeGroupSoon()">
             <button class="sub-item" :class="{active: tab==='upstreams'}" @click="switchTab('upstreams')">上游管理</button>
             <button class="sub-item" :class="{active: tab==='rules'}" @click="switchTab('rules')">路由规则</button>
             <button class="sub-item" :class="{active: tab==='chat'}" @click="switchTab('chat')">对话调试</button>
@@ -616,7 +616,7 @@
         </div>
         <div class="nav-item" :class="{active: activeGroup==='monitor'}" @mouseenter="!isTouch && openGroup('monitor')" @mouseleave="!isTouch && closeGroupSoon()">
           <button class="group-btn" @click="clickGroup('monitor')">监控诊断<svg class="caret" viewBox="0 0 10 6" width="10" height="6"><path d="M0 0l5 6 5-6z"/></svg></button>
-          <div class="dropdown" :class="{open: openGroupName==='monitor'}">
+          <div class="dropdown" :class="{open: openGroupName==='monitor'}" @mouseenter="!isTouch && cancelGroupClose()" @mouseleave="!isTouch && closeGroupSoon()">
             <button class="sub-item" :class="{active: tab==='logs'}" @click="switchTab('logs')">请求日志</button>
             <button class="sub-item" :class="{active: tab==='metrics'}" @click="switchTab('metrics')">请求统计</button>
             <button class="sub-item" :class="{active: tab==='prices'}" @click="switchTab('prices')">模型价格</button>
@@ -624,20 +624,20 @@
         </div>
         <div class="nav-item" :class="{active: activeGroup==='perm'}" @mouseenter="!isTouch && openGroup('perm')" @mouseleave="!isTouch && closeGroupSoon()">
           <button class="group-btn" @click="clickGroup('perm')">权限配额<svg class="caret" viewBox="0 0 10 6" width="10" height="6"><path d="M0 0l5 6 5-6z"/></svg></button>
-          <div class="dropdown" :class="{open: openGroupName==='perm'}">
+          <div class="dropdown" :class="{open: openGroupName==='perm'}" @mouseenter="!isTouch && cancelGroupClose()" @mouseleave="!isTouch && closeGroupSoon()">
             <button class="sub-item" :class="{active: tab==='apikeys'}" @click="switchTab('apikeys')">API Key</button>
             <button class="sub-item" :class="{active: tab==='groups'}" @click="switchTab('groups')">组管理</button>
           </div>
         </div>
         <div class="nav-item" :class="{active: activeGroup==='accounts'}" @mouseenter="!isTouch && openGroup('accounts')" @mouseleave="!isTouch && closeGroupSoon()">
           <button class="group-btn" @click="clickGroup('accounts')">厂商账号<svg class="caret" viewBox="0 0 10 6" width="10" height="6"><path d="M0 0l5 6 5-6z"/></svg></button>
-          <div class="dropdown" :class="{open: openGroupName==='accounts'}">
+          <div class="dropdown" :class="{open: openGroupName==='accounts'}" @mouseenter="!isTouch && cancelGroupClose()" @mouseleave="!isTouch && closeGroupSoon()">
             <button class="sub-item" :class="{active: tab==='accounts'}" @click="switchTab('accounts')">账号管理</button>
           </div>
         </div>
         <div class="nav-item" :class="{active: activeGroup==='system'}" @mouseenter="!isTouch && openGroup('system')" @mouseleave="!isTouch && closeGroupSoon()">
           <button class="group-btn" @click="clickGroup('system')">系统<svg class="caret" viewBox="0 0 10 6" width="10" height="6"><path d="M0 0l5 6 5-6z"/></svg></button>
-          <div class="dropdown" :class="{open: openGroupName==='system'}">
+          <div class="dropdown" :class="{open: openGroupName==='system'}" @mouseenter="!isTouch && cancelGroupClose()" @mouseleave="!isTouch && closeGroupSoon()">
             <button class="sub-item" :class="{active: tab==='tokenlimits'}" @click="switchTab('tokenlimits')">Token 限制</button>
             <button class="sub-item" :class="{active: tab==='endpoints'}" @click="switchTab('endpoints')">功能端点</button>
             <button class="sub-item" :class="{active: tab==='settings'}" @click="switchTab('settings')">系统设置</button>
@@ -3515,6 +3515,8 @@
             tab: localStorage.getItem("xuanji_tab") || "metrics",
             activeGroup: localStorage.getItem("xuanji_group") || "core",
             openGroupName: "",
+            // 被点击「钉住」的一级菜单：钉住期间悬浮窗常驻，直到再点同一组 / 点其他组 / 点子菜单
+            pinnedGroup: "",
             // 触屏设备：无 hover 语义，改走点击展开（首次触摸时判定）
             isTouch: (typeof window !== "undefined" && window.matchMedia && window.matchMedia("(hover: none)").matches),
             upstreams: [],
@@ -5063,6 +5065,7 @@ curl -sS "$BASE/v1/messages" \\
                 localStorage.setItem("xuanji_group", _g[name]);
               }
               this.openGroupName = "";
+              this.pinnedGroup = "";
               var self = this;
               this.$nextTick(function () {
                 if (name === "upstreams") {
@@ -5153,32 +5156,35 @@ curl -sS "$BASE/v1/messages" \\
             },
             // 二级菜单悬浮窗：鼠标悬浮一级菜单才浮出（触屏设备靠点击）
             openGroup: function (name) {
+              clearTimeout(this._groupTimer);
               this.openGroupName = name;
+            },
+            // 鼠标从一级按钮进入二级面板时取消关闭
+            cancelGroupClose: function () {
+              clearTimeout(this._groupTimer);
             },
             closeGroupSoon: function () {
               // 延迟关闭：给鼠标从一级按钮移到面板的时间，避免面板闪一下就消失
+              // 若某组已被点击「钉住」，则回到钉住的那组而不是关闭
               var self = this;
               clearTimeout(self._groupTimer);
               self._groupTimer = setTimeout(function () {
-                self.openGroupName = "";
-              }, 150);
+                self.openGroupName = self.pinnedGroup || "";
+              }, 250);
             },
-            // 点击一级菜单（触屏设备主路径）：展开/收起 + 切到该组已访问过的页
+            // 点击一级菜单：钉住/取消钉住二级悬浮窗（触屏与桌面同一路径）
             clickGroup: function (name) {
-              this.activeGroup = name;
-              // 触屏：点击同一按钮可收起（切换 openGroupName）
-              if (this.isTouch) {
-                this.openGroupName = (this.openGroupName === name ? "" : name);
+              clearTimeout(this._groupTimer);
+              if (this.pinnedGroup === name) {
+                // 再次点击同一组：收起
+                this.pinnedGroup = "";
+                this.openGroupName = "";
                 return;
               }
-              // 桌面端：切换到该组的默认子页（若当前 tab 不在该组内）
-              var first = {core:"upstreams",monitor:"metrics",perm:"apikeys",accounts:"accounts",system:"settings"}[name];
-              var cur = {upstreams:"core",rules:"core",chat:"core",efforts:"core",
-                         logs:"monitor",metrics:"monitor",prices:"monitor",
-                         apikeys:"perm",groups:"perm",
-                         accounts:"accounts",
-                         tokenlimits:"system",endpoints:"system",settings:"system"}[this.tab];
-              if (cur !== name && first) this.switchTab(first);
+              // 点击当前或其他一级菜单：钉住并展示该组
+              this.pinnedGroup = name;
+              this.openGroupName = name;
+              this.activeGroup = name;
             },
             loadDiscounts: function () {
               var self = this;
