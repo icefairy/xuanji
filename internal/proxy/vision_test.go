@@ -180,6 +180,73 @@ func TestVisionFallback_VisionEnabledRuleNoFallback(t *testing.T) {
 	}
 }
 
+// 兜底转发时必须裁掉历史上下文：只保留 system + 含图消息 + 前后各一条。
+// 回归：agnes 系上游处理 24 万 token 的整段会话首字节要 60~125 秒，
+// 客户端 5 分钟超时后大面积 context canceled（2026-09-16 实测）。
+func TestTrimVisionFallbackBody_KeepsImageAndNeighbors(t *testing.T) {
+	// 构造：system + 10 条长历史 + 含图 user 消息 + 1 条尾部消息
+	var sb strings.Builder
+	sb.WriteString(`{"model":"deepseek-v4-flash","messages":[`)
+	sb.WriteString(`{"role":"system","content":"you are helpful"},`)
+	for i := 0; i < 10; i++ {
+		if i > 0 {
+			sb.WriteString(",")
+		}
+		sb.WriteString(fmt.Sprintf(`{"role":"user","content":"历史消息%d %s"}`, i, strings.Repeat("x", 200)))
+	}
+	sb.WriteString(`,` + `{"role":"user","content":[{"type":"text","text":"看看这张图"},{"type":"image_url","image_url":{"url":"https://example.com/a.png"}}]}`)
+	sb.WriteString(`,` + `{"role":"assistant","content":"尾部消息"}`)
+	sb.WriteString(`]}`)
+	body := []byte(sb.String())
+
+	got := trimVisionFallbackBody(body)
+
+	if int64(len(got)) >= int64(len(body))/2 {
+		t.Fatalf("trimmed body not smaller enough: %d -> %d bytes", len(body), len(got))
+	}
+	msgs := gjson.GetBytes(got, "messages").Array()
+	if len(msgs) != 4 {
+		t.Fatalf("messages = %d, want 4 (system + prev neighbor + image + next neighbor); got=%s", len(msgs), string(got))
+	}
+	if msgs[0].Get("role").String() != "system" {
+		t.Errorf("messages[0].role = %q, want system", msgs[0].Get("role").String())
+	}
+	if !strings.Contains(msgs[1].Raw, "历史消息9") {
+		t.Errorf("messages[1] should be the previous neighbor, got %s", msgs[1].Raw)
+	}
+	if !strings.Contains(msgs[2].Raw, "image_url") {
+		t.Errorf("messages[2] should be the image message, got %s", msgs[2].Raw)
+	}
+	if msgs[3].Get("content").String() != "尾部消息" {
+		t.Errorf("messages[3] = %q, want the trailing neighbor", msgs[3].Get("content").String())
+	}
+	// 模型名等顶层字段必须保留
+	if got2 := gjson.GetBytes(got, "model").String(); got2 != "deepseek-v4-flash" {
+		t.Errorf("model = %q, want deepseek-v4-flash", got2)
+	}
+}
+
+// 单条含图消息（无 system、无邻居）：原样保留，不误删。
+func TestTrimVisionFallbackBody_SingleImageMessage(t *testing.T) {
+	got := trimVisionFallbackBody([]byte(imageURLBody))
+	msgs := gjson.GetBytes(got, "messages").Array()
+	if len(msgs) != 1 {
+		t.Fatalf("messages = %d, want 1; got=%s", len(msgs), string(got))
+	}
+	if !strings.Contains(msgs[0].Raw, "image_url") {
+		t.Errorf("image message lost: %s", msgs[0].Raw)
+	}
+}
+
+// 非 JSON / 无 messages：原样返回，不 panic。
+func TestTrimVisionFallbackBody_InvalidInput(t *testing.T) {
+	for _, in := range []string{`not json`, `{"model":"x"}`, `{"model":"x","messages":{}}`} {
+		if got := trimVisionFallbackBody([]byte(in)); string(got) != in {
+			t.Errorf("trimVisionFallbackBody(%q) = %q, want unchanged", in, string(got))
+		}
+	}
+}
+
 // 带图请求 + vision=0 + fallback 空：不兜底，保持原行为（原样转发到 text-up）。
 func TestVisionFallback_NoFallbackConfigured(t *testing.T) {
 	textUp, visionUp, h, textModels, visionModels := newVisionTestHandler(t, "")
@@ -195,5 +262,79 @@ func TestVisionFallback_NoFallbackConfigured(t *testing.T) {
 	}
 	if got := drain(visionModels); len(got) != 0 {
 		t.Errorf("vision-up should not be hit, got %v", got)
+	}
+}
+
+// 端到端：兜底转发时上游收到的 body 必须已被裁剪（历史长尾不进 agnes）。
+// 用独立环境（不做 model_mapping）以便断言 body 原文。
+func TestVisionFallback_TrimsBodyBeforeForward(t *testing.T) {
+	visionBodies := make(chan string, 4)
+	textBodies := make(chan string, 4)
+	resp := `{"id":"vision-1","object":"chat.completion","model":"x","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`
+
+	visionUp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		data, _ := io.ReadAll(r.Body)
+		visionBodies <- string(data)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, resp)
+	}))
+	textUp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		data, _ := io.ReadAll(r.Body)
+		textBodies <- string(data)
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, resp)
+	}))
+	defer visionUp.Close()
+	defer textUp.Close()
+
+	cfg := &config.Config{
+		Upstreams: []config.Upstream{
+			{Name: "text-up", BaseURL: textUp.URL + "/v1", APIKey: "sk-t", Models: []string{"deepseek-v4-flash"}},
+			{Name: "vision-up", BaseURL: visionUp.URL + "/v1", APIKey: "sk-v", Models: []string{"flash"},
+				ModelMapping: map[string]string{"flash": "agnes-2.5-flash"}},
+		},
+		Routing: config.Routing{
+			DefaultStrategy: "primary_backup",
+			Rules: []config.Rule{
+				{Model: "deepseek-v4-flash", Upstreams: []string{"text-up"}, Strategy: "primary_backup", VisionFallback: "flash"},
+				{Model: "flash", Upstreams: []string{"vision-up"}, Strategy: "primary_backup", Vision: true},
+			},
+		},
+	}
+	h := New(cfg, router.New(cfg), nil)
+
+	var sb strings.Builder
+	sb.WriteString(`{"model":"deepseek-v4-flash","messages":[`)
+	for i := 0; i < 20; i++ {
+		if i > 0 {
+			sb.WriteString(",")
+		}
+		sb.WriteString(fmt.Sprintf(`{"role":"user","content":"历史%d %s"}`, i, strings.Repeat("y", 500)))
+	}
+	sb.WriteString(`,` + `{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://example.com/a.png"}}]}`)
+	sb.WriteString(`]}`)
+	orig := sb.String()
+
+	rec := doChat(t, h, orig)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+
+	select {
+	case got := <-visionBodies:
+		if len(got) >= len(orig)/2 {
+			t.Errorf("forwarded body not trimmed: %d -> %d bytes", len(orig), len(got))
+		}
+		if !strings.Contains(got, "image_url") {
+			t.Errorf("forwarded body lost the image: %s", got)
+		}
+		if got2 := gjson.Get(got, "model").String(); got2 != "agnes-2.5-flash" {
+			t.Errorf("forwarded model = %q, want agnes-2.5-flash (mapped)", got2)
+		}
+	default:
+		t.Fatal("vision-up was not hit")
+	}
+	if got := drain(textBodies); len(got) != 0 {
+		t.Errorf("text-up should not be hit, got %d requests", len(got))
 	}
 }

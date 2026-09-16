@@ -359,6 +359,9 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		if rule := h.router.FindRule(model); rule != nil && !rule.Vision && strings.TrimSpace(rule.VisionFallback) != "" {
 			oldModel := model
 			model = rule.VisionFallback
+			// 裁剪历史上下文：只留 system + 含图消息 + 前后邻居。
+			// 不裁则整段会话（实测 24 万 token）全量灌给视觉上游，首字节 60~125s，客户端超时。
+			body = trimVisionFallbackBody(body)
 			h.log.Info("vision fallback", "from", oldModel, "to", model, "reason", "multimodal request")
 			upstreams, strategy, err = h.router.Route(model)
 			if err != nil {
@@ -1394,6 +1397,84 @@ func isMultimodalRequest(body []byte) bool {
 		}
 	}
 	return false
+}
+
+// hasImagePart 判断单条消息的 content 是否为含图的多模态数组。
+func hasImagePart(msg gjson.Result) bool {
+	content := msg.Get("content")
+	if !content.IsArray() {
+		return false
+	}
+	for _, part := range content.Array() {
+		t := part.Get("type").String()
+		if t == "image_url" || t == "image" {
+			return true
+		}
+	}
+	return false
+}
+
+// trimVisionFallbackBody 裁剪 vision 兜底转发的请求体：只保留 system 消息、
+// 包含图像的 user 消息、以及该图像消息前后各一条邻居消息。
+//
+// 背景：兜底改写只换 model 名，若不裁 body 会把整段会话历史（实测 24 万 token）
+// 一并灌给视觉上游，而 agnes 系处理超大 context 首字节需 60~125 秒，
+// 客户端 5 分钟超时后大面积 context canceled（2026-09-16 实测）。
+// 识图场景只需「图片 + 当前这一轮问题」，历史对视觉模型无价值。
+//
+// 非 JSON / 无 messages / 无图消息时原样返回，保持行为不变。
+func trimVisionFallbackBody(body []byte) []byte {
+	if !gjson.ValidBytes(body) {
+		return body
+	}
+	messages := gjson.GetBytes(body, "messages")
+	if !messages.IsArray() {
+		return body
+	}
+	msgs := messages.Array()
+	if len(msgs) == 0 {
+		return body
+	}
+
+	// 定位第一条含图消息（通常只有一条）。
+	imgIdx := -1
+	for i, msg := range msgs {
+		if hasImagePart(msg) {
+			imgIdx = i
+			break
+		}
+	}
+	if imgIdx < 0 {
+		return body // 不该发生（调用方已用 isMultimodalRequest 判断），保守原样返回
+	}
+
+	// 保留：全部 system + [imgIdx-1, imgIdx, imgIdx+1]（越界自动剔除，去重）。
+	keep := make(map[int]bool, 4)
+	for i, msg := range msgs {
+		if msg.Get("role").String() == "system" {
+			keep[i] = true
+		}
+	}
+	for _, i := range []int{imgIdx - 1, imgIdx, imgIdx + 1} {
+		if i >= 0 && i < len(msgs) {
+			keep[i] = true
+		}
+	}
+	if len(keep) == len(msgs) {
+		return body // 无需裁剪
+	}
+
+	kept := make([]string, 0, len(keep))
+	for i, msg := range msgs {
+		if keep[i] {
+			kept = append(kept, msg.Raw)
+		}
+	}
+	out, err := sjson.SetRawBytes(body, "messages", []byte("["+strings.Join(kept, ",")+"]"))
+	if err != nil {
+		return body // 拼接失败时保守用原 body，不阻断转发
+	}
+	return out
 }
 
 // normalizeThinking 统一两种思考 token 语义（在 usage 解析后、落库前调用）：
