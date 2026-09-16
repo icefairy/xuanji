@@ -115,7 +115,7 @@ func New(cfg *config.Config, rt *router.Router, hc *health.Checker) *Handler {
 		cfg:       cfg,
 		router:    rt,
 		health:    hc,
-		client:    &http.Client{Transport: transport},
+		client:    config.NewClientWithPiFingerprint(transport),
 		log:       slog.Default(),
 		tokenizer: NewTokenizer(),
 		reasoning: NewReasoningCache(0, nil), // db 由 SetStore 注入

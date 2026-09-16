@@ -49,7 +49,7 @@ func New(rt *router.Router, hc *health.Checker) *Handler {
 		router:  rt,
 		health:  hc,
 		timeout: upstreamTimeout,
-		client:  &http.Client{Transport: transport},
+		client:  config.NewClientWithPiFingerprint(transport),
 		log:     slog.Default(),
 	}
 }

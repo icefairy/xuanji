@@ -2,6 +2,7 @@
 package config
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,7 +13,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"github.com/icefairy/xuanji/internal/store"
@@ -712,33 +712,10 @@ func ParseModelsString(s string) []string {
 // ===== 上游 User-Agent 注入 =====
 //
 // 转发到上游时，各协议 handler（OpenAI proxy / Gemini / Anthropic / Ollama）
-// 构造完上游请求后统一调用 ApplyUpstreamUserAgent 设置 User-Agent。
+// 构造完上游请求后统一调用 ApplyUpstreamUserAgent：它同时完成 User-Agent
+// 与 pi 指纹头的注入（实现见 fingerprint.go）。
 // 用包级 atomic 而不是把 cfg 传进每个 handler 结构，避免大改签名，
 // 并保证配置热重载后立即生效。
-
-// DefaultUpstreamUserAgent 是转发时的默认 User-Agent：pi agent 的真实 UA
-// （pi/0.84.1，linux；node v22.22.1；x64，与本机 pi 二进制实测一致）。
-const DefaultUpstreamUserAgent = "pi/0.84.1 (linux; node/v22.22.1; x64)"
-
-var upstreamUserAgent atomic.Value // string；空 = 不设置（用 Go 默认 Go-http-client/1.1）
-
-// SetUpstreamUserAgent 设置全局上游 UA（空串 = 不设置）。
-func SetUpstreamUserAgent(ua string) { upstreamUserAgent.Store(ua) }
-
-// UpstreamUserAgent 返回当前全局上游 UA。
-func UpstreamUserAgent() string {
-	if v, ok := upstreamUserAgent.Load().(string); ok {
-		return v
-	}
-	return ""
-}
-
-// ApplyUpstreamUserAgent 把全局上游 UA 写到请求头（配置非空时才设置）。
-func ApplyUpstreamUserAgent(req *http.Request) {
-	if ua := UpstreamUserAgent(); ua != "" {
-		req.Header.Set("User-Agent", ua)
-	}
-}
 
 // ForwardTransportIdleTimeout 是真实转发连接池中空闲连接的存活时间。
 //
@@ -751,11 +728,25 @@ const ForwardTransportIdleTimeout = 30 * time.Second
 // NewForwardTransport 构造真实转发（chat/completions、anthropic、gemini、ollama）
 // 使用的 http.Transport。与 NewUpstreamTransport（旁路探测，逐次新建连接）不同，
 // 转发请求频率高、连接复用收益大，因此保留 keep-alive，仅限制空闲连接寿命。
+//
+// DialTLSContext 承担 pi 指纹的连接层伪装：它返回的 Conn 会在首个请求的
+// 头部块写入时按 pi 顺序重排（详见 fingerprint.go）。因为始终返回已 TLS 的
+// Conn，net/http 不会重复握手，连接复用（keep-alive）不受影响。
+//
+// 注意：此处显式声明 NextProtos=http/1.1（与 pi 实测一致）。若要启用
+// accept-encoding 伪装，必须用 NewClientWithPiFingerprint 包装 client ——
+// 因为 Go 的「透明 gzip」仅在未显式设置 Accept-Encoding 时生效。
 func NewForwardTransport(dialTimeout time.Duration) *http.Transport {
-	return &http.Transport{
+	tr := &http.Transport{
 		DialContext:     (&net.Dialer{Timeout: dialTimeout}).DialContext,
 		IdleConnTimeout: ForwardTransportIdleTimeout,
 	}
+	// 闭包在拨号时读取 tr.TLSClientConfig，确保调用方对 TLSClientConfig 的
+	// 自定义（如 InsecureSkipVerify）依然生效（piTLSConfig 会克隆它）。
+	tr.DialTLSContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		return dialTLSWithPiFingerprint(ctx, network, addr, dialTimeout, tr.TLSClientConfig)
+	}
+	return tr
 }
 
 // NewUpstreamTransport 构造一个直连上游的独立 http.Transport，供健康探测 / 管理端
