@@ -255,6 +255,9 @@ func main() {
 		go dailyStatsTicker(storeInst)
 	}
 
+	//
+	// 注意不要传本地时区：supervisor 环境下 Go 的 time.Local 可能是 UTC（实测本机 TZ 未设），
+	// 那样「05:00-09:00」会落到北京时间 13:00-17:00，与「像真人」的初衷相悖。
 	defer stopCheckin()
 
 	slog.Info("xuanji gateway listening",
@@ -876,6 +879,7 @@ func ensureAdminAPIKey(s *store.Store) error {
 			continue
 		}
 		v := up.Vendor
+		}
 		if v == "" {
 				"upstream", up.Name, "hint", "config 表键 upstream."+up.Name+".vendor")
 			continue

@@ -1164,6 +1164,7 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 		}
 	}
 
+	// 因此完全接管本函数的转发流程。
 	// 注意：必须在通用鉴权路径之前返回，否则会用错误的 key 去打上游。
 		return h.forwardViaVendorPool(w, r, reqBody, up, model, upstreamModel, stream, last, start)
 	}

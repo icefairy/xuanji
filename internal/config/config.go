@@ -208,6 +208,11 @@ func (u *Upstream) IsAnthropic() bool {
 //
 }
 
+//
+// 判定依据是配了 Vendor（账号厂商标识），而不是 Type：
+// 已有生产上游保持 type=openai + base_url 不动，只加一个 vendor 键即可切换路径。
+}
+
 // IsGemini 判断上游是否为 Google Gemini 原生协议。
 func (u *Upstream) IsGemini() bool {
 	return strings.EqualFold(u.Type, "gemini")
