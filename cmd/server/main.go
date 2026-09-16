@@ -14,6 +14,7 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -887,6 +888,12 @@ func ensureAdminAPIKey(s *store.Store) error {
 		if _, ok := endpoints[v]; !ok {
 			endpoints[v] = up.VendorEndpoint
 		}
+		// 健康检查会打 up.BaseURL（internal/health 的 chatProbe 不感知 vendor），
+		// 典型错误是转发已切到官方端点，BaseURL 还指向本地旧代理——
+		// 旧代理一停，健康检查就把整条上游判 dead，而转发实际上是好的。
+		if ep := up.VendorEndpoint; ep != "" && !sameHost(up.BaseURL, ep) {
+				"hint", "退役本地代理后请把 base_url 改成 "+ep)
+		}
 	}
 	for vendor, endpoint := range endpoints {
 		if p := vendorPool(vendor); p != nil {
@@ -899,6 +906,20 @@ func ensureAdminAPIKey(s *store.Store) error {
 		px.SetVendorPool(vendor, p)
 		slog.Info("vendor account pool registered", "vendor", vendor, "endpoint", client.Endpoint)
 	}
+}
+
+// sameHost 比较两个 URL 的主机（host:port）是否相同。
+// 解析失败时返回 false（宁可多提醒一次，不要漏报配置不一致）。
+func sameHost(a, b string) bool {
+	if a == "" || b == "" {
+		return false
+	}
+	ua, err1 := url.Parse(a)
+	ub, err2 := url.Parse(b)
+	if err1 != nil || err2 != nil {
+		return false
+	}
+	return strings.EqualFold(ua.Host, ub.Host)
 }
 
 var (
