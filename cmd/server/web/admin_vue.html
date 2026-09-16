@@ -2659,6 +2659,13 @@
                   @click="openConfigEdit(c)"
                 >
                   编辑</button
+                ><button
+                  v-if="editableConfigs.indexOf(c.key) !== -1"
+                  class="btn btn-danger"
+                  @click="deleteConfig(c)"
+                  style="margin-left:4px"
+                >
+                  删除</button
                 ><span v-else>-</span>
               </td>
             </tr>
@@ -5141,6 +5148,31 @@ curl -sS "$BASE/v1/messages" \\
                       self.configArr = arr;
                     })
                     .catch(function () {});
+                });
+            },
+            deleteConfig: function (c) {
+              var self = this;
+              if (!confirm('确定要删除配置项「' + c.key + '」吗？\n删除后回退到内置默认值，保存后自动热重载。')) {
+                return;
+              }
+              self
+                .api("/admin/config/" + encodeURIComponent(c.key), { method: "DELETE" })
+                .then(function () {
+                  alert("已删除，热重载生效");
+                  self
+                    .api("/admin/config")
+                    .then(function (r) {
+                      var arr = [];
+                      for (var k in r.data) {
+                        if (k === "server.port") continue;
+                        arr.push({ key: k, value: r.data[k] });
+                      }
+                      self.configArr = arr;
+                    })
+                    .catch(function () {});
+                })
+                .catch(function (err) {
+                  alert("删除失败：" + (err && err.error ? err.error : JSON.stringify(err)));
                 });
             },
             saveEffortSwitches: function () {

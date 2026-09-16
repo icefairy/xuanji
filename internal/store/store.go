@@ -1817,25 +1817,6 @@ func (s *Store) SeedDefaults() error {
 			return err
 		}
 	}
-	// 预置已知模型 token 上限（通配上游 '*'，避免首次 400 才能学习到）。
-	// INSERT OR IGNORE 不覆盖已学习的值；删除后重启会重新预置。
-	seedTokenLimits := []struct {
-		model             string
-		maxCompletionToks int
-		maxToks           int
-	}{
-		{"deepseek-v4-flash", 209715, 209715},
-		{"deepseek-v4-pro", 209715, 209715},
-	}
-	for _, kl := range seedTokenLimits {
-		if _, err := s.db.Exec(
-			`INSERT OR IGNORE INTO model_token_limits (upstream, upstream_model, max_completion_tokens, max_tokens, source)
-			 VALUES ('*', ?, ?, ?, 'predefined')`,
-			kl.model, kl.maxCompletionToks, kl.maxToks,
-		); err != nil {
-			return err
-		}
-	}
 	return nil
 }
 

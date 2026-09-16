@@ -362,3 +362,42 @@ func TestUpdateConfig(t *testing.T) {
 		t.Errorf("server.port = %q, want 9000", v)
 	}
 }
+
+func TestDeleteConfigHandler(t *testing.T) {
+	cfg := testConfig()
+	h, _ := newTestHandler(t, cfg)
+
+	// 删除业务键：成功
+	_ = h.store.SetConfig("retry.upstream_timeout", "30")
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/admin/config/retry.upstream_timeout", nil)
+	h.DeleteConfig(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("delete business key: got status %d, body=%s", rr.Code, rr.Body.String())
+	}
+	var resp map[string]string
+	json.Unmarshal(rr.Body.Bytes(), &resp)
+	if resp["deleted"] != "retry.upstream_timeout" {
+		t.Fatalf("expected deleted=retry.upstream_timeout, got=%s", resp["deleted"])
+	}
+	// 已删
+	if v, _ := h.store.GetConfig("retry.upstream_timeout"); v != "" {
+		t.Fatalf("key should be gone, got %q", v)
+	}
+
+	// 删除关键键：被拒
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodDelete, "/admin/config/server.port", nil)
+	h.DeleteConfig(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("delete critical key: expected 400, got %d", rr.Code)
+	}
+
+	// key 为空
+	rr = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodDelete, "/admin/config/", nil)
+	h.DeleteConfig(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("empty key: expected 400, got %d", rr.Code)
+	}
+}
