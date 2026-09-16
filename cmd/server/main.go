@@ -903,6 +903,9 @@ func ensureAdminAPIKey(s *store.Store) error {
 			px.SetVendorPool(vendor, p)
 			continue
 		}
+		// 否则额度耗尽后池子不知道（靠陈旧缓存），会反复选到该账号拿 429，
+		// 白白冷却 60 分钟才换下一个号。
+		p.StartCreditRefresh(context.Background())
 		setVendorPool(vendor, p)
 		px.SetVendorPool(vendor, p)
 		slog.Info("vendor account pool registered", "vendor", vendor, "endpoint", client.Endpoint)

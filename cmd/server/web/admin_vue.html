@@ -2359,6 +2359,12 @@
               <td>
                 <span v-if="a.usage_total > 0">
                   <b>{{ a.usage_left }}</b> / {{ a.usage_total }}
+                  <div style="font-size: 11px; color: #909399; margin-top: 2px">
+                    累计 {{ a.usage_used || 0 }} · 今日
+                    <span :style="{ color: a.today_used > 0 ? '#e6a23c' : '#909399' }"
+                      >{{ a.today_used || 0 }}</span
+                    >
+                  </div>
                 </span>
                 <span v-else style="color: #c0c4cc" title="点「积分」查询余额"
                   >未查询</span
