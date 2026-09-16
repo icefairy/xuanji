@@ -33,11 +33,12 @@ data/
 cmd/dbgconv/
 
 # 本地文章/草稿（不对外发布）
-docs/articles//server
+docs/articles/server
 
 # 编译产物（任何位置的 xuanji-server* 二进制，防误提交）
 /xuanji-server
 xuanji-server-new
 xuanji-server-deploy
 /xuanji-fallback
-server
+# 仓库根下的 server 二进制（必须带前导斜杠：裸 server 会连 cmd/server 目录一起忽略）
+/server
