@@ -1734,6 +1734,17 @@ func (s *Store) SetConfig(key, value string) error {
 	return err
 }
 
+// DeleteConfig 删除一条配置。关键键（server.*、admin.*）拒绝删除，防止破坏运行态。
+func (s *Store) DeleteConfig(key string) error {
+	// 保护系统关键键，防止误删导致网关崩溃或无法登录。
+	// 其他业务键（upstream.*、retry.*、proxy.*、alert.* 等）均允许删除。
+	if strings.HasPrefix(key, "server.") || strings.HasPrefix(key, "admin.") {
+		return fmt.Errorf("拒绝删除系统关键键: %s", key)
+	}
+	_, err := s.db.Exec(`DELETE FROM config WHERE key = ?`, key)
+	return err
+}
+
 // GetAllConfig 读取所有配置，返回 key-value 映射。
 func (s *Store) GetAllConfig() (map[string]string, error) {
 	rows, err := s.db.Query(`SELECT key, value FROM config`)

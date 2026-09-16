@@ -2,7 +2,9 @@ package admin
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net/http"
+	"strings"
 )
 
 // endpoints 是网关对外暴露的端点静态清单。
@@ -101,4 +103,28 @@ func (h *Handler) Reload(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]string{"status": "ok", "message": "config reloaded"})
+}
+
+// DeleteConfig 删除一条配置项（DELETE /admin/config/{key}）。
+// 关键键（server.*、admin.*）会被拒绝；其他业务键允许删除。
+func (h *Handler) DeleteConfig(w http.ResponseWriter, r *http.Request) {
+	key := r.PathValue("key")
+	if strings.TrimSpace(key) == "" {
+		writeJSONStatus(w, http.StatusBadRequest, map[string]string{"error": "key 不能为空"})
+		return
+	}
+	if h.store == nil {
+		writeJSONStatus(w, http.StatusServiceUnavailable, map[string]string{"error": "store 不可用"})
+		return
+	}
+	if err := h.store.DeleteConfig(key); err != nil {
+		writeJSONStatus(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if h.reload != nil {
+		if err := h.reload(); err != nil {
+			slog.Warn("delete config 后热重载失败", "key", key, "error", err)
+		}
+	}
+	writeJSON(w, map[string]string{"status": "ok", "deleted": key})
 }

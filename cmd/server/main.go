@@ -478,6 +478,7 @@ func buildServeMux(cfg *config.Config, rt *router.Router, hc *health.Checker, re
 	mux.HandleFunc("GET /admin/rules", adminAuth(admHandler.Rules))
 	mux.HandleFunc("GET /admin/config", adminAuth(admHandler.GetAllConfig))
 	mux.HandleFunc("PUT /admin/config", adminAuth(admHandler.UpdateConfig))
+	mux.HandleFunc("DELETE /admin/config/{key}", adminAuth(admHandler.DeleteConfig))
 	mux.HandleFunc("GET /admin/metrics/summary", adminAuth(admHandler.MetricsSummary))
 	mux.HandleFunc("GET /admin/metrics/upstreams", adminAuth(admHandler.MetricsUpstreams))
 	mux.HandleFunc("GET /admin/metrics/upstream-models", adminAuth(admHandler.MetricsUpstreamModels))

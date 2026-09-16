@@ -43,16 +43,6 @@
         margin-left: 6px;
         vertical-align: middle;
       }
-      .tab-bar {
-        display: flex;
-        gap: 4px;
-        margin-bottom: 12px;
-        background: #fff;
-        border-radius: 8px;
-        padding: 4px;
-        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
-        flex-wrap: wrap;
-      }
       .tab-btn {
         padding: 8px 16px;
         border: none;
@@ -71,6 +61,54 @@
         border-radius: 8px;
         padding: 16px;
         box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+      }
+      /* 二级分组导航 */
+      .group-nav {
+        display: flex;
+        gap: 4px;
+        margin-bottom: 8px;
+        background: #fff;
+        border-radius: 8px;
+        padding: 4px;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+        flex-wrap: wrap;
+      }
+      .group-btn {
+        padding: 7px 14px;
+        border: none;
+        background: transparent;
+        cursor: pointer;
+        border-radius: 6px;
+        font-size: 13px;
+        font-weight: 500;
+        color: #606266;
+        white-space: nowrap;
+      }
+      .group-btn.active {
+        background: #409eff;
+        color: #fff;
+      }
+      .group-btn:hover:not(.active) {
+        background: #f0f2f5;
+      }
+      .group-panel {
+        background: #fff;
+        border-radius: 8px;
+        padding: 12px 16px 4px;
+        margin-bottom: 12px;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+      }
+      .group-label {
+        font-size: 11px;
+        color: #909399;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        margin-bottom: 8px;
+      }
+      .sub-tabs {
+        display: flex;
+        gap: 4px;
+        flex-wrap: wrap;
       }
       /* 对话调试 */
       .chat-bar {
@@ -529,98 +567,60 @@
         </span>
       </div>
 
-      <div class="tab-bar">
-        <button
-          class="tab-btn"
-          :class="{ active: tab === 'upstreams' }"
-          @click="switchTab('upstreams')"
-        >
-          上游管理
-        </button>
-        <button
-          class="tab-btn"
-          :class="{ active: tab === 'rules' }"
-          @click="switchTab('rules')"
-        >
-          路由规则
-        </button>
-        <button
-          class="tab-btn"
-          :class="{ active: tab === 'chat' }"
-          @click="switchTab('chat')"
-        >
-          对话调试
-        </button>
-        <button
-          class="tab-btn"
-          :class="{ active: tab === 'efforts' }"
-          @click="switchTab('efforts')"
-        >
-          思考等级
-        </button>
-        <button
-          class="tab-btn"
-          :class="{ active: tab === 'logs' }"
-          @click="switchTab('logs')"
-        >
-          请求日志
-        </button>
-        <button
-          class="tab-btn"
-          :class="{ active: tab === 'metrics' }"
-          @click="switchTab('metrics')"
-        >
-          请求统计
-        </button>
-        <button
-          class="tab-btn"
-          :class="{ active: tab === 'prices' }"
-          @click="switchTab('prices')"
-        >
-          模型价格
-        </button>
-        <button
-          class="tab-btn"
-          :class="{ active: tab === 'apikeys' }"
-          @click="switchTab('apikeys')"
-        >
-          API Key
-        </button>
-        <button
-          class="tab-btn"
-          :class="{ active: tab === 'groups' }"
-          @click="switchTab('groups')"
-        >
-          组管理
-        </button>
-        <button
-          class="tab-btn"
-          :class="{ active: tab === 'endpoints' }"
-          @click="tab = 'endpoints'"
-        >
-          功能端点
-        </button>
-        <button
-          class="tab-btn"
-          :class="{ active: tab === 'tokenlimits' }"
-          @click="switchTab('tokenlimits')"
-        >
-          Token 限制
-        </button>
-        <button
-          class="tab-btn"
-          :class="{ active: tab === 'accounts' }"
-          @click="switchTab('accounts')"
-        >
-          厂商账号
-        </button>
-        <button
-          class="tab-btn"
-          :class="{ active: tab === 'settings' }"
-          @click="switchTab('settings')"
-        >
-          系统设置
-        </button>
+      <div class="group-nav">
+        <button class="group-btn" :class="{active: activeGroup==='core'}" @click="activeGroup='core'">网关核心</button>
+        <button class="group-btn" :class="{active: activeGroup==='monitor'}" @click="activeGroup='monitor'">监控诊断</button>
+        <button class="group-btn" :class="{active: activeGroup==='perm'}" @click="activeGroup='perm'">权限配额</button>
+        <button class="group-btn" :class="{active: activeGroup==='accounts'}" @click="activeGroup='accounts'">厂商账号</button>
+        <button class="group-btn" :class="{active: activeGroup==='system'}" @click="activeGroup='system'">系统</button>
+      </div>
+
+      <!-- 网关核心 -->
+      <div class="group-panel" v-if="activeGroup==='core'">
+        <div class="group-label">子菜单</div>
+        <div class="sub-tabs">
+          <button class="tab-btn" :class="{active: tab==='upstreams'}" @click="switchTab('upstreams')">上游管理</button>
+          <button class="tab-btn" :class="{active: tab==='rules'}" @click="switchTab('rules')">路由规则</button>
+          <button class="tab-btn" :class="{active: tab==='chat'}" @click="switchTab('chat')">对话调试</button>
+          <button class="tab-btn" :class="{active: tab==='efforts'}" @click="switchTab('efforts')">思考等级</button>
+        </div>
+      </div>
+
+      <!-- 监控诊断 -->
+      <div class="group-panel" v-if="activeGroup==='monitor'">
+        <div class="group-label">子菜单</div>
+        <div class="sub-tabs">
+          <button class="tab-btn" :class="{active: tab==='logs'}" @click="switchTab('logs')">请求日志</button>
+          <button class="tab-btn" :class="{active: tab==='metrics'}" @click="switchTab('metrics')">请求统计</button>
+          <button class="tab-btn" :class="{active: tab==='prices'}" @click="switchTab('prices')">模型价格</button>
+        </div>
+      </div>
+
+      <!-- 权限配额 -->
+      <div class="group-panel" v-if="activeGroup==='perm'">
+        <div class="group-label">子菜单</div>
+        <div class="sub-tabs">
+          <button class="tab-btn" :class="{active: tab==='apikeys'}" @click="switchTab('apikeys')">API Key</button>
+          <button class="tab-btn" :class="{active: tab==='groups'}" @click="switchTab('groups')">组管理</button>
+        </div>
+      </div>
+
+      <!-- 厂商账号 -->
+      <div class="group-panel" v-if="activeGroup==='accounts'">
+        <div class="group-label">子菜单</div>
+        <div class="sub-tabs">
+          <button class="tab-btn" :class="{active: tab==='accounts'}" @click="switchTab('accounts')">账号管理</button>
+        </div>
+      </div>
+
+      <!-- 系统 -->
+      <div class="group-panel" v-if="activeGroup==='system'">
+        <div class="group-label">子菜单</div>
+        <div class="sub-tabs">
+          <button class="tab-btn" :class="{active: tab==='tokenlimits'}" @click="switchTab('tokenlimits')">Token 限制</button>
+          <button class="tab-btn" :class="{active: tab==='endpoints'}" @click="switchTab('endpoints')">功能端点</button>
+          <button class="tab-btn" :class="{active: tab==='settings'}" @click="switchTab('settings')">系统设置</button>
+        </div>
       </div>
 
       <!-- 上游管理 -->
@@ -3478,6 +3478,7 @@
             loginError: "",
             loginLoading: false,
             tab: "metrics",
+            activeGroup: "core",
             upstreams: [],
             rules: [],
             vendorAccounts: [],

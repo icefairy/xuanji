@@ -488,3 +488,45 @@ func TestOpen_OldDBAddsKindColumn(t *testing.T) {
 		t.Errorf("old row kind = %q, want empty (加载时补默认 chat)", u.Kind)
 	}
 }
+
+func TestDeleteConfig(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.SetConfig("test.key.a", "val-a"); err != nil {
+		t.Fatalf("set: %v", err)
+	}
+	if v, _ := s.GetConfig("test.key.a"); v != "val-a" {
+		t.Fatalf("pre-delete value mismatch")
+	}
+	if err := s.DeleteConfig("test.key.a"); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if v, _ := s.GetConfig("test.key.a"); v != "" {
+		t.Fatalf("post-delete should be empty, got %q", v)
+	}
+	// 已删除的 key 再删应静默成功
+	if err := s.DeleteConfig("test.key.a"); err != nil {
+		t.Fatalf("re-delete should be no-op, got: %v", err)
+	}
+}
+
+func TestDeleteConfigProtectsCriticalKeys(t *testing.T) {
+	s := newTestStore(t)
+	critical := []string{
+		"server.port", "admin.api_key", "admin.jwt_secret",
+	}
+	for _, k := range critical {
+		if err := s.DeleteConfig(k); err == nil {
+			t.Errorf("应拒绝删除关键键 %q", k)
+		}
+	}
+	// 业务键允许删除（包括 retry.*、proxy.*、upstream.* 等）
+	safe := []string{"retry.upstream_timeout", "proxy.auto_best_effort", "upstream.foo.bar"}
+	for _, k := range safe {
+		if err := s.SetConfig(k, "v"); err != nil {
+			t.Fatalf("pre-set %q: %v", k, err)
+		}
+		if err := s.DeleteConfig(k); err != nil {
+			t.Errorf("应允许删除业务键 %q, got: %v", k, err)
+		}
+	}
+}
