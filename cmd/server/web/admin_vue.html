@@ -110,6 +110,21 @@
         gap: 4px;
         flex-wrap: wrap;
       }
+      /* 桌面端：鼠标悬停一级菜单时显示子菜单面板 */
+      @media (hover: hover) and (pointer: fine) {
+        .group-nav > .group-btn:hover {
+          background: #f0f2f5;
+        }
+        .group-nav > .group-btn:hover + .group-panel,
+        .group-nav:hover > .group-panel:not(:hover) {
+          /* 不靠这个，下面用 JS 控制 */
+        }
+        /* 悬停一级菜单时显示其子面板，同时保留 active 高亮 */
+        .group-btn:hover ~ .group-panel,
+        .group-panel:hover {
+          display: block !important;
+        }
+      }
       /* 对话调试 */
       .chat-bar {
         display: flex;
@@ -568,11 +583,11 @@
       </div>
 
       <div class="group-nav">
-        <button class="group-btn" :class="{active: activeGroup==='core'}" @click="activeGroup='core'">网关核心</button>
-        <button class="group-btn" :class="{active: activeGroup==='monitor'}" @click="activeGroup='monitor'">监控诊断</button>
-        <button class="group-btn" :class="{active: activeGroup==='perm'}" @click="activeGroup='perm'">权限配额</button>
-        <button class="group-btn" :class="{active: activeGroup==='accounts'}" @click="activeGroup='accounts'">厂商账号</button>
-        <button class="group-btn" :class="{active: activeGroup==='system'}" @click="activeGroup='system'">系统</button>
+        <button class="group-btn" :class="{active: activeGroup==='core'}" @click="activeGroup='core'" @mouseenter="onGroupHover('core')" @mouseleave="onGroupLeave">网关核心</button>
+        <button class="group-btn" :class="{active: activeGroup==='monitor'}" @click="activeGroup='monitor'" @mouseenter="onGroupHover('monitor')" @mouseleave="onGroupLeave">监控诊断</button>
+        <button class="group-btn" :class="{active: activeGroup==='perm'}" @click="activeGroup='perm'" @mouseenter="onGroupHover('perm')" @mouseleave="onGroupLeave">权限配额</button>
+        <button class="group-btn" :class="{active: activeGroup==='accounts'}" @click="activeGroup='accounts'" @mouseenter="onGroupHover('accounts')" @mouseleave="onGroupLeave">厂商账号</button>
+        <button class="group-btn" :class="{active: activeGroup==='system'}" @click="activeGroup='system'" @mouseenter="onGroupHover('system')" @mouseleave="onGroupLeave">系统</button>
       </div>
 
       <!-- 网关核心 -->
@@ -3484,8 +3499,8 @@
             loginPassword: "",
             loginError: "",
             loginLoading: false,
-            tab: "metrics",
-            activeGroup: "core",
+            tab: localStorage.getItem("xuanji_tab") || "metrics",
+            activeGroup: localStorage.getItem("xuanji_group") || "core",
             upstreams: [],
             rules: [],
             vendorAccounts: [],
@@ -5020,6 +5035,14 @@ curl -sS "$BASE/v1/messages" \\
             },
             switchTab: function (name) {
               this.tab = name;
+              localStorage.setItem("xuanji_tab", name);
+              // 根据 tab 推断所属 group，同步持久化
+              var _g = {upstreams:"core",rules:"core",chat:"core",efforts:"core",
+                        logs:"monitor",metrics:"monitor",prices:"monitor",
+                        apikeys:"perm",groups:"perm",
+                        accounts:"accounts",
+                        tokenlimits:"system",endpoints:"system",settings:"system"};
+              if (_g[name]) localStorage.setItem("xuanji_group", _g[name]);
               var self = this;
               this.$nextTick(function () {
                 if (name === "upstreams") {
@@ -5107,6 +5130,14 @@ curl -sS "$BASE/v1/messages" \\
                   self.loadBackups();
                 }
               });
+            },
+            // 桌面端鼠标悬停一级菜单自动展开子面板（触屏设备不生效）
+            onGroupHover: function (name) {
+              this.activeGroup = name;
+            },
+            onGroupLeave: function () {
+              // 鼠标离开一级按钮时不自动收起，保持当前 activeGroup
+              // 这样用户hover到子面板内时面板不会消失
             },
             loadDiscounts: function () {
               var self = this;

@@ -365,13 +365,21 @@ func TestUpdateConfig(t *testing.T) {
 
 func TestDeleteConfigHandler(t *testing.T) {
 	cfg := testConfig()
-	h, _ := newTestHandler(t, cfg)
+	s, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	h := New(cfg, nil)
+	h.SetStore(s)
 
-	// 删除业务键：成功
+	// 删除业务键：成功（路径参数由 ServeMux 注入，需走 mux 路由）
 	_ = h.store.SetConfig("retry.upstream_timeout", "30")
+	mux := http.NewServeMux()
+	mux.HandleFunc("DELETE /admin/config/{key}", h.DeleteConfig)
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodDelete, "/admin/config/retry.upstream_timeout", nil)
-	h.DeleteConfig(rr, req)
+	mux.ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("delete business key: got status %d, body=%s", rr.Code, rr.Body.String())
 	}
@@ -388,16 +396,16 @@ func TestDeleteConfigHandler(t *testing.T) {
 	// 删除关键键：被拒
 	rr = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodDelete, "/admin/config/server.port", nil)
-	h.DeleteConfig(rr, req)
+	mux.ServeHTTP(rr, req)
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("delete critical key: expected 400, got %d", rr.Code)
 	}
 
-	// key 为空
+	// key 为空：路由不匹配 → 404（同样达到拒绝效果）
 	rr = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodDelete, "/admin/config/", nil)
-	h.DeleteConfig(rr, req)
-	if rr.Code != http.StatusBadRequest {
-		t.Fatalf("empty key: expected 400, got %d", rr.Code)
+	mux.ServeHTTP(rr, req)
+	if rr.Code != http.StatusNotFound && rr.Code != http.StatusBadRequest {
+		t.Fatalf("empty key: expected 404/400, got %d", rr.Code)
 	}
 }
