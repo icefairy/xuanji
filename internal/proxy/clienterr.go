@@ -49,6 +49,11 @@ var clientErrReasons = []string{
 	"maximum context length",
 	"input length too long",
 	"context_length_exceeded",
+	// rerank query 超长（2026-09-16 实测，硅基流动 bge-reranker-v2-m3：
+	// query 4000 字符 → 200，5000 字符 → 400 `Query is too long. Please provide a shorter
+	// query.`）。同一超长 query 会沿候选链逐个 400，曾把三个健康 rerank 上游全部拉黑，
+	// 属客户端请求内容问题而非上游故障。
+	"query is too long",
 	// 请求参数校验失败（客户端传了空数组/缺必填字段等；上游正确校验后拒绝）
 	// 例（2026-09-13 实测，硅基流动 rerank/embeddings）：
 	//   `List should have at least 1 item after validation, not 0`（documents/input 为空数组）
@@ -57,6 +62,10 @@ var clientErrReasons = []string{
 	"list should have at least 1 item after validation",
 	"field required",
 	"the parameter is invalid",
+	// 入参形态/取值非法（pydantic 风格校验：query 为空串、query/documents 传了非字符串，
+	// 2026-09-16 实测同上批 rerank 400）。同属客户端请求内容问题。
+	"should have at least 1 character",
+	"should be a valid string",
 }
 
 // isClientRequestError 判断一次上游 4xx 错误响应是否属于「客户端请求本身的问题」。

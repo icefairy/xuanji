@@ -69,6 +69,18 @@ func TestIsClientRequestError(t *testing.T) {
 			body:   `{"code":20015,"message":"The parameter is invalid. Please check again.","data":null}`,
 			want:   true,
 		},
+		{
+			name:   "rerank query 超长（2026-09-16 实测：query 5000 字符）",
+			status: http.StatusBadRequest,
+			body:   `{"code":20015,"message":"Query is too long. Please provide a shorter query.","data":null}`,
+			want:   true,
+		},
+		{
+			name:   "rerank query 为空串（同批 400 的另一形态）",
+			status: http.StatusBadRequest,
+			body:   `{"code":20015,"message":"String should have at least 1 character","data":null}`,
+			want:   true,
+		},
 
 		// —— 非客户端请求问题（false，保持原有语义）——
 		{
