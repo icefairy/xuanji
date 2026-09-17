@@ -129,7 +129,7 @@ var (
 	state appState
 
 	flagPort = flag.Int("port", 8787, "监听端口（默认 8787）")
-	flagDB   = flag.String("db", "/opt/xuanji/opt/xuanji.db", "数据库路径（默认 /opt/xuanji/opt/xuanji.db）")
+	flagDB   = flag.String("db", "xuanji.db", "数据库路径（默认 当前目录下 xuanji.db）")
 	flagHelp = flag.Bool("help", false, "显示帮助")
 )
 
