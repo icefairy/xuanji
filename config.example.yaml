@@ -39,7 +39,7 @@ upstreams:
   - name: vllm-local
     type: openai
     kind: chat            # 默认即可省略；纯 TTS 上游示例见文末
-    base_url: http://127.0.0.1:3001/v1
+    base_url: https://your-upstream.example.com/v1
     api_key: ${VLLM_KEY}
     tier: payg
     priority: 1
@@ -98,7 +98,7 @@ storage:
 #  - name: gpustack_qwen3_tts
 #    type: openai
 #    kind: tts                       # emb/rerank/tts/asr/image 按需选一
-#    base_url: http://192.168.1.20:8001/v1
+#    base_url: https://your-upstream.example.com/v1
 #    api_key: ${GPUSTACK_KEY}
 #    models: [qwen3-tts]
 #

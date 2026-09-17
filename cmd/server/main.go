@@ -256,10 +256,6 @@ func main() {
 		go dailyStatsTicker(storeInst)
 	}
 
-	//
-	// 注意不要传本地时区：supervisor 环境下 Go 的 time.Local 可能是 UTC（实测本机 TZ 未设），
-	// 那样「05:00-09:00」会落到北京时间 13:00-17:00，与「像真人」的初衷相悖。
-	defer stopCheckin()
 
 	slog.Info("xuanji gateway listening",
 		"addr", addr,
@@ -571,9 +567,6 @@ func buildServeMux(cfg *config.Config, rt *router.Router, hc *health.Checker, re
 	// 对话调试：走完整网关路由链路（依赖 pxHandler，见上方 SetProxy 注入）
 	mux.HandleFunc("POST /admin/chat", adminAuth(admHandler.Chat))
 
-	// 这些能力内建在网关进程内，不再需要单独跑一个代理服务。
-	admHandler.SetVendorPool(vendorPool)
-	// 同时开放到 /api/admin/*（免登录管理 key），便于 AI 助手与脚本管理账号
 
 	olHandler := ollama.New(rt, hc)
 	olHandler.SetTimeout(time.Duration(cfg.Retry.UpstreamTimeout) * time.Second)
@@ -594,7 +587,6 @@ func buildServeMux(cfg *config.Config, rt *router.Router, hc *health.Checker, re
 	ff := proxy.NewFastFailCache(time.Duration(cfg.Retry.FastFailMinutes) * time.Minute)
 	pxHandler.SetFastFail(ff)
 	admHandler.SetFastFail(ff)
-	// 按当前配置里出现过的 vendor 建池，逐个注入 proxy Handler。
 	// 对话调试（/admin/chat）注入完整转发链路与路由探测器：走完整网关路由链路
 	admHandler.SetProxy(pxHandler, rt)
 	stopProbe := pxHandler.StartFastFailProbe(time.Duration(cfg.Retry.FastFailProbeMinutes) * time.Minute)
@@ -870,47 +862,6 @@ func ensureAdminAPIKey(s *store.Store) error {
 }
 
 //
-// 池按厂商标识建一次即复用：登录态、积分缓存、429 冷却都是运行期状态，
-// 不应随配置热重载而重建（否则冷却记录与轮询游标会丢失）。
-	if cfg == nil || st == nil || px == nil {
-		return
-	}
-	endpoints := map[string]string{}
-	for i := range cfg.Upstreams {
-		up := &cfg.Upstreams[i]
-			continue
-		}
-		v := up.Vendor
-		}
-		if v == "" {
-				"upstream", up.Name, "hint", "config 表键 upstream."+up.Name+".vendor")
-			continue
-		}
-		if _, ok := endpoints[v]; !ok {
-			endpoints[v] = up.VendorEndpoint
-		}
-		// 健康检查会打 up.BaseURL（internal/health 的 chatProbe 不感知 vendor），
-		// 典型错误是转发已切到官方端点，BaseURL 还指向本地旧代理——
-		// 旧代理一停，健康检查就把整条上游判 dead，而转发实际上是好的。
-		if ep := up.VendorEndpoint; ep != "" && !sameHost(up.BaseURL, ep) {
-				"hint", "退役本地代理后请把 base_url 改成 "+ep)
-		}
-	}
-	for vendor, endpoint := range endpoints {
-		if p := vendorPool(vendor); p != nil {
-			// 已有池：仅在 endpoint 变化时更新客户端地址
-			p.SetEndpoint(endpoint)
-			px.SetVendorPool(vendor, p)
-			continue
-		}
-		// 否则额度耗尽后池子不知道（靠陈旧缓存），会反复选到该账号拿 429，
-		// 白白冷却 60 分钟才换下一个号。
-		p.StartCreditRefresh(context.Background())
-		setVendorPool(vendor, p)
-		px.SetVendorPool(vendor, p)
-		slog.Info("vendor account pool registered", "vendor", vendor, "endpoint", client.Endpoint)
-	}
-}
 
 // sameHost 比较两个 URL 的主机（host:port）是否相同。
 // 解析失败时返回 false（宁可多提醒一次，不要漏报配置不一致）。
@@ -926,35 +877,6 @@ func sameHost(a, b string) bool {
 	return strings.EqualFold(ua.Host, ub.Host)
 }
 
-var (
-	vendorPoolsMu sync.Mutex
-)
 
-	vendorPoolsMu.Lock()
-	defer vendorPoolsMu.Unlock()
-	return vendorPools[vendor]
-}
 
-	vendorPoolsMu.Lock()
-	defer vendorPoolsMu.Unlock()
-	vendorPools[vendor] = p
-}
 
-// 之间随机取整分钟 + 秒级抖动执行，错过窗口立即补签，失败 5 分钟后重试。
-// 返回停止函数（进程退出时调用）。
-	vendorPoolsMu.Lock()
-	for k, v := range vendorPools {
-		pools[k] = v
-	}
-	vendorPoolsMu.Unlock()
-
-	for vendor, p := range pools {
-		s.Start(context.Background())
-		scheds = append(scheds, s)
-	}
-	return func() {
-		for _, s := range scheds {
-			s.Stop()
-		}
-	}
-}

@@ -540,10 +540,6 @@ func (s *Store) init() error {
 	ensureColumn(s.db, "api_tokens", "group_id", "group_id INTEGER NOT NULL DEFAULT 0")
 	ensureColumn(s.db, "api_tokens", "allowed_models", "allowed_models TEXT NOT NULL DEFAULT ''")
 	ensureColumn(s.db, "api_tokens", "quota_override", "quota_override TEXT NOT NULL DEFAULT '{}'")
-	// 单独建表而非塞进 upstreams：账号是有生命周期的实体，且可多个账号共用一个端点。
-	if err := initVendorAccountSchema(s.db); err != nil {
-		return err
-	}
 	return nil
 }
 

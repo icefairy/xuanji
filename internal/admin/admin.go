@@ -41,11 +41,18 @@ type Handler struct {
 
 	quotaReload func() // 配额策略刷新回调（管理端改动组/分组后调用）；nil 时不刷新
 
-	// 由 main 注入；nil 时相关接口返回 503。
 
 	metricsCache    map[string]cacheEntry // 统计接口结果缓存（key=path?query）
 	metricsCacheMu  sync.RWMutex
 	metricsCacheTTL time.Duration
+}
+
+// writeJSONStatus 以指定状态码写 JSON 响应（admin 通用工具）。
+// 厂商功能裁剪后编译断裂。
+func writeJSONStatus(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(v)
 }
 
 // SetAuth 注入下游 key 鉴权器（api_tokens CRUD 后刷新内存缓存）。

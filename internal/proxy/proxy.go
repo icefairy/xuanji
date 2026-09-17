@@ -85,27 +85,9 @@ type Handler struct {
 	modelArrears       map[string]bool
 	modelArrearsMu     sync.RWMutex
 	arrearsModelMarker func(upstream, model, reason string) // 模型级欠费标记回调；nil 时不落库（仅内存）
-	// 转发时按 up.Vendor 取池，选号/刷新令牌/换号重试。nil 时此类上游不可用。
-	vendorPoolsMu sync.RWMutex
 }
 
-	if vendor == "" || pool == nil {
-		return
-	}
-	h.vendorPoolsMu.Lock()
-	defer h.vendorPoolsMu.Unlock()
-	if h.vendorPools == nil {
-	}
-	h.vendorPools[vendor] = pool
-}
 
-	h.vendorPoolsMu.RLock()
-	defer h.vendorPoolsMu.RUnlock()
-	if h.vendorPools == nil {
-		return nil
-	}
-	return h.vendorPools[vendor]
-}
 
 // New 创建转发 Handler，共享一个 60s 连接超时的 HTTP 客户端。
 // health 用于健康过滤与失败切换；为 nil 时退化为只转发路由列表第一个上游。
@@ -1167,15 +1149,6 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 		}
 	}
 
-	// 因此完全接管本函数的转发流程。
-	// 注意：必须在通用鉴权路径之前返回，否则会用错误的 key 去打上游。
-		// 交给下方统一 defer 按与通用路径一致的语义落库（499/502，而非一律 200）。
-		var out streamOutcome
-		handled, retryable, err, promptTokens, completionTokens, promptCacheHitTokens, promptCacheMissTokens =
-			h.forwardViaVendorPool(w, r, reqBody, up, model, upstreamModel, stream, last, start, &out)
-		streamInterrupted, streamErr, ttftMS = out.interrupted, out.readErr, out.ttftMS
-		return handled, retryable, err, promptTokens, completionTokens, promptCacheHitTokens, promptCacheMissTokens
-	}
 
 	target := strings.TrimRight(up.BaseURL, "/") + "/chat/completions"
 	reqCtx := r.Context()

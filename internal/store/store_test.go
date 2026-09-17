@@ -530,3 +530,15 @@ func TestDeleteConfigProtectsCriticalKeys(t *testing.T) {
 		}
 	}
 }
+
+// newTestStore 建立临时库并返回 Store（测试结束自动清理）。
+// 厂商功能裁剪后必须在本文件重建，否则编译断裂（2026-09-17 实测）。
+func newTestStore(t *testing.T) *Store {
+	t.Helper()
+	s, err := Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { s.Close() })
+	return s
+}
