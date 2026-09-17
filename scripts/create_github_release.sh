@@ -3,11 +3,11 @@
 # 用法: ./create_github_release.sh <TAG> <NAME> <NOTES_FILE>
 # 示例: ./create_github_release.sh v1.1.1 "v1.1.1" /tmp/release_notes.md
 set -e
-cd /opt/xuanji
+cd "$(dirname "$0")/.."
 
 # GitHub Token 从环境变量读取（不要硬编码进脚本，避免 GitHub Push Protection 拦截）
 TOKEN="${GITHUB_TOKEN:?请先 export GITHUB_TOKEN=ghp_xxx}"
-PROXY="socks5h://127.0.0.1:10809"
+PROXY="${HTTPS_PROXY:-socks5h://127.0.0.1:10809}"  # 可用环境变量覆盖
 REPO="icefairy/xuanji"
 
 TAG="${1:?Usage: $0 <TAG> <NAME> <NOTES_FILE>}"

@@ -3,8 +3,10 @@
 # 用法: ./create_gitee_release.sh <TAG> <NAME> <NOTES_FILE>
 # 示例: ./create_gitee_release.sh v1.1.1 "v1.1.1" /tmp/release_notes.md
 set -e
-cd /opt/xuanji
+cd "$(dirname "$0")/.."
 
+# Gitee Token 从环境变量读取（不要硬编码进脚本，会泄露到公开仓库历史）
+TOKEN="${GITEE_TOKEN:?请先 export GITEE_TOKEN=xxx}"
 REPO="icefairy/xuanji-gateway"
 API="https://gitee.com/api/v5"
 
