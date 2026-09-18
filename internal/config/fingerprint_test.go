@@ -120,6 +120,7 @@ func TestApplyPiFingerprintHeaders_StripsConflicting(t *testing.T) {
 	req.Header.Set("X-Product", "SaaS")
 	req.Header.Set("Traceparent", "00-abc-def-01")
 	ApplyPiFingerprintHeaders(req)
+	for _, k := range []string{"X-Product", "Traceparent"} {
 		if got := req.Header.Get(k); got != "" {
 			t.Errorf("应剥离 %q, got %q", k, got)
 		}

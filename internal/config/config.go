@@ -179,8 +179,6 @@ type Upstream struct {
 	// 路由仅跳过该上游的该模型；false 时欠费记整个上游（默认）。
 	// 存储用 config 表键 upstream.<name>.per_model_billing。
 	PerModelBilling bool `yaml:"per_model_billing"`
-	// 存储用 config 表键 upstream.<name>.vendor。
-	Vendor string `yaml:"vendor"`
 	// Timeout 上游请求超时秒数（连接+非流式整体）；0=跟随全局 retry.upstream_timeout（默认 60）。
 	// 慢速兜底上游（如本地一体机）建议单独调大（如 300），避免响应稍慢就被全局超时误判失败导致 502。
 	Timeout     int          `yaml:"timeout"`
@@ -203,14 +201,6 @@ func (u *Upstream) IsDots() bool {
 // IsAnthropic 判断上游是否为 Anthropic 原生协议。
 func (u *Upstream) IsAnthropic() bool {
 	return strings.EqualFold(u.Type, "anthropic")
-}
-
-//
-}
-
-//
-// 判定依据是配了 Vendor（账号厂商标识），而不是 Type：
-// 已有生产上游保持 type=openai + base_url 不动，只加一个 vendor 键即可切换路径。
 }
 
 // IsGemini 判断上游是否为 Google Gemini 原生协议。
@@ -635,11 +625,6 @@ func LoadFromDB(s *store.Store) (*Config, error) {
 		// 每上游 per_model_billing 开关：config 表键 upstream.<name>.per_model_billing
 		if v, ok := all["upstream."+u.Name+".per_model_billing"]; ok {
 			up.PerModelBilling = strings.TrimSpace(v) == "true" || strings.TrimSpace(v) == "1"
-		}
-		if v, ok := all["upstream."+u.Name+".vendor"]; ok {
-			up.Vendor = strings.TrimSpace(v)
-		}
-			up.VendorEndpoint = strings.TrimSpace(v)
 		}
 		cfg.Upstreams = append(cfg.Upstreams, up)
 	}

@@ -86,6 +86,7 @@ func PiGzip() bool { return piGzip.Load() }
 // piConflictingHeaders 是需要剥离的「他者身份」头，避免与 pi 伪装自相矛盾。
 var piConflictingHeaders = []string{
 	"X-Product", "X-IDE-Name", "X-IDE-Type", "X-IDE-Version",
+	"X-Agent-Type", "X-Agent-Intent", "X-Agent-Purpose",
 	"X-Private-Data", "X-Conversation-Id", "X-Requested-With", "Traceparent",
 	"X-Trace-Id", "B3", "X-B3-Traceid", "X-B3-Spanid", "X-B3-Parentspanid", "X-B3-Sampled",
 }

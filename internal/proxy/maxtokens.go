@@ -15,6 +15,7 @@ const defaultMaxTokensCap = 209715
 
 // normalizeMaxTokens 归一化请求体的 max_tokens：
 //   - max_tokens <= 0（缺失/0/负数）：删除字段，让上游用默认值。
+//     客户端按模型窗口自动填 max_tokens 时可能出现 0 或超大值，
 //     商汤/基元律动等上游要求 [1, 65536]，超范围直接 400。
 //   - max_tokens > cap：clamp 到 cap。cap = 上游 MaxTokensCap（配置了且 >0 时）
 //     否则默认 209715（262144×80%，留余量避免边界 400）。

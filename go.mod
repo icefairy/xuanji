@@ -6,6 +6,7 @@ require (
 	github.com/pkoukk/tiktoken-go v0.1.8
 	github.com/tidwall/gjson v1.14.4
 	github.com/tidwall/sjson v1.2.5
+	golang.org/x/crypto v0.54.0
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.55.0
 )
@@ -19,7 +20,6 @@ require (
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect
-	golang.org/x/crypto v0.54.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	modernc.org/libc v1.74.1 // indirect
 	modernc.org/mathutil v1.7.1 // indirect

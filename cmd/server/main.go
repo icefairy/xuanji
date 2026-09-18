@@ -861,8 +861,6 @@ func ensureAdminAPIKey(s *store.Store) error {
 	return nil
 }
 
-//
-
 // sameHost 比较两个 URL 的主机（host:port）是否相同。
 // 解析失败时返回 false（宁可多提醒一次，不要漏报配置不一致）。
 func sameHost(a, b string) bool {

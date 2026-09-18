@@ -354,6 +354,7 @@ func TestUpstreamTimeoutForUp(t *testing.T) {
 
 // TestForwardOnce_4xxRecordsErrorDetail 验证：上游返回非可重试 4xx 时，
 // 请求日志中 error_detail 字段记录了上游的 error.message，便于请求日志页排查。
+// 对应场景：客户端按窗口自动填 max_completion_tokens=384000，
 // 上游 deepseek-v4-flash 最多支持 262144 → 返回 400 且不可重试。
 func TestForwardOnce_4xxRecordsErrorDetail(t *testing.T) {
 	// 模拟上游返回 400 不可重试（含 OpenAI 风格 error.message）

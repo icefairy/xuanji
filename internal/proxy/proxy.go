@@ -1087,6 +1087,7 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 			reqBody = nb
 		}
 	}
+	// max_tokens 归一化：<=0 删除（上游不接受 0/负数），> 上游上限时 clamp（防客户端按窗口自动填超大值导致 400）
 	if nb, changed := normalizeMaxTokens(reqBody, up); changed {
 		reqBody = nb
 	}

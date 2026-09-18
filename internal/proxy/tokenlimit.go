@@ -1,5 +1,6 @@
 // Package proxy 模型 token 上限自动学习与 clamp 兼容。
 //
+// 背景：客户端 agent（Cursor、JetBrains 等）按模型"窗口大小"自动填
 // max_tokens / max_completion_tokens，但各上游允许的最大 completion token 数
 // 往往小于模型窗口（如 deepseek-v4-flash 报 "at most 262144"）。传超大值上游
 // 直接 400 "max_completion_tokens is too large: N, this model supports at most M"，

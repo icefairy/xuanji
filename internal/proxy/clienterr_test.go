@@ -24,6 +24,7 @@ func TestIsClientRequestError(t *testing.T) {
 			want:   true,
 		},
 		{
+			name:   "model hy3 is not supported",
 			status: http.StatusBadRequest,
 			body:   `{"type":"error","error":{"type":"ModelError","message":"Model hy3 is not supported"}}`,
 			want:   true,
@@ -41,6 +42,7 @@ func TestIsClientRequestError(t *testing.T) {
 			want:   true,
 		},
 		{
+			name:   "input length too long",
 			status: http.StatusBadRequest,
 			body:   `{"code":11115,"msg":"input length too long","extError":{"code":"context_length_exceeded"}}`,
 			want:   true,

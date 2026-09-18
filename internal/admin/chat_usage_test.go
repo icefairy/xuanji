@@ -17,6 +17,7 @@ func TestExtractChatUsage_Thinking(t *testing.T) {
 		want map[string]int64
 	}{
 		{
+			// DeepSeek 系：reasoning_tokens 嵌在 completion_tokens_details
 			name: "openai_details_embedded",
 			body: `{"usage":{"prompt_tokens":79,"completion_tokens":861,"total_tokens":940,
 				"prompt_cache_hit_tokens":74,"prompt_cache_miss_tokens":5,

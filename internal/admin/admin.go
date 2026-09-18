@@ -48,7 +48,6 @@ type Handler struct {
 }
 
 // writeJSONStatus 以指定状态码写 JSON 响应（admin 通用工具）。
-// 厂商功能裁剪后编译断裂。
 func writeJSONStatus(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
