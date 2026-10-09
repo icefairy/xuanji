@@ -1,0 +1,1024 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>璇玑 Xuanji — OpenAI / Anthropic 双协议 AI 网关</title>
+<meta name="description" content="璇玑 Xuanji：Go 单二进制 AI 网关，OpenAI + Anthropic 双协议入口，按计费层级/权重/优惠时段/延迟自动分流，故障自动切换。one-api / LiteLLM 的轻量替代。">
+<meta name="keywords" content="AI网关,LLM Gateway,OpenAI,Anthropic,Claude Code,Go,one-api,LiteLLM,负载均衡,故障转移,reasoning_effort">
+<meta name="author" content="icefairy">
+<meta name="theme-color" content="#0a0e17">
+
+<!-- Open Graph -->
+<meta property="og:type" content="website">
+<meta property="og:title" content="璇玑 Xuanji — OpenAI / Anthropic 双协议 AI 网关">
+<meta property="og:description" content="Go 单二进制 · 零外部依赖 · 按成本与健康自动分流。one-api / LiteLLM 的轻量替代。">
+<meta property="og:image" content="screenshots/dashboard.png">
+<meta name="twitter:card" content="summary_large_image">
+
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='42' fill='%230a0e17' stroke='%2338bdf8' stroke-width='6'/><circle cx='50' cy='50' r='14' fill='%238b5cf6'/></svg>">
+
+<style>
+/* ═══════════ 设计令牌 ═══════════ */
+:root{
+  --bg:#0a0e17;
+  --bg-soft:#0d1220;
+  --panel:rgba(255,255,255,.032);
+  --panel-hi:rgba(255,255,255,.055);
+  --line:rgba(255,255,255,.09);
+  --line-hi:rgba(255,255,255,.16);
+  --fg:#e8edf7;
+  --fg-dim:#98a4bd;
+  --fg-mute:#6b7691;
+  --cyan:#38bdf8;
+  --violet:#8b5cf6;
+  --green:#34d399;
+  --amber:#fbbf24;
+  --rose:#fb7185;
+  --grad:linear-gradient(115deg,var(--cyan),var(--violet));
+  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+  --sans:system-ui,-apple-system,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+  --r:14px;
+  --maxw:1140px;
+}
+
+*,*::before,*::after{box-sizing:border-box}
+html{scroll-behavior:smooth;scroll-padding-top:78px}
+body{
+  margin:0;background:var(--bg);color:var(--fg);
+  font-family:var(--sans);font-size:16px;line-height:1.72;
+  -webkit-font-smoothing:antialiased;overflow-x:hidden;
+}
+/* 背景光晕 */
+body::before{
+  content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;
+  background:
+    radial-gradient(900px 520px at 12% -8%,rgba(56,189,248,.14),transparent 62%),
+    radial-gradient(760px 480px at 88% 4%,rgba(139,92,246,.15),transparent 60%),
+    radial-gradient(700px 700px at 50% 108%,rgba(56,189,248,.06),transparent 65%);
+}
+img{max-width:100%;display:block}
+a{color:var(--cyan);text-decoration:none}
+a:hover{text-decoration:underline}
+h1,h2,h3,h4{line-height:1.3;margin:0;font-weight:650;letter-spacing:-.01em}
+p{margin:0}
+code{font-family:var(--mono);font-size:.88em}
+
+.wrap{max-width:var(--maxw);margin:0 auto;padding:0 24px}
+
+/* ═══════════ 导航 ═══════════ */
+.nav{
+  position:sticky;top:0;z-index:60;
+  backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
+  background:rgba(10,14,23,.74);
+  border-bottom:1px solid transparent;transition:border-color .25s,background .25s;
+}
+.nav.scrolled{border-bottom-color:var(--line);background:rgba(10,14,23,.92)}
+.nav-in{display:flex;align-items:center;gap:26px;height:64px}
+.brand{display:flex;align-items:center;gap:10px;font-weight:700;font-size:1.05rem;color:var(--fg);flex-shrink:0}
+.brand:hover{text-decoration:none}
+.brand svg{width:26px;height:26px}
+.brand small{font-weight:400;color:var(--fg-mute);font-size:.72rem;letter-spacing:.14em;text-transform:uppercase}
+.nav-links{display:flex;gap:22px;margin-left:auto;font-size:.9rem}
+.nav-links a{color:var(--fg-dim);transition:color .2s}
+.nav-links a:hover,.nav-links a.on{color:var(--fg);text-decoration:none}
+.nav-cta{
+  display:inline-flex;align-items:center;gap:7px;flex-shrink:0;
+  padding:8px 16px;border-radius:999px;font-size:.86rem;font-weight:600;
+  background:var(--grad);color:#08111d !important;transition:transform .2s,box-shadow .2s;
+}
+.nav-cta:hover{transform:translateY(-1px);box-shadow:0 6px 22px rgba(56,189,248,.32);text-decoration:none}
+.burger{display:none;margin-left:auto;background:none;border:1px solid var(--line);color:var(--fg);
+  border-radius:9px;padding:7px 11px;cursor:pointer;font-size:1rem}
+
+/* ═══════════ Hero ═══════════ */
+.hero{position:relative;padding:92px 0 74px;text-align:center;overflow:hidden}
+.stars{position:absolute;inset:0;z-index:0;opacity:.5;pointer-events:none}
+.hero .wrap{position:relative;z-index:1}
+.pill{
+  display:inline-flex;align-items:center;gap:9px;
+  padding:6px 15px;border:1px solid var(--line-hi);border-radius:999px;
+  background:var(--panel);font-size:.8rem;color:var(--fg-dim);letter-spacing:.02em;
+}
+.pill .dot{width:7px;height:7px;border-radius:50%;background:var(--green);
+  box-shadow:0 0 0 0 rgba(52,211,153,.6);animation:pulse 2.4s infinite}
+@keyframes pulse{
+  0%{box-shadow:0 0 0 0 rgba(52,211,153,.55)}
+  70%{box-shadow:0 0 0 9px rgba(52,211,153,0)}
+  100%{box-shadow:0 0 0 0 rgba(52,211,153,0)}
+}
+.hero h1{
+  font-size:clamp(2.5rem,6.4vw,4.15rem);margin:26px 0 0;font-weight:750;letter-spacing:-.03em;
+}
+.hero h1 .g{background:var(--grad);-webkit-background-clip:text;background-clip:text;
+  -webkit-text-fill-color:transparent;color:transparent}
+.hero .sub{
+  max-width:730px;margin:22px auto 0;color:var(--fg-dim);
+  font-size:clamp(1rem,2.1vw,1.16rem);line-height:1.78;
+}
+.hero .sub strong{color:var(--fg);font-weight:600}
+.quote{
+  max-width:640px;margin:30px auto 0;padding:15px 22px;
+  border-left:2px solid var(--violet);border-radius:0 10px 10px 0;
+  background:linear-gradient(90deg,rgba(139,92,246,.11),transparent);
+  color:var(--fg-dim);font-size:.92rem;text-align:left;
+}
+.btns{display:flex;gap:13px;justify-content:center;flex-wrap:wrap;margin-top:34px}
+.btn{
+  display:inline-flex;align-items:center;gap:9px;padding:12px 25px;border-radius:11px;
+  font-size:.94rem;font-weight:600;transition:transform .2s,box-shadow .2s,border-color .2s;
+}
+.btn:hover{transform:translateY(-2px);text-decoration:none}
+.btn-p{background:var(--grad);color:#08111d;box-shadow:0 8px 26px rgba(56,189,248,.24)}
+.btn-p:hover{box-shadow:0 12px 34px rgba(56,189,248,.38)}
+.btn-s{border:1px solid var(--line-hi);color:var(--fg);background:var(--panel)}
+.btn-s:hover{border-color:var(--cyan);box-shadow:0 8px 24px rgba(56,189,248,.14)}
+
+/* ═══════════ 数据条 ═══════════ */
+.stats{
+  display:grid;grid-template-columns:repeat(auto-fit,minmax(148px,1fr));
+  gap:1px;margin-top:58px;background:var(--line);
+  border:1px solid var(--line);border-radius:var(--r);overflow:hidden;
+}
+.stat{background:var(--bg-soft);padding:22px 16px;text-align:center}
+.stat b{display:block;font-size:1.62rem;font-weight:700;font-family:var(--mono);
+  background:var(--grad);-webkit-background-clip:text;background-clip:text;
+  -webkit-text-fill-color:transparent;letter-spacing:-.02em}
+.stat span{display:block;margin-top:5px;font-size:.78rem;color:var(--fg-mute);letter-spacing:.02em}
+
+/* ═══════════ 区块 ═══════════ */
+section{padding:78px 0}
+.sec-head{text-align:center;margin-bottom:48px}
+.sec-tag{
+  display:inline-block;font-size:.76rem;letter-spacing:.2em;text-transform:uppercase;
+  color:var(--cyan);font-weight:600;margin-bottom:12px;
+}
+.sec-head h2{font-size:clamp(1.65rem,3.6vw,2.3rem);letter-spacing:-.025em}
+.sec-head p{margin:14px auto 0;max-width:660px;color:var(--fg-dim);font-size:.97rem}
+
+/* ═══════════ 卡片网格 ═══════════ */
+.grid{display:grid;gap:18px}
+.g3{grid-template-columns:repeat(auto-fit,minmax(288px,1fr))}
+.g2{grid-template-columns:repeat(auto-fit,minmax(340px,1fr))}
+.card{
+  background:var(--panel);border:1px solid var(--line);border-radius:var(--r);
+  padding:26px 24px;transition:border-color .25s,transform .25s,background .25s;
+}
+.card:hover{border-color:var(--line-hi);background:var(--panel-hi);transform:translateY(-3px)}
+.card .ico{
+  width:40px;height:40px;border-radius:10px;display:grid;place-items:center;
+  font-size:1.22rem;margin-bottom:15px;
+  background:linear-gradient(135deg,rgba(56,189,248,.16),rgba(139,92,246,.16));
+  border:1px solid var(--line-hi);
+}
+.card h3{font-size:1.04rem;margin-bottom:9px}
+.card p{color:var(--fg-dim);font-size:.9rem;line-height:1.75}
+.card ul{margin:11px 0 0;padding-left:18px;color:var(--fg-dim);font-size:.88rem;line-height:1.8}
+.card li::marker{color:var(--cyan)}
+
+/* ═══════════ 代码块 ═══════════ */
+pre{
+  margin:0;background:#070b13;border:1px solid var(--line);border-radius:11px;
+  padding:17px 19px;overflow-x:auto;font-family:var(--mono);font-size:.845rem;
+  line-height:1.72;color:#c8d3e8;
+}
+pre .c{color:var(--fg-mute)}
+pre .k{color:var(--violet)}
+pre .s{color:var(--green)}
+pre .f{color:var(--cyan)}
+
+/* ═══════════ 路由漏斗 ═══════════ */
+.flow{display:grid;gap:12px;max-width:820px;margin:0 auto}
+.tier{
+  display:flex;align-items:center;gap:16px;padding:17px 22px;border-radius:12px;
+  border:1px solid var(--line);background:var(--panel);position:relative;
+}
+.tier .badge{
+  font-family:var(--mono);font-size:.72rem;font-weight:700;letter-spacing:.06em;
+  padding:5px 11px;border-radius:7px;flex-shrink:0;
+}
+.tier-1{border-color:rgba(52,211,153,.34)}
+.tier-1 .badge{background:rgba(52,211,153,.15);color:var(--green);border:1px solid rgba(52,211,153,.3)}
+.tier-2{border-color:rgba(251,191,36,.3)}
+.tier-2 .badge{background:rgba(251,191,36,.14);color:var(--amber);border:1px solid rgba(251,191,36,.28)}
+.tier-3{border-color:rgba(251,113,133,.28)}
+.tier-3 .badge{background:rgba(251,113,133,.13);color:var(--rose);border:1px solid rgba(251,113,133,.26)}
+.tier .rule{font-size:.87rem;color:var(--fg-dim)}
+.tier .rule b{color:var(--fg);font-weight:600}
+.tier .w{margin-left:auto;font-family:var(--mono);font-size:.76rem;color:var(--fg-mute);flex-shrink:0}
+.arrow-down{text-align:center;color:var(--fg-mute);font-size:.76rem;letter-spacing:.1em}
+
+/* ═══════════ 表格 ═══════════ */
+.tbl-wrap{overflow-x:auto;border:1px solid var(--line);border-radius:var(--r);background:var(--panel)}
+table{width:100%;border-collapse:collapse;font-size:.87rem;min-width:520px}
+th,td{padding:13px 17px;text-align:left;border-bottom:1px solid var(--line)}
+th{background:rgba(255,255,255,.028);font-weight:600;font-size:.79rem;
+  letter-spacing:.05em;text-transform:uppercase;color:var(--fg-dim);white-space:nowrap}
+td:first-child{color:var(--fg-dim)}
+tr:last-child td{border-bottom:none}
+tbody tr:hover{background:rgba(255,255,255,.022)}
+.hl{color:var(--cyan);font-weight:600}
+
+/* ═══════════ 截图 ═══════════ */
+.shots{display:grid;gap:22px}
+.shot{
+  border:1px solid var(--line);border-radius:var(--r);overflow:hidden;
+  background:var(--panel);transition:border-color .25s,transform .25s;
+}
+.shot:hover{border-color:var(--line-hi);transform:translateY(-3px)}
+.shot img{width:100%;cursor:zoom-in;background:#fff}
+.shot figcaption{padding:15px 20px;font-size:.855rem;color:var(--fg-dim);border-top:1px solid var(--line)}
+.shot figcaption b{color:var(--fg);font-weight:600}
+
+/* ═══════════ 灯箱 ═══════════ */
+.lb{
+  position:fixed;inset:0;z-index:200;background:rgba(4,7,13,.94);
+  display:none;align-items:center;justify-content:center;padding:28px;cursor:zoom-out;
+  backdrop-filter:blur(6px);
+}
+.lb.on{display:flex}
+.lb img{max-width:100%;max-height:100%;border-radius:9px;box-shadow:0 24px 70px rgba(0,0,0,.7)}
+
+/* ═══════════ 上手步骤 ═══════════ */
+.steps{display:grid;gap:16px;counter-reset:s}
+.step{
+  display:grid;grid-template-columns:44px 1fr;gap:18px;align-items:start;
+  padding:21px 23px;border:1px solid var(--line);border-radius:12px;background:var(--panel);
+}
+.step::before{
+  counter-increment:s;content:counter(s);
+  width:36px;height:36px;border-radius:10px;display:grid;place-items:center;
+  font-family:var(--mono);font-weight:700;font-size:.95rem;color:#08111d;
+  background:var(--grad);
+}
+.step h4{font-size:.98rem;margin-bottom:7px}
+.step p{color:var(--fg-dim);font-size:.88rem}
+.step pre{margin-top:11px}
+
+/* 部署方式切换 */
+.tabs{display:flex;gap:8px;margin:26px 0 0;flex-wrap:wrap;justify-content:center}
+.tab{
+  padding:9px 19px;border-radius:9px;border:1px solid var(--line);
+  background:var(--panel);color:var(--fg-dim);font-size:.87rem;cursor:pointer;
+  font-family:inherit;transition:all .2s;
+}
+.tab:hover{border-color:var(--line-hi);color:var(--fg)}
+.tab.on{background:var(--grad);color:#08111d;border-color:transparent;font-weight:600}
+.pane{display:none;margin-top:18px}
+.pane.on{display:block}
+
+/* ═══════════ 对比高亮 ═══════════ */
+.win{display:inline-flex;align-items:center;gap:5px;color:var(--green);font-weight:600}
+
+/* ═══════════ 页脚 ═══════════ */
+footer{border-top:1px solid var(--line);padding:52px 0 42px;margin-top:24px}
+.foot{display:grid;gap:34px;grid-template-columns:1.5fr 1fr 1fr}
+.foot h4{font-size:.78rem;letter-spacing:.14em;text-transform:uppercase;color:var(--fg-mute);margin-bottom:14px}
+.foot ul{list-style:none;margin:0;padding:0;display:grid;gap:9px;font-size:.89rem}
+.foot a{color:var(--fg-dim)}
+.foot a:hover{color:var(--cyan)}
+.foot p{color:var(--fg-mute);font-size:.86rem;margin-top:12px;max-width:340px}
+.copy{
+  border-top:1px solid var(--line);margin-top:38px;padding-top:24px;
+  display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;
+  color:var(--fg-mute);font-size:.82rem;
+}
+
+/* ═══════════ 滚动动画 ═══════════ */
+.rv{opacity:0;transform:translateY(20px);transition:opacity .65s cubic-bezier(.16,1,.3,1),transform .65s cubic-bezier(.16,1,.3,1)}
+.rv.in{opacity:1;transform:none}
+@media (prefers-reduced-motion:reduce){
+  .rv{opacity:1;transform:none;transition:none}
+  html{scroll-behavior:auto}
+  *{animation:none !important}
+}
+
+/* ═══════════ 响应式 ═══════════ */
+@media(max-width:900px){
+  .foot{grid-template-columns:1fr 1fr}
+}
+@media(max-width:760px){
+  .nav-links{
+    display:none;position:absolute;top:64px;left:0;right:0;flex-direction:column;
+    gap:0;background:rgba(10,14,23,.98);border-bottom:1px solid var(--line);padding:8px 0;
+  }
+  .nav-links.open{display:flex}
+  .nav-links a{padding:13px 24px}
+  .burger{display:block}
+  .nav-cta{display:none}
+  .hero{padding:62px 0 52px}
+  section{padding:56px 0}
+  .tier{flex-wrap:wrap;gap:11px}
+  .tier .w{margin-left:0;width:100%}
+  .foot{grid-template-columns:1fr}
+  .step{grid-template-columns:1fr;gap:13px}
+}
+</style>
+</head>
+<body>
+
+<!-- ══════════ 导航 ══════════ -->
+<nav class="nav" id="nav">
+  <div class="wrap nav-in">
+    <a href="#top" class="brand">
+      <svg viewBox="0 0 100 100" aria-hidden="true">
+        <circle cx="50" cy="50" r="42" fill="none" stroke="#38bdf8" stroke-width="5" opacity=".75"/>
+        <circle cx="50" cy="50" r="25" fill="none" stroke="#8b5cf6" stroke-width="3" opacity=".6"/>
+        <circle cx="50" cy="50" r="11" fill="#8b5cf6"/>
+        <circle cx="50" cy="8" r="6" fill="#38bdf8"/>
+      </svg>
+      璇玑 <small>Xuanji</small>
+    </a>
+    <button class="burger" id="burger" aria-label="菜单">☰</button>
+    <div class="nav-links" id="navLinks">
+      <a href="#why">为什么</a>
+      <a href="#features">核心特性</a>
+      <a href="#routing">路由</a>
+      <a href="#thinking">思考归一化</a>
+      <a href="#shots">界面</a>
+      <a href="#compare">对比</a>
+      <a href="#start">快速开始</a>
+    </div>
+    <a href="https://github.com/icefairy/xuanji" class="nav-cta" target="_blank" rel="noopener">
+      <svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+        <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/>
+      </svg>
+      GitHub
+    </a>
+  </div>
+</nav>
+
+<!-- ══════════ Hero ══════════ -->
+<header class="hero" id="top">
+  <svg class="stars" viewBox="0 0 1200 600" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+    <g stroke="#38bdf8" stroke-width="1.1" opacity=".45" fill="none">
+      <path d="M150 430 L330 350 L520 390 L700 250 L880 300 L1030 170 L1130 120"/>
+    </g>
+    <g fill="#8b5cf6" opacity=".85">
+      <circle cx="150" cy="430" r="4"/><circle cx="330" cy="350" r="5.5"/>
+      <circle cx="520" cy="390" r="4"/><circle cx="700" cy="250" r="5"/>
+      <circle cx="880" cy="300" r="4"/><circle cx="1030" cy="170" r="5.5"/>
+      <circle cx="1130" cy="120" r="4"/>
+    </g>
+    <g fill="#38bdf8" opacity=".5">
+      <circle cx="240" cy="120" r="2"/><circle cx="420" cy="80" r="2.5"/>
+      <circle cx="640" cy="140" r="2"/><circle cx="810" cy="90" r="2.5"/>
+      <circle cx="980" cy="470" r="2"/><circle cx="1080" cy="400" r="2.5"/>
+      <circle cx="380" cy="520" r="2"/><circle cx="80" cy="200" r="2"/>
+    </g>
+  </svg>
+
+  <div class="wrap">
+    <span class="pill"><span class="dot"></span> Apache 2.0 开源 · 自托管 · 无供应商锁定</span>
+
+    <h1>璇玑 <span class="g">Xuanji</span></h1>
+    <p class="sub">
+      <strong>OpenAI / Anthropic 双协议</strong> AI 网关 —— Go 单二进制、零外部依赖。<br>
+      汇聚多家上游，按<strong>计费层级 · 权重 · 优惠时段 · 实时延迟</strong>自动分流、故障切换、熔断恢复。
+    </p>
+
+    <div class="quote">
+      璇玑，北斗第一星，古代天文仪器的轴心枢纽 —— <b>汇聚万向，运转分流</b>。<br>
+      给 Hermes、Claude Code、OpenCode、Cline 等各类 AI 工具一个统一入口，客户端配一次，之后所有渠道变更都在网关后台完成，<b>客户端无感</b>。
+    </div>
+
+    <div class="btns">
+      <a href="#start" class="btn btn-p">⚡ 快速开始</a>
+      <a href="https://github.com/icefairy/xuanji" class="btn btn-s" target="_blank" rel="noopener">⭐ GitHub Star</a>
+      <a href="https://gitee.com/icefairy/xuanji-gateway" class="btn btn-s" target="_blank" rel="noopener">🇨🇳 Gitee 镜像</a>
+    </div>
+
+    <div class="stats rv">
+      <div class="stat"><b>1</b><span>单二进制，复制即跑</span></div>
+      <div class="stat"><b>2</b><span>原生协议入口</span></div>
+      <div class="stat"><b>347</b><span>单元测试全绿</span></div>
+      <div class="stat"><b>0</b><span>外部运行时依赖</span></div>
+      <div class="stat"><b>11</b><span>对外端点</span></div>
+    </div>
+  </div>
+</header>
+
+<!-- ══════════ 为什么自研 ══════════ -->
+<section id="why">
+  <div class="wrap">
+    <div class="sec-head rv">
+      <span class="sec-tag">Why</span>
+      <h2>为什么再造一个网关</h2>
+      <p>现有一站式网关要么太重（要 MySQL / Redis / Python 运行时），要么对协议兼容不够好（流式、工具调用、多模态字段容易丢）。璇玑追求三件事：轻、准、可控。</p>
+    </div>
+
+    <div class="grid g3">
+      <div class="card rv">
+        <div class="ico">🪶</div>
+        <h3>轻到可以忽略</h3>
+        <p>Go 单二进制 + 内嵌 SQLite（纯 Go 无 CGO），复制即跑。不需要 MySQL、Redis、Python 或任何外部服务，内存占用极小。</p>
+      </div>
+      <div class="card rv">
+        <div class="ico">🎯</div>
+        <h3>协议严格，不丢字段</h3>
+        <p>SSE 流式<strong>逐行透传不解析</strong>，只在协议转换时才解析。工具调用、多模态、思考链字段原样送达，不会被中间层悄悄改写。</p>
+      </div>
+      <div class="card rv">
+        <div class="ico">🎛️</div>
+        <h3>全程可视化可控</h3>
+        <p>所有配置存数据库，管理页 CRUD <strong>即改即热重载</strong>。上游、路由、折扣、配额、API Key 全在页面上点，不用改配置文件重启。</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════ 核心特性 ══════════ -->
+<section id="features">
+  <div class="wrap">
+    <div class="sec-head rv">
+      <span class="sec-tag">Features</span>
+      <h2>核心特性</h2>
+      <p>一个入口，管住所有模型渠道。</p>
+    </div>
+
+    <div class="grid g3">
+      <div class="card rv">
+        <div class="ico">🧭</div>
+        <h3>双协议原生接入</h3>
+        <p>OpenAI 与 Anthropic 协议<strong>双原生入口</strong>，不是单向转换。Claude Code 直接把 <code>ANTHROPIC_BASE_URL</code> 指向网关即可。</p>
+        <ul>
+          <li>鉴权双风格：<code>Authorization: Bearer</code> / <code>x-api-key</code></li>
+          <li>流式 SSE 事件按 Anthropic 规范转换</li>
+          <li>兼容各类官方 SDK，零改动接入</li>
+        </ul>
+      </div>
+
+      <div class="card rv">
+        <div class="ico">💰</div>
+        <h3>成本优先的路由</h3>
+        <p>免费额度先榨干，再花包月，最后才动用按量付费。规则内置，无需手工选渠道。</p>
+        <ul>
+          <li>计费层级：免费 &gt; 包月 &gt; 按量</li>
+          <li>同层权重调度，高权多发低权少发</li>
+          <li>优惠时段（如夜间折扣）自动优先</li>
+          <li>实时延迟最低者优先</li>
+        </ul>
+      </div>
+
+      <div class="card rv">
+        <div class="ico">🛡️</div>
+        <h3>高可用，不中断</h3>
+        <p>任何一个上游挂掉都不会打断你的工作流。</p>
+        <ul>
+          <li>同层失败逐个尝试，整层失败自动升级下一计费层级</li>
+          <li>熔断冷却 + 后台定时探测自动恢复</li>
+          <li>每上游独立健康探测，三态（正常 / 降级 / 不可用）</li>
+          <li><strong>客户端断连不误拉黑上游</strong></li>
+        </ul>
+      </div>
+
+      <div class="card rv">
+        <div class="ico">🧠</div>
+        <h3>思考强度归一化</h3>
+        <p>下游永远只传 OpenAI 标准的 <code>reasoning_effort</code>，网关按目标模型族自动翻译成各家私有参数。</p>
+        <ul>
+          <li>覆盖 DeepSeek / 商汤 / Kimi / GLM / Qwen / MiMo / OpenAI</li>
+          <li>不传该参数时<strong>零开销</strong>，原样透传不改 body</li>
+          <li>未知模型绝不破坏请求</li>
+        </ul>
+      </div>
+
+      <div class="card rv">
+        <div class="ico">🎯</div>
+        <h3>最佳思考等级</h3>
+        <p>基于 57 题实测数据预置推荐值，不用自己记哪个模型该用哪档。</p>
+        <ul>
+          <li>「自动设置」：客户端没传时自动补推荐值，零侵入</li>
+          <li>「强制覆盖」：一律用统一值，省得逐个客户端改</li>
+          <li>支持模型通配符，如 <code>deepseek-*</code></li>
+        </ul>
+      </div>
+
+      <div class="card rv">
+        <div class="ico">🔁</div>
+        <h3>思考链回传兼容</h3>
+        <p>部分模型在多轮工具调用时要求历史 <code>reasoning_content</code> 原样回传，缺失会报 400 或静默变笨。网关注入修复。</p>
+        <ul>
+          <li>指纹双索引缓存（内存 + SQLite，跨重启持久化）</li>
+          <li>客户端已自带该字段时自动跳过，不覆盖</li>
+          <li>覆盖 DeepSeek / GLM / MiMo，其余保守不注入</li>
+        </ul>
+      </div>
+
+      <div class="card rv">
+        <div class="ico">📊</div>
+        <h3>可观测性</h3>
+        <p>请求日志与统计做到能回答「哪个 Key、哪个上游、哪个模型慢」。</p>
+        <ul>
+          <li>五档时间维度统计，每上游成功率 / 延迟 / Tokens</li>
+          <li>每 API Key 用量 + 模型分布饼图</li>
+          <li>上游行可下钻到「上游 × 真实模型」看 tokens/秒、TTFT</li>
+          <li>健康告警 Webhook（带 10 分钟冷却）</li>
+        </ul>
+      </div>
+
+      <div class="card rv">
+        <div class="ico">🔌</div>
+        <h3>开箱即用的渠道适配</h3>
+        <p>特殊上游不必额外配置，网关自动完成协议转换。</p>
+        <ul>
+          <li><strong>Ollama</strong>：OpenAI 入口自动转协议转发</li>
+          <li><strong>Gemini</strong>：原生协议双向转换</li>
+          <li><strong>mimo TTS</strong>：标准 OpenAI 语音协议 ↔ 私有协议桥接</li>
+          <li><strong>模型映射</strong>：客户端简单名 ↔ 上游真实名自动转换</li>
+        </ul>
+      </div>
+
+      <div class="card rv">
+        <div class="ico">🔐</div>
+        <h3>鉴权与配额</h3>
+        <p>给不同 AI 程序发不同 Key，用量一目了然。</p>
+        <ul>
+          <li>下游 Key 签发、启用/禁用、重命名</li>
+          <li>分组配额矩阵（组 × 模型白名单 + 模型级配额）</li>
+          <li>API Key 可单独设策略覆盖默认配额</li>
+          <li>管理 API 独立鉴权，AI 助手可免登录改配置</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════ 路由 ══════════ -->
+<section id="routing">
+  <div class="wrap">
+    <div class="sec-head rv">
+      <span class="sec-tag">Routing</span>
+      <h2>路由优先级</h2>
+      <p>一条固定策略，无需配置：先省钱，再按权重和折扣分流，最后比延迟。同层全挂就升级下一层。</p>
+    </div>
+
+    <div class="flow rv">
+      <div class="tier tier-1">
+        <span class="badge">FREE</span>
+        <span class="rule">免费额度 —— <b>先用光免费资源</b></span>
+        <span class="w">weight → 折扣 → 延迟</span>
+      </div>
+      <div class="arrow-down">↓ 同层全部失败</div>
+      <div class="tier tier-2">
+        <span class="badge">SUBSCRIPTION</span>
+        <span class="rule">包月套餐 —— <b>已付费的额度优先消耗</b></span>
+        <span class="w">weight → 折扣 → 延迟</span>
+      </div>
+      <div class="arrow-down">↓ 同层全部失败</div>
+      <div class="tier tier-3">
+        <span class="badge">PAYG</span>
+        <span class="rule">按量付费 —— <b>最后兜底，保证服务不断</b></span>
+        <span class="w">weight → 折扣 → 延迟</span>
+      </div>
+    </div>
+
+    <div class="grid g2 rv" style="margin-top:34px">
+      <div class="card">
+        <h3>⚙️ 同层内怎么选</h3>
+        <p style="margin-bottom:12px">四重比较，逐级决定：</p>
+        <ol style="margin:0;padding-left:20px;color:var(--fg-dim);font-size:.89rem;line-height:1.95">
+          <li><b style="color:var(--fg)">权重</b> —— weight 高的上游优先</li>
+          <li><b style="color:var(--fg)">优惠时段</b> —— 处于折扣时段的上游优先</li>
+          <li><b style="color:var(--fg)">实时延迟</b> —— 健康探测延迟最低者优先（未测过的排最后）</li>
+          <li><b style="color:var(--fg)">失败切换</b> —— 逐个尝试，全挂升级下一层级</li>
+        </ol>
+      </div>
+      <div class="card">
+        <h3>🩺 健康探测不烧算力</h3>
+        <p>按上游能力选探测端点，统一用<strong>占位模型名 + 无凭证请求</strong>，不触发真实推理：</p>
+        <ul>
+          <li>2xx 与全部 4xx 都算「服务在线」——纯 TTS / embedding 上游不会被 chat 探测误判为 dead</li>
+          <li>只有 5xx / 超时 / 断连才判死</li>
+          <li>客户端主动断连（context canceled）不算上游故障</li>
+          <li>透传的 4xx（如 413）不触发熔断</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════ 思考归一化 ══════════ -->
+<section id="thinking">
+  <div class="wrap">
+    <div class="sec-head rv">
+      <span class="sec-tag">Thinking Effort</span>
+      <h2>一套代码，接入所有思考模型</h2>
+      <p>OpenAI 用 <code>reasoning_effort</code>、DeepSeek 还要 <code>thinking.type</code>、商汤用 <code>output_config.effort</code>、Kimi / GLM 只有开关、Qwen 是 <code>enable_thinking</code> + 预算……客户端挨个适配太痛苦。璇玑在网关层做归一化。</p>
+    </div>
+
+    <div class="grid g2 rv">
+      <div class="card">
+        <h3 style="margin-bottom:14px">客户端只发标准参数</h3>
+<pre><span class="c">// 与 OpenAI o 系列完全一致的写法</span>
+{
+  <span class="s">"model"</span>: <span class="s">"任意模型"</span>,
+  <span class="s">"reasoning_effort"</span>: <span class="s">"none | low | medium | high"</span>,
+  <span class="s">"messages"</span>: [...]
+}</pre>
+        <p style="margin-top:14px">网关按上游真实模型自动翻译成各家私有参数。<strong>请求体没有该字段时零开销</strong>，原样透传不改 body；未知模型也原样透传，绝不破坏请求。</p>
+      </div>
+
+      <div class="card">
+        <h3 style="margin-bottom:14px">自动补最优等级</h3>
+<pre><span class="c">// 客户端不传 effort</span>
+{<span class="s">"model"</span>:<span class="s">"deepseek-v4-flash"</span>, <span class="s">"messages"</span>:[...]}
+
+<span class="c">// 网关自动注入实测推荐值</span>
+{<span class="s">"model"</span>:<span class="s">"deepseek-v4-flash"</span>, <span class="s">"messages"</span>:[...],
+ <span class="s">"reasoning_effort"</span>:<span class="s">"high"</span>}</pre>
+        <p style="margin-top:14px">推荐值来自 <strong>57 题实测评测</strong>（DeepSeek V4 Flash <code>high</code> 得 54/57、商汤 flash-lite <code>low</code> 得 53/57、mimo-v2.5 <code>medium</code> 得 53/57）。开启「强制覆盖」后，所有客户端统一受益。</p>
+      </div>
+    </div>
+
+    <div class="tbl-wrap rv" style="margin-top:24px">
+      <table>
+        <thead>
+          <tr><th>目标模型族</th><th>关闭思考（none）</th><th>强度控制</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><b>DeepSeek V4</b> flash / pro</td><td><code>thinking.type=disabled</code></td><td>原生 <code>reasoning_effort</code> 透传（pro 的 low 自动抬到 high）</td></tr>
+          <tr><td><b>商汤</b> sensenova-*</td><td><code>thinking.type=disabled</code></td><td>转 <code>output_config.effort</code></td></tr>
+          <tr><td><b>Kimi K3</b></td><td>始终思考，映射为 low</td><td>原生 <code>reasoning_effort</code> 透传</td></tr>
+          <tr><td><b>Kimi K2.x / GLM-4.5</b></td><td><code>thinking.type=disabled</code></td><td>仅开关，无强度档 → <code>enabled</code></td></tr>
+          <tr><td><b>Qwen3 / 3.5 / 3.6 / 3.7</b></td><td><code>enable_thinking=false</code></td><td><code>enable_thinking=true</code> + <code>thinking_budget</code> 分档</td></tr>
+          <tr><td><b>MiMo V2.6</b> flash / pro</td><td>原样透传</td><td>原生 low/high；xhigh/max 自动降为 high（上游枚举上限）</td></tr>
+          <tr><td><b>OpenAI</b> o3 / o4 / GPT-5</td><td>原样透传</td><td>完全透传</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════ 截图 ══════════ -->
+<section id="shots">
+  <div class="wrap">
+    <div class="sec-head rv">
+      <span class="sec-tag">Screenshots</span>
+      <h2>管理界面</h2>
+      <p>Vue 管理页嵌入二进制，无需构建工具、无需额外部署前端。点图可放大。</p>
+    </div>
+
+    <div class="shots">
+      <figure class="shot rv">
+        <img src="screenshots/dashboard.png" alt="统计总览" loading="lazy">
+        <figcaption><b>📊 统计总览</b> —— 请求数 / 成功率 / Tokens / 延迟总览卡片，每日 Token 趋势折线图，每上游与每 API Key 用量明细，点击展开行可看该 Key 的模型分布饼图</figcaption>
+      </figure>
+      <figure class="shot rv">
+        <img src="screenshots/upstreams.png" alt="上游管理" loading="lazy">
+        <figcaption><b>⚙️ 上游管理</b> —— 添加 / 编辑 / 克隆 / 删除上游渠道，配置计费层级（免费 / 包月 / 按量）、权重、模型映射，健康状态三态可见</figcaption>
+      </figure>
+      <figure class="shot rv">
+        <img src="screenshots/routing.png" alt="路由规则" loading="lazy">
+        <figcaption><b>🔄 路由规则</b> —— 模型名支持通配符（如 <code>deepseek-*</code>），每条规则绑定一组上游，网关自动分流、负载、重试</figcaption>
+      </figure>
+      <figure class="shot rv">
+        <img src="screenshots/effort.png" alt="思考等级" loading="lazy">
+        <figcaption><b>🧠 思考等级</b> —— 管理每个模型的最佳 <code>reasoning_effort</code> 推荐值，支持通配符，配合系统设置里的「自动推荐」与「强制覆盖」开关</figcaption>
+      </figure>
+      <figure class="shot rv">
+        <img src="screenshots/api-keys.png" alt="API Key 管理" loading="lazy">
+        <figcaption><b>🔑 API Key 管理</b> —— 为不同 AI 程序创建独立的 Key，便于区分用量；支持启用 / 禁用 / 重命名与策略覆盖</figcaption>
+      </figure>
+      <figure class="shot rv">
+        <img src="screenshots/settings.png" alt="系统设置" loading="lazy">
+        <figcaption><b>🛠️ 系统设置</b> —— 账号安全、思考等级策略、视频透传开关、重试策略（熔断时长 / 探测间隔 / 超时 / 重试状态码 / 关键词）、渠道优惠时段</figcaption>
+      </figure>
+    </div>
+
+    <p style="text-align:center;margin-top:30px;color:var(--fg-dim);font-size:.9rem">
+      📖 新手图文教程：<a href="使用说明.md">《璇玑网关使用说明（小白版，含逐步截图）》</a>
+    </p>
+  </div>
+</section>
+
+<!-- ══════════ 对比 ══════════ -->
+<section id="compare">
+  <div class="wrap">
+    <div class="sec-head rv">
+      <span class="sec-tag">Comparison</span>
+      <h2>与同类项目对比</h2>
+      <p>不是要取代谁，而是把「轻量 + 成本优先 + 不中断」这三件事做到位。</p>
+    </div>
+
+    <div class="tbl-wrap rv">
+      <table>
+        <thead>
+          <tr><th>特性</th><th>璇玑 Xuanji</th><th>OneAPI / New-API</th><th>LiteLLM</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>形态</td><td class="hl">Go 单二进制</td><td>Go 单二进制</td><td>Python 服务</td></tr>
+          <tr><td>体积</td><td class="hl">27MB（gzip 13.9MB）</td><td>镜像约 200MB</td><td>镜像 1GB+</td></tr>
+          <tr><td>外部依赖</td><td class="hl">零（SQLite 内嵌）</td><td>MySQL / Redis</td><td>Python 运行时 + 依赖树</td></tr>
+          <tr><td>协议入口</td><td class="hl">OpenAI + Anthropic 双原生</td><td>仅 OpenAI 统一入口</td><td>以 OpenAI 兼容为主</td></tr>
+          <tr><td>流式兼容</td><td class="hl">逐行 SSE 透传，不丢字段</td><td>部分流式字段丢失</td><td>部分场景字段重写</td></tr>
+          <tr><td>延迟路由</td><td class="hl">✅ 实时健康探测</td><td>❌</td><td>有限支持</td></tr>
+          <tr><td>配置热重载</td><td class="hl">✅ CRUD 即生效</td><td>部分需重启</td><td>部分需重启</td></tr>
+          <tr><td>客户端断连保护</td><td class="hl">✅ 不误拉黑上游</td><td>❌</td><td>—</td></tr>
+          <tr><td>管理界面</td><td class="hl">✅ 内置完整</td><td>✅</td><td>较简陋</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="grid g3 rv" style="margin-top:24px">
+      <div class="card">
+        <h3>🆚 vs OneAPI / New-API</h3>
+        <p>同样是 Go 单二进制，但璇玑<strong>不需要 MySQL / Redis</strong>，且 Anthropic 是原生入口而非转换层。部署运维成本低一个量级。</p>
+      </div>
+      <div class="card">
+        <h3>🆚 vs LiteLLM</h3>
+        <p>LiteLLM 是「Python 库 + 网关」模式，适合在 Python 代码里直接调。璇玑是独立二进制网关，<strong>不绑架你的技术栈</strong>，也不需要养一个 Python 服务。</p>
+      </div>
+      <div class="card">
+        <h3>🆚 vs CC Switch</h3>
+        <p>CC Switch 是<strong>多套配置之间的切换器</strong>（桌面端，手动点选）；璇玑是<strong>所有配置之上的调度器</strong>。用璇玑之后，「切换」这个动作就不需要了 —— 故障自动转移，工作流不中断。</p>
+      </div>
+    </div>
+
+    <div class="card rv" style="margin-top:24px;text-align:center;border-color:rgba(56,189,248,.28)">
+      <p style="font-size:1rem;color:var(--fg)">
+        <b>一句话总结</b>：企业级网关是为「管人、管合规」设计的，杀鸡用牛刀；<br>
+        璇玑是为「自己爽、省钱、不中断」设计的 —— 一两分钟跑起来，不用读三百页文档。
+      </p>
+      <p style="margin-top:14px;color:var(--fg-dim);font-size:.9rem">
+        🎯 <b>定位：个人 / 小团队自用</b>。没有计费、用户管理、配额兑换码等运营功能，短期内也不打算加入 —— 它是给你自己的 AI 工作流做统一入口与成本调度的。
+      </p>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════ 快速开始 ══════════ -->
+<section id="start">
+  <div class="wrap">
+    <div class="sec-head rv">
+      <span class="sec-tag">Get Started</span>
+      <h2>快速开始</h2>
+      <p>首次启动自动建库并写入默认配置，开箱即用。</p>
+    </div>
+
+    <div class="steps rv">
+      <div class="step">
+        <div>
+          <h4>编译并启动</h4>
+          <p>需要 Go 1.26+。默认监听 8787 端口，数据库默认落在当前目录。</p>
+<pre><span class="c"># 编译</span>
+go build -o xuanji-server ./cmd/server
+
+<span class="c"># 启动（首次启动自动建库 + 写入默认配置）</span>
+./xuanji-server --port 8787 --db ./xuanji.db</pre>
+        </div>
+      </div>
+      <div class="step">
+        <div>
+          <h4>登录管理页</h4>
+          <p>浏览器打开 <code>http://&lt;你的主机&gt;:8787/</code>，默认账号 <code>admin</code> / <code>xuanji123</code> —— <strong>请第一时间修改密码</strong>。</p>
+        </div>
+      </div>
+      <div class="step">
+        <div>
+          <h4>添加上游渠道</h4>
+          <p>在「上游管理」填入名称 / Base URL / API Key / 计费层级 / 权重 / 模型映射。支持一键拉取该上游的模型列表。</p>
+        </div>
+      </div>
+      <div class="step">
+        <div>
+          <h4>配置路由规则</h4>
+          <p>在「路由规则」把模型名（支持 <code>deepseek-*</code> 通配符）映射到一组上游。网关会自动分流、负载与故障切换。</p>
+        </div>
+      </div>
+      <div class="step">
+        <div>
+          <h4>客户端指向网关</h4>
+          <p>用「API Key」页创建下游 Key，然后把客户端指向网关地址。以 Claude Code 为例：</p>
+<pre><span class="k">export</span> ANTHROPIC_BASE_URL=<span class="s">"http://&lt;你的主机&gt;:8787"</span>
+<span class="k">export</span> ANTHROPIC_API_KEY=<span class="s">"sk-你在网关创建的key"</span>
+
+<span class="c"># OpenAI 兼容客户端同理</span>
+<span class="k">export</span> OPENAI_BASE_URL=<span class="s">"http://&lt;你的主机&gt;:8787/v1"</span>
+<span class="k">export</span> OPENAI_API_KEY=<span class="s">"sk-你在网关创建的key"</span></pre>
+        </div>
+      </div>
+    </div>
+
+    <div class="tabs rv" id="tabs">
+      <button class="tab on" data-p="docker">🐳 Docker</button>
+      <button class="tab" data-p="supervisor">🖥️ Supervisor</button>
+      <button class="tab" data-p="endpoints">🔌 协议端点</button>
+    </div>
+
+    <div class="pane on rv" id="p-docker">
+<pre><span class="c"># 方式一：docker compose（推荐）</span>
+docker compose up -d --build
+
+<span class="c"># 方式二：docker run</span>
+docker build -t xuanji .
+docker run -d --name xuanji \
+  -p 8787:8787 \
+  -v $(pwd)/data:/data \
+  --restart unless-stopped \
+  xuanji</pre>
+      <p style="margin-top:14px;color:var(--fg-dim);font-size:.89rem">
+        镜像基于多阶段构建：<code>golang:1.26-alpine</code> 编译 + 精简 alpine 运行，静态编译，已内置东八区时区与 CA 证书。数据库存 <code>/data/xuanji.db</code>，卷映射后升级容器不丢配置。
+      </p>
+    </div>
+
+    <div class="pane rv" id="p-supervisor">
+<pre><span class="c"># /etc/supervisor/conf.d/xuanji.conf</span>
+[program:xuanji]
+command=/opt/xuanji/xuanji-server --port 8787 --db /opt/xuanji/xuanji.db
+directory=/opt/xuanji
+stopasgroup=true
+autorestart=true
+user=root</pre>
+      <p style="margin-top:14px;color:var(--fg-dim);font-size:.89rem">
+        端口与数据库路径由命令行参数控制，改端口请改 supervisor 配置而不是配置文件。
+      </p>
+    </div>
+
+    <div class="pane rv" id="p-endpoints">
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th>协议</th><th>端点</th><th>说明</th></tr></thead>
+          <tbody>
+            <tr><td rowspan="7"><b>OpenAI</b></td><td><code>POST /v1/chat/completions</code></td><td>聊天补全（流式 / 非流式）</td></tr>
+            <tr><td><code>POST /v1/completions</code></td><td>文本补全</td></tr>
+            <tr><td><code>POST /v1/embeddings</code></td><td>文本嵌入</td></tr>
+            <tr><td><code>POST /v1/images/generations</code></td><td>图片生成</td></tr>
+            <tr><td><code>POST /v1/rerank</code></td><td>重排</td></tr>
+            <tr><td><code>POST /v1/audio/speech</code> · <code>/v1/audio/transcriptions</code></td><td>语音合成 / 语音识别</td></tr>
+            <tr><td><code>GET /v1/models</code></td><td>模型列表</td></tr>
+            <tr><td><b>Anthropic</b></td><td><code>POST /v1/messages</code></td><td>Claude 消息（流式事件转换）</td></tr>
+            <tr><td><b>视频</b></td><td><code>POST /v1/videos</code> · <code>GET /v1/videos</code></td><td>视频生成透传 / 任务状态</td></tr>
+            <tr><td><b>运维</b></td><td><code>GET /healthz</code></td><td>健康探针</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p style="margin-top:14px;color:var(--fg-dim);font-size:.89rem">
+        鉴权双风格：<code>Authorization: Bearer &lt;key&gt;</code> 与 <code>x-api-key: &lt;key&gt;</code> 均可，兼容各类 SDK。
+      </p>
+    </div>
+
+    <div class="grid g3 rv" style="margin-top:34px">
+      <div class="card">
+        <h3>🧪 跑测试</h3>
+        <p>覆盖协议转换、路由选择、熔断、思考归一化与最佳等级注入。</p>
+<pre style="margin-top:12px">go build ./...
+go test ./...</pre>
+      </div>
+      <div class="card">
+        <h3>🛠️ 技术栈</h3>
+        <ul style="margin-top:4px">
+          <li>Go 1.26+，标准库 <code>net/http</code>，无 Web 框架</li>
+          <li>SQLite（纯 Go 驱动，无 CGO），WAL 模式</li>
+          <li>前端 Vue 2 CDN + 原生 HTML，<code>go:embed</code> 嵌入</li>
+          <li>bcrypt + 自实现 JWT，零依赖</li>
+          <li>直接依赖仅 6 个</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3>📦 数据与配置</h3>
+        <p>全部配置存 SQLite，无需 YAML 文件；表结构升级在代码里做，旧库自动 ALTER 加列。</p>
+        <ul style="margin-top:12px">
+          <li>上游 / 路由 / 折扣 / 配额 / API Key / 价格</li>
+          <li>请求日志、每日统计、健康探测记录</li>
+          <li>多实例可共享同一数据库文件</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════ 页脚 ══════════ -->
+<footer>
+  <div class="wrap">
+    <div class="foot">
+      <div>
+        <a href="#top" class="brand" style="margin-bottom:14px">
+          <svg viewBox="0 0 100 100" width="24" height="24" aria-hidden="true">
+            <circle cx="50" cy="50" r="42" fill="none" stroke="#38bdf8" stroke-width="5" opacity=".75"/>
+            <circle cx="50" cy="50" r="25" fill="none" stroke="#8b5cf6" stroke-width="3" opacity=".6"/>
+            <circle cx="50" cy="50" r="11" fill="#8b5cf6"/>
+          </svg>
+          璇玑 <small>Xuanji</small>
+        </a>
+        <p>汇聚万向，运转分流。<br>为你自己的 AI 工作流做统一入口与成本调度。</p>
+        <p style="margin-top:10px">Apache 2.0 许可 · 欢迎 Issue / PR / Star ⭐</p>
+      </div>
+      <div>
+        <h4>资源</h4>
+        <ul>
+          <li><a href="https://github.com/icefairy/xuanji" target="_blank" rel="noopener">GitHub 仓库</a></li>
+          <li><a href="https://gitee.com/icefairy/xuanji-gateway" target="_blank" rel="noopener">Gitee 镜像</a></li>
+          <li><a href="使用说明.md">使用说明（小白版）</a></li>
+          <li><a href="CHANGELOG-v1.1.0.md">更新日志</a></li>
+          <li><a href="https://github.com/icefairy/xuanji/releases" target="_blank" rel="noopener">下载发布版</a></li>
+        </ul>
+      </div>
+      <div>
+        <h4>文档</h4>
+        <ul>
+          <li><a href="#routing">路由优先级</a></li>
+          <li><a href="#thinking">思考强度归一化</a></li>
+          <li><a href="#shots">管理界面</a></li>
+          <li><a href="#compare">与同类项目对比</a></li>
+          <li><a href="articles/01-cost-60.md">为什么自研网关</a></li>
+        </ul>
+      </div>
+    </div>
+    <div class="copy">
+      <span>© 2026 璇玑 Xuanji · 基于 Apache License 2.0 开源</span>
+      <span>Go 单二进制 · SQLite · 无外部依赖</span>
+    </div>
+  </div>
+</footer>
+
+<!-- 灯箱 -->
+<div class="lb" id="lb"><img src="" alt=""></div>
+
+<script>
+(function(){
+  "use strict";
+
+  /* ── 导航滚动状态 ── */
+  var nav = document.getElementById('nav');
+  function onScroll(){ nav.classList.toggle('scrolled', window.scrollY > 12); }
+  window.addEventListener('scroll', onScroll, {passive:true});
+  onScroll();
+
+  /* ── 移动端菜单 ── */
+  var burger = document.getElementById('burger');
+  var links  = document.getElementById('navLinks');
+  burger.addEventListener('click', function(){ links.classList.toggle('open'); });
+  links.addEventListener('click', function(e){
+    if (e.target.tagName === 'A') links.classList.remove('open');
+  });
+
+  /* ── 滚动淡入 ── */
+  var items = document.querySelectorAll('.rv');
+  if ('IntersectionObserver' in window) {
+    var io = new IntersectionObserver(function(entries){
+      entries.forEach(function(en){
+        if (!en.isIntersecting) return;
+        var el = en.target;
+        var i  = Array.prototype.indexOf.call(el.parentNode.children, el);
+        el.style.transitionDelay = Math.min(i, 5) * 70 + 'ms';
+        el.classList.add('in');
+        io.unobserve(el);
+      });
+    }, {threshold:.08, rootMargin:'0px 0px -40px 0px'});
+    Array.prototype.forEach.call(items, function(el){ io.observe(el); });
+  } else {
+    Array.prototype.forEach.call(items, function(el){ el.classList.add('in'); });
+  }
+
+  /* ── 截图灯箱 ── */
+  var lb = document.getElementById('lb');
+  var lbImg = lb.querySelector('img');
+  document.addEventListener('click', function(e){
+    var t = e.target;
+    if (t.tagName === 'IMG' && t.closest('.shot')) {
+      lbImg.src = t.src;
+      lbImg.alt = t.alt;
+      lb.classList.add('on');
+    } else if (t === lb || t === lbImg) {
+      lb.classList.remove('on');
+      lbImg.src = '';
+    }
+  });
+  document.addEventListener('keydown', function(e){
+    if (e.key === 'Escape') { lb.classList.remove('on'); lbImg.src = ''; }
+  });
+
+  /* ── 部署方式切换 ── */
+  var tabs = document.querySelectorAll('.tab');
+  Array.prototype.forEach.call(tabs, function(tab){
+    tab.addEventListener('click', function(){
+      Array.prototype.forEach.call(tabs, function(t){ t.classList.remove('on'); });
+      tab.classList.add('on');
+      Array.prototype.forEach.call(document.querySelectorAll('.pane'), function(p){
+        p.classList.remove('on');
+      });
+      var pane = document.getElementById('p-' + tab.dataset.p);
+      if (pane) pane.classList.add('on');
+    });
+  });
+
+  /* ── 导航高亮当前区块 ── */
+  var sections = document.querySelectorAll('section[id]');
+  var navA = document.querySelectorAll('.nav-links a');
+  if ('IntersectionObserver' in window) {
+    var io2 = new IntersectionObserver(function(entries){
+      entries.forEach(function(en){
+        if (!en.isIntersecting) return;
+        var id = en.target.id;
+        Array.prototype.forEach.call(navA, function(a){
+          a.classList.toggle('on', a.getAttribute('href') === '#' + id);
+        });
+      });
+    }, {rootMargin:'-45% 0px -50% 0px'});
+    Array.prototype.forEach.call(sections, function(s){ io2.observe(s); });
+  }
+})();
+</script>
+</body>
+</html>
