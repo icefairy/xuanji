@@ -23,8 +23,6 @@
 
 > **GitHub**：[https://github.com/icefairy/xuanji](https://github.com/icefairy/xuanji) — 欢迎 Issue、PR、Star ⭐
 
-> **Gitee 镜像**：[https://gitee.com/icefairy/xuanji-gateway](https://gitee.com/icefairy/xuanji-gateway) — 国内用户访问更快
-
 ---
 
 ### 💬 加入微信社群
