@@ -15,7 +15,7 @@ Codex 是重度工具调用 + 长流式的工作模式，DeepSeek 的 API 是 Op
 
 我的实测：同样的 Key 接进一个协议兼容性好的网关——**璇玑 Xuanji**（自研的 Go 单二进制 AI 网关，开源），Claude Code / Codex 全映射 v4-flash 跑得很稳。核心就两条：**流式 SSE 逐行透传不缓冲截断、工具调用字段完整保留不丢**。而且网关后台有完整请求日志，每次中断是 200 截断还是 4xx/5xx，一眼就知道，不用猜。
 
-如果你也想排查，可以用这个工具看真实请求：https://github.com/icefairy/xuanji （国内镜像 https://gitee.com/icefairy/xuanji-gateway ）。它支持 OpenAI + Anthropic 双协议原生透传，一个地址统一接 Codex / Claude Code / 各类 Agent，上游挂了自动切换，还带按 API Key 的用量统计。
+如果你也想排查，可以用这个工具看真实请求：https://github.com/icefairy/xuanji。它支持 OpenAI + Anthropic 双协议原生透传，一个地址统一接 Codex / Claude Code / 各类 Agent，上游挂了自动切换，还带按 API Key 的用量统计。
 
 建议：先别骂模型，拿一份带日志的网关看真实请求，把状态码和完整响应贴出来，比猜"砍参数"靠谱得多。真在相近 token 处断，调大 max_tokens 或换流式处理就解决了。
 

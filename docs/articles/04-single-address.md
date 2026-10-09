@@ -97,7 +97,6 @@ docker compose up -d --build
 ## 开源地址
 
 - GitHub：https://github.com/icefairy/xuanji
-- Gitee 镜像（国内快）：https://gitee.com/icefairy/xuanji-gateway
 
 Star 支持一下，有问题欢迎提 Issue。
 
