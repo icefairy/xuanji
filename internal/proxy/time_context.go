@@ -58,8 +58,15 @@ const (
 	// defaultMinGapMinutes 是「距上轮」显示阈值：低于该值不显示，避免刷屏噪音。
 	defaultMinGapMinutes = 5
 	// maxFingerprintMessages 是参与指纹的消息条数上限（防止超长 history 每次算几百 KB）。
-	// 取「首 4 条 + 末 3 条」代表会话：首部锁定会话身份，末部锁定轮次位置。
-	maxFingerprintMessages = 7
+	// 取「首 4 条 + 末 6 条」代表会话：首部锁定会话身份，末部锁定轮次位置。
+	//
+	// 末部取 6 而不是 3：agent 类客户端一轮里会插入多条 tool_call / tool_result，
+	// 增量常超过 3 条；窗口太窄会让前后两轮的“末几条”毫无交集，
+	// 从而每一轮都被当成新会话（表现为「距上轮」永不显示）。
+	maxFingerprintMessages = 10
+	// maxCallbackCuts 是 callbackKeys 的回退深度：截掉尾部 1..N 条去匹配上一轮前缀。
+	// 需覆盖“一轮增量消息数”的典型值（agent 多步工具调用可达 10 条上下）。
+	maxCallbackCuts = 12
 	// maxFingerprintBytes 是参与指纹的单个消息内容字节上限，超出截断。
 	maxFingerprintBytes = 2048
 )
@@ -372,7 +379,7 @@ func callbackKeys(apiKey string, list []gjson.Result) []string {
 		return nil
 	}
 	out := make([]string, 0, 3)
-	for cut := 1; cut <= 3 && n-cut >= 1; cut++ {
+	for cut := 1; cut <= maxCallbackCuts && n-cut >= 1; cut++ {
 		out = append(out, hashSequence(apiKey, list, n-cut))
 	}
 	return out
@@ -411,7 +418,7 @@ func shouldHashMessage(i, n int) bool {
 	if i < 4 {
 		return true
 	}
-	return i >= n-3
+	return i >= n-6
 }
 
 // writeMsgToHash 把一条消息的 role + content 规范化后写进 hash。

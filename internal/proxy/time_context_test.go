@@ -371,3 +371,68 @@ func contentBlocks(t *testing.T, body []byte) []map[string]interface{} {
 	}
 	return m.Messages[len(m.Messages)-1].Content
 }
+
+// TestTimeContext_AgentToolBurst 覆盖 agent 客户端的真实形态：
+// 一轮对话里插入多条 tool_call / tool_result，历史增量远超 3 条。
+//
+// 回归背景：采样窗口曾只有「首 4 + 末 3」且 callbackKeys 只回退 3 条，
+// 当一轮增量 > 3 条时，前后两轮的末几条毫无交集，导致每轮都被当成新会话，
+// 「距上轮」永不显示（生产上表现为只有【时间】没有【距上轮】）。
+func TestTimeContext_AgentToolBurst(t *testing.T) {
+	st := NewTimeContextStore(10)
+	cfg := &config.TimeContextConfig{
+		Enabled: true, TZ: "Asia/Shanghai", Format: "%Y-%m-%d %H:%M", MinGapMinutes: 5,
+	}
+	t0 := time.Date(2026, 9, 10, 14, 0, 0, 0, time.UTC)
+
+	// 第一轮：用户提问
+	first := bodyOf(t, "user", "帮我查一下明天的天气")
+	if _, changed := InjectTimeLine(first, cfg, "key1", st, t0); !changed {
+		t.Fatal("第一轮应注入")
+	}
+
+	// 第二轮：history = 第一轮 + 一轮内插入的多条工具往返 + 新的 user
+	// （真实 agent 客户端就是这样把 tool 消息留在 history 里的）
+	msgs := []string{
+		"user", "帮我查一下明天的天气",
+		"assistant", "我需要调用天气工具",
+		"tool", "city=深圳 date=2026-09-11",
+		"assistant", "查到结果了，我再确认一下",
+		"tool", "city=深圳 date=2026-09-11 confirmed=true",
+		"assistant", "明天深圳多云",
+		"user", "那后天呢",
+	}
+	second := bodyOf(t, msgs...)
+	later := t0.Add(3*time.Hour + 22*time.Minute)
+	got, changed := InjectTimeLine(second, cfg, "key1", st, later)
+	if !changed {
+		t.Fatal("应注入")
+	}
+	content := lastContent(t, got)
+	if !strings.Contains(content, "距上轮") {
+		t.Fatalf("一轮内新增 5 条消息后仍应识别为同一会话，实际: %q", content)
+	}
+	if !strings.Contains(content, "3 小时") {
+		t.Fatalf("间隔渲染不对: %q", content)
+	}
+}
+
+// TestTimeContext_ShouldHashMessageStable 采样策略必须只依赖 (i, n)，
+// 保证对同一前缀在不同总长下算出的指纹一致。
+func TestTimeContext_ShouldHashMessageStable(t *testing.T) {
+	// 前 4 条在任何长度下都参与
+	for n := 1; n <= 30; n++ {
+		for i := 0; i < 4 && i < n; i++ {
+			if !shouldHashMessage(i, n) {
+				t.Fatalf("n=%d i=%d 应参与指纹", n, i)
+			}
+		}
+	}
+	// 末尾 6 条参与
+	if !shouldHashMessage(9, 10) || !shouldHashMessage(4, 10) {
+		t.Fatal("n=10 时末 6 条应全部参与")
+	}
+	if shouldHashMessage(4, 11) {
+		t.Fatal("n=11 i=4 中部不应参与")
+	}
+}
