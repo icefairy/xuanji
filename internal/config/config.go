@@ -114,6 +114,89 @@ type Proxy struct {
 	// （pi agent 的 UA）。改动机：部分上游用 UA 判断调用方是否官方客户端，
 	// 设置自定义 UA 可避免 Go 默认的 Go-http-client/1.1 被误判为脚本/网关程序。
 	UserAgent string `yaml:"user_agent"`
+	// TimeContext 时间线注入：让模型对「两条消息之间过了多久」有感知（默认关闭）。
+	// 开启后在最后一条 user 消息前附上时间与距上轮间隔，历史消息保持字节稳定
+	// 以保住上游前缀缓存。详见 internal/proxy/time_context.go。
+	TimeContext TimeContextConfig `yaml:"time_context"`
+}
+
+// TimeContextConfig 是时间线注入的全局配置（系统设置页可修改，均存 config 表）。
+//
+// 注意：这是**全局**开关，不按上游/模型分别配置——会话间隔是会话属性，
+// 与请求最终落到哪个上游无关。
+//
+// 存储键（config 表）：
+//   - proxy.time_context_enabled        true/false
+//   - proxy.time_context_tz             时区（IANA 名）
+//   - proxy.time_context_format         strftime 风格时间格式
+//   - proxy.time_context_template       注入模板（含占位符）
+//   - proxy.time_context_min_gap        间隔显示阈值（分钟）
+//   - proxy.time_context_max_sessions   会话表容量上限
+//   - proxy.time_context_ttl_days       会话过期天数
+//   - proxy.time_context_persist        是否持久化到 SQLite
+//   - proxy.time_context_include_gap    是否显示「距上轮」（默认显示；存 "false" 则隐藏）
+//   - proxy.time_context_sweep_minutes  后台扫描过期会话的间隔分钟数
+//   - proxy.time_context_flush_seconds  内存变更写库的间隔秒数
+//   - proxy.time_context_max_per_key    单个 API key 最多保留的会话数
+
+// 为什么是全局而非每上游：会话间隔是「会话」的属性，与本次请求落在哪个上游无关；
+// 按上游配置只会让同一会话在不同渠道路由时行为不一致。
+//
+// 所有字段都由系统设置页写入 config 表，热重载生效；与 upstream UserAgent 同模式。
+type TimeContextConfig struct {
+	// Enabled 全局总开关（默认 false）。
+	Enabled bool
+	// TZ 时区（默认 Asia/Shanghai）。非法时回退 UTC 并告警，不打断转发。
+	TZ string
+	// Format 时间格式（strftime 风格，默认 "%Y-%m-%d %H:%M"）。
+	Format string
+	// Template 注入模板（默认「【时间】{{datetime}} {{weekday}}（{{tz}}）」）。
+	// 可用占位符：{{datetime}} / {{weekday}} / {{tz}}。
+	Template string
+	// MinGapMinutes 「距上轮」显示阈值（默认 5）：低于该间隔不显示，避免刷屏噪音。
+	MinGapMinutes int
+	// MaxSessions 会话表容量上限（默认 100000）。0 = 不启用（不记录、不注入间隔）。
+	MaxSessions int
+	// TTLDays 会话过期天数（默认 30）。
+	TTLDays int
+	// Persist 是否持久化到 SQLite（默认 true）。关闭后仅内存，重启丢会话记录。
+	Persist bool
+	// HideGap 是否隐藏「距上轮」（默认 false = 显示）。
+	// 用「隐藏」而非「显示」命名：bool 零值是 false，这样未配置时默认为显示，
+	// 不用依赖 DB 里必须写这个键。
+	HideGap bool
+	// SweepMinutes 后台扫描过期会话的间隔分钟数（默认 60）。
+	SweepMinutes int
+	// FlushSeconds 内存变更写库的间隔秒数（默认 10）。
+	FlushSeconds int
+	// MaxPerKey 单个 API Key 最多保留的会话数（默认 1000，防单 key 刷爆表）。
+	MaxPerKey int
+}
+
+// MinGap 返回间隔阈值，未配置时回默认。
+func (c *TimeContextConfig) MinGap() time.Duration {
+	m := c.MinGapMinutes
+	if m <= 0 {
+		m = 5
+	}
+	return time.Duration(m) * time.Minute
+}
+
+// SessionTTL 返回会话过期时长，未配置时回默认 30 天。
+func (c *TimeContextConfig) SessionTTL() time.Duration {
+	d := c.TTLDays
+	if d <= 0 {
+		d = 30
+	}
+	return time.Duration(d) * 24 * time.Hour
+}
+
+// Capacity 返回会话表容量，未配置时回默认 100000。
+func (c *TimeContextConfig) Capacity() int {
+	if c.MaxSessions > 0 {
+		return c.MaxSessions
+	}
+	return 100000
 }
 
 // EffortConfig 描述单个模型的最佳思考等级配置。
@@ -520,6 +603,8 @@ func LoadFromDB(s *store.Store) (*Config, error) {
 	if v, ok := all["proxy.user_agent"]; ok {
 		cfg.Proxy.UserAgent = strings.TrimSpace(v)
 	}
+	// 时间线注入（全局开关 + 渲染参数）：所有项均可缺省，缺省即为默认行为。
+	loadTimeContextConfig(&cfg.Proxy.TimeContext, all)
 	// 上游健康告警（alert.webhook_url / alert.consecutive_fails）
 	if v, ok := all["alert.webhook_url"]; ok {
 		cfg.Alert.WebhookURL = strings.TrimSpace(v)

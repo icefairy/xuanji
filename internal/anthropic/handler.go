@@ -38,6 +38,15 @@ type Handler struct {
 	recorder *store.Recorder              // 指标记录器；nil 时跳过记录
 	timeout  time.Duration                // 上游请求超时；默认 60s，可用 SetTimeout 覆盖
 	keyName  func(r *http.Request) string // 下游 API Key 展示名（统计用）；nil 时记录空
+	// timeCtx 时间线注入配置与会话表（由 main 装配；nil / 未开启时零开销）
+	timeCtx      *config.TimeContextConfig
+	timeCtxStore *proxy.TimeContextStore
+}
+
+// SetTimeContext 注入时间线配置与会话表（nil 安全）。
+func (h *Handler) SetTimeContext(cfg *config.TimeContextConfig, st *proxy.TimeContextStore) {
+	h.timeCtx = cfg
+	h.timeCtxStore = st
 }
 
 // SetKeyName 注入下游 API Key 展示名解析器（统计按 Key 维度用；nil 时记录空）。
@@ -185,6 +194,12 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, claudeReq 
 	if err != nil {
 		writeClaudeError(w, http.StatusInternalServerError, "failed to convert request: "+err.Error())
 		return true, false, nil, 0, 0
+	}
+	// 时间线注入：转换后已是标准 OpenAI messages，复用 proxy 包实现，
+	// 保证与 /v1/chat/completions 行为一致（含 Anthropic 把 tool_result
+	// 折进 user 消息的特殊形态，InjectTimeLine 已识别并跳过）。
+	if nb, changed := proxy.InjectTimeLine(reqBody, h.timeCtx, h.recordAPIKey(r), h.timeCtxStore, time.Now()); changed {
+		reqBody = nb
 	}
 
 	target := strings.TrimRight(up.BaseURL, "/") + "/chat/completions"

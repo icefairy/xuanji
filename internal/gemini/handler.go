@@ -40,6 +40,15 @@ type Handler struct {
 	recorder *store.Recorder
 	timeout  time.Duration
 	keyName  func(r *http.Request) string
+	// timeCtx 时间线注入配置与会话表（由 main 装配；nil / 未开启时零开销）
+	timeCtx      *config.TimeContextConfig
+	timeCtxStore *proxy.TimeContextStore
+}
+
+// SetTimeContext 注入时间线配置与会话表（nil 安全）。
+func (h *Handler) SetTimeContext(cfg *config.TimeContextConfig, st *proxy.TimeContextStore) {
+	h.timeCtx = cfg
+	h.timeCtxStore = st
 }
 
 // SetKeyName 注入下游 API Key 展示名解析器（统计按 Key 维度用；nil 时记录空）。
@@ -179,6 +188,12 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 			UserAgent:  r.UserAgent(),
 		})
 	}()
+
+	// 时间线注入：必须在 OpenAI → Gemini 转换之前做（Gemini 请求体结构不同，
+	// 复用 proxy 包实现保证各入口行为一致）。
+	if nb, changed := proxy.InjectTimeLine(body, h.timeCtx, h.recordAPIKey(r), h.timeCtxStore, time.Now()); changed {
+		body = nb
+	}
 
 	// 模型映射（model_mapping 只改 model 字段）
 	upModel := h.router.MapModel(up, model)

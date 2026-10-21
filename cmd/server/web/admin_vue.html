@@ -2461,6 +2461,163 @@
             font-size: 14px;
           "
         >
+          时间线注入（让模型知道「过了多久」）
+        </div>
+        <div
+          style="
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 8px;
+            flex-wrap: wrap;
+          "
+        >
+          <label
+            style="
+              display: flex;
+              align-items: center;
+              gap: 8px;
+              font-size: 14px;
+              cursor: pointer;
+            "
+          >
+            <input
+              type="checkbox"
+              v-model="timeContextEnabled"
+              @change="saveTimeContext"
+              style="cursor: pointer"
+            />
+            开启时间线注入
+          </label>
+          <label
+            style="
+              display: flex;
+              align-items: center;
+              gap: 6px;
+              font-size: 13px;
+              cursor: pointer;
+            "
+          >
+            <input
+              type="checkbox"
+              v-model="timeContextIncludeGap"
+              @change="saveTimeContext"
+              style="cursor: pointer"
+            />
+            显示「距上轮」
+          </label>
+          <label
+            style="
+              display: flex;
+              align-items: center;
+              gap: 6px;
+              font-size: 13px;
+              cursor: pointer;
+            "
+          >
+            <input
+              type="checkbox"
+              v-model="timeContextPersist"
+              @change="saveTimeContext"
+              style="cursor: pointer"
+            />
+            重启后保留会话
+          </label>
+        </div>
+        <div
+          style="
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 8px;
+            flex-wrap: wrap;
+          "
+        >
+          <input
+            v-model.trim="timeContextTZ"
+            placeholder="Asia/Shanghai"
+            title="时区（IANA 名）"
+            style="width: 160px; height: 28px; padding: 0 8px"
+          />
+          <input
+            v-model.trim="timeContextFormat"
+            placeholder="%Y-%m-%d %H:%M"
+            title="时间格式（strftime）"
+            style="width: 170px; height: 28px; padding: 0 8px"
+          />
+          <input
+            v-model.trim="timeContextTemplate"
+            placeholder="【时间】{{datetime}} {{weekday}}（{{tz}}）"
+            title="注入模板"
+            style="width: 330px; height: 28px; padding: 0 8px"
+          />
+        </div>
+        <div
+          style="
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 8px;
+            flex-wrap: wrap;
+          "
+        >
+          <label style="font-size: 13px; color: #606266">
+            间隔小于
+            <input
+              type="number"
+              min="0"
+              v-model.number="timeContextMinGap"
+              style="width: 60px; height: 26px; text-align: center"
+            />
+            分钟不显示
+          </label>
+          <label style="font-size: 13px; color: #606266">
+            会话上限
+            <input
+              type="number"
+              min="1"
+              v-model.number="timeContextMaxSessions"
+              style="width: 90px; height: 26px; text-align: center"
+            />
+          </label>
+          <label style="font-size: 13px; color: #606266">
+            保留
+            <input
+              type="number"
+              min="1"
+              v-model.number="timeContextTTLDays"
+              style="width: 60px; height: 26px; text-align: center"
+            />
+            天
+          </label>
+          <button class="btn btn-primary" @click="saveTimeContext">
+            保存
+          </button>
+        </div>
+        <div
+          style="
+            margin-bottom: 16px;
+            color: #909399;
+            font-size: 12px;
+            line-height: 1.6;
+          "
+        >
+          开启后，网关在**最后一条 user 消息**前附上当前时间，并根据历史识别同一会话，
+          附上「距上轮」间隔（如「3 小时 22 分钟」）。只改最后一条消息，历史保持字节稳定
+          ——<b>上游前缀缓存不受影响</b>。纯工具回填轮次自动跳过。
+          <br />
+          网关是无状态的，无法改写客户端本地历史，所以这是「让模型知道过了多久」的
+          唯一可行方式（不改历史 → 不破缓存）。时区填 IANA 名，格式支持 %Y %m %d %H %M %S。
+        </div>
+
+        <div
+          style="
+            margin-bottom: 12px;
+            color: #303133;
+            font-weight: 600;
+            font-size: 14px;
+          "
+        >
           thinking 模式 reasoning_content 回传
         </div>
         <div
@@ -3348,6 +3505,16 @@
             cacheReasoningContent: true,
             userAgent: "",
             uaPreset: "pi",
+            // 时间线注入（全局开关 + 渲染参数 + 会话表参数）
+            timeContextEnabled: false,
+            timeContextIncludeGap: true,
+            timeContextPersist: true,
+            timeContextTZ: "Asia/Shanghai",
+            timeContextFormat: "%Y-%m-%d %H:%M",
+            timeContextTemplate: "【时间】{{datetime}} {{weekday}}（{{tz}}）",
+            timeContextMinGap: 5,
+            timeContextMaxSessions: 100000,
+            timeContextTTLDays: 30,
             loginUsername: "",
             loginPassword: "",
             loginError: "",
@@ -4772,6 +4939,35 @@ curl -sS "$BASE/v1/messages" \\
                         cm["proxy.video_pass_through"] === "true";
                       var ua = cm["proxy.user_agent"] || "";
                       self.userAgent = ua;
+                      // 时间线注入：DB 缺省时回默认（与后端 loadTimeContextConfig 一致）
+                      self.timeContextEnabled =
+                        cm["proxy.time_context_enabled"] === "true";
+                      self.timeContextIncludeGap =
+                        cm["proxy.time_context_include_gap"] !== "false";
+                      self.timeContextPersist =
+                        cm["proxy.time_context_persist"] !== "false";
+                      self.timeContextTZ =
+                        cm["proxy.time_context_tz"] || "Asia/Shanghai";
+                      self.timeContextFormat =
+                        cm["proxy.time_context_format"] || "%Y-%m-%d %H:%M";
+                      self.timeContextTemplate =
+                        cm["proxy.time_context_template"] ||
+                        "【时间】{{datetime}} {{weekday}}（{{tz}}）";
+                      self.timeContextMinGap = parseInt(
+                        cm["proxy.time_context_min_gap"],
+                      );
+                      if (isNaN(self.timeContextMinGap))
+                        self.timeContextMinGap = 5;
+                      self.timeContextMaxSessions = parseInt(
+                        cm["proxy.time_context_max_sessions"],
+                      );
+                      if (isNaN(self.timeContextMaxSessions))
+                        self.timeContextMaxSessions = 100000;
+                      self.timeContextTTLDays = parseInt(
+                        cm["proxy.time_context_ttl_days"],
+                      );
+                      if (isNaN(self.timeContextTTLDays))
+                        self.timeContextTTLDays = 30;
                       // 预设识别：与内置 UA 相同则选中对应预设，否则自定义/不设置
                       if (ua === PI_UA) {
                         self.uaPreset = "pi";
@@ -4944,6 +5140,46 @@ curl -sS "$BASE/v1/messages" \\
                 this.userAgent = "";
               }
               // custom 保持用户已输入的值
+            },
+            saveTimeContext: function () {
+              var self = this;
+              self
+                .api("/admin/config", {
+                  method: "PUT",
+                  body: {
+                    "proxy.time_context_enabled": self.timeContextEnabled
+                      ? "true"
+                      : "false",
+                    "proxy.time_context_include_gap": self
+                      .timeContextIncludeGap
+                      ? "true"
+                      : "false",
+                    "proxy.time_context_persist": self.timeContextPersist
+                      ? "true"
+                      : "false",
+                    "proxy.time_context_tz": self.timeContextTZ || "",
+                    "proxy.time_context_format":
+                      self.timeContextFormat || "",
+                    "proxy.time_context_template":
+                      self.timeContextTemplate || "",
+                    "proxy.time_context_min_gap": String(
+                      self.timeContextMinGap || 0,
+                    ),
+                    "proxy.time_context_max_sessions": String(
+                      self.timeContextMaxSessions || 100000,
+                    ),
+                    "proxy.time_context_ttl_days": String(
+                      self.timeContextTTLDays || 30,
+                    ),
+                  },
+                })
+                .then(function () {
+                  alert(
+                    self.timeContextEnabled
+                      ? "时间线注入已开启并热重载生效"
+                      : "时间线注入已关闭",
+                  );
+                });
             },
             saveUserAgent: function () {
               var self = this;

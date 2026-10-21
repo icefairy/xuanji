@@ -256,7 +256,6 @@ func main() {
 		go dailyStatsTicker(storeInst)
 	}
 
-
 	slog.Info("xuanji gateway listening",
 		"addr", addr,
 		"upstreams", len(cfg.Upstreams),
@@ -372,6 +371,117 @@ func backupOnce(storeInst *store.Store) {
 	slog.Info("auto backup done", "name", name, "pruned", removed)
 }
 
+// ─────────────── 时间线注入的会话表（单例 + 持久化）───────────────
+
+// tcStoreState 保存全局唯一的会话表实例与其后台协程开关。
+//
+// 为什么必须单例：buildServeMux 在启动与每次热重载都会执行，若每次重建会丢掉
+// 在途会话的「距上轮」（用户看到的间隔会无故归零）。只在容量变化或开关切换时替换。
+var tcStoreState = struct {
+	sync.Mutex
+	store     *proxy.TimeContextStore
+	capacity  int
+	persist   bool
+	stopFlush func()
+}{}
+
+// timeContextStoreFor 返回当前时间线会话表（必要时创建/替换）。
+//
+// 关闭时返回容量为 0 的表而非 nil：调用方无需到处判 nil，
+// Touch/Get 在 capacity=0 时都是空操作。
+func timeContextStoreFor(cfg *config.Config, st *store.Store) *proxy.TimeContextStore {
+	tc := &cfg.Proxy.TimeContext
+	capacity := 0
+	if tc.Enabled && tc.MaxSessions > 0 {
+		capacity = tc.MaxSessions
+	}
+
+	tcStoreState.Lock()
+	defer tcStoreState.Unlock()
+
+	if tcStoreState.store != nil &&
+		tcStoreState.capacity == capacity &&
+		tcStoreState.persist == tc.Persist {
+		return tcStoreState.store
+	}
+
+	// 参数变了：停掉旧的后台写库协程，重建（已持久化的记录会在下面重新载入）
+	if tcStoreState.stopFlush != nil {
+		tcStoreState.stopFlush()
+		tcStoreState.stopFlush = nil
+	}
+
+	s := proxy.NewTimeContextStore(capacity)
+	if capacity > 0 && tc.Persist && st != nil {
+		cutoff := time.Now().Add(-tc.SessionTTL())
+		if recs, err := st.LoadTimeContextEntries(cutoff, capacity); err != nil {
+			slog.Warn("load time context sessions failed", "error", err)
+		} else if len(recs) > 0 {
+			entries := make(map[string]proxy.TimeContextEntry, len(recs))
+			for _, r := range recs {
+				entries[r.ChainKey] = proxy.TimeContextEntry{TailKey: r.TailKey, LastSeen: r.LastSeen}
+			}
+			s.Load(entries)
+			slog.Info("loaded time context sessions", "count", len(entries))
+		}
+		tcStoreState.stopFlush = startTimeContextFlusher(s, st, time.Duration(tc.FlushSeconds)*time.Second)
+	}
+
+	tcStoreState.store = s
+	tcStoreState.capacity = capacity
+	tcStoreState.persist = tc.Persist
+	return s
+}
+
+// startTimeContextFlusher 启动后台协程：每 interval 把累积变更写进 SQLite。
+// 返回停止函数（sync.Once 保证重复调用安全）。
+func startTimeContextFlusher(s *proxy.TimeContextStore, st *store.Store, interval time.Duration) func() {
+	if interval <= 0 {
+		interval = 10 * time.Second
+	}
+	done := make(chan struct{})
+	var once sync.Once
+	go func() {
+		t := time.NewTicker(interval)
+		defer t.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-t.C:
+				flushTimeContextOnce(s, st)
+			}
+		}
+	}()
+	return func() { once.Do(func() { close(done) }) }
+}
+
+// flushTimeContextOnce 把内存变更同步到 DB。
+func flushTimeContextOnce(s *proxy.TimeContextStore, st *store.Store) {
+	if s == nil || st == nil {
+		return
+	}
+	s.FlushWith(func(dirty map[string]proxy.TimeContextEntry, removals []string) {
+		if len(removals) > 0 {
+			if err := st.DeleteTimeContextEntries(removals); err != nil {
+				slog.Warn("delete time context sessions failed", "error", err)
+			}
+		}
+		if len(dirty) == 0 {
+			return
+		}
+		recs := make([]store.TimeContextRecord, 0, len(dirty))
+		for k, v := range dirty {
+			recs = append(recs, store.TimeContextRecord{
+				ChainKey: k, TailKey: v.TailKey, LastSeen: v.LastSeen,
+			})
+		}
+		if err := st.SaveTimeContextEntries(recs); err != nil {
+			slog.Warn("save time context sessions failed", "error", err)
+		}
+	})
+}
+
 // maxRequestBodyBytes 是单个请求体的上限（64MB）。多模态请求可能携带较大 base64
 // 图片/音频，故给足空间；同时防止超大 body 打爆内存（此前所有入口均无限制）。
 const maxRequestBodyBytes = 64 << 20
@@ -475,6 +585,30 @@ func buildServeMux(cfg *config.Config, rt *router.Router, hc *health.Checker, re
 	mux.HandleFunc("GET /admin/config", adminAuth(admHandler.GetAllConfig))
 	mux.HandleFunc("PUT /admin/config", adminAuth(admHandler.UpdateConfig))
 	mux.HandleFunc("DELETE /admin/config/{key}", adminAuth(admHandler.DeleteConfig))
+	// 时间线注入的会话表状态（运维诊断：看会话是否被正确识别、清理是否生效）
+	mux.HandleFunc("GET /admin/time-context/sessions", adminAuth(func(w http.ResponseWriter, r *http.Request) {
+		s := tcStoreState.store
+		n := 0
+		if s != nil {
+			n = s.Len()
+		}
+		total := int64(0)
+		if storeInst != nil {
+			total, _ = storeInst.CountTimeContextSessions()
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"enabled":     cfg.Proxy.TimeContext.Enabled,
+			"memory":      n,
+			"persisted":   total,
+			"capacity":    cfg.Proxy.TimeContext.MaxSessions,
+			"ttl_days":    cfg.Proxy.TimeContext.TTLDays,
+			"persist":     cfg.Proxy.TimeContext.Persist,
+			"include_gap": !cfg.Proxy.TimeContext.HideGap,
+			"min_gap":     cfg.Proxy.TimeContext.MinGapMinutes,
+			"timezone":    cfg.Proxy.TimeContext.TZ,
+		})
+	}))
 	mux.HandleFunc("GET /admin/metrics/summary", adminAuth(admHandler.MetricsSummary))
 	mux.HandleFunc("GET /admin/metrics/upstreams", adminAuth(admHandler.MetricsUpstreams))
 	mux.HandleFunc("GET /admin/metrics/upstream-models", adminAuth(admHandler.MetricsUpstreamModels))
@@ -567,7 +701,6 @@ func buildServeMux(cfg *config.Config, rt *router.Router, hc *health.Checker, re
 	// 对话调试：走完整网关路由链路（依赖 pxHandler，见上方 SetProxy 注入）
 	mux.HandleFunc("POST /admin/chat", adminAuth(admHandler.Chat))
 
-
 	olHandler := ollama.New(rt, hc)
 	olHandler.SetTimeout(time.Duration(cfg.Retry.UpstreamTimeout) * time.Second)
 	pxHandler := proxy.New(cfg, rt, hc)
@@ -584,6 +717,11 @@ func buildServeMux(cfg *config.Config, rt *router.Router, hc *health.Checker, re
 	}
 	gmHandler := gemini.New(rt, hc)
 	gmHandler.SetTimeout(time.Duration(cfg.Retry.UpstreamTimeout) * time.Second)
+	// 时间线注入：会话表不应随热重载重建（重建会丢掉在途会话的「距上轮」）。
+	// 只在全局首次创建或开关/容量变化时替换，见 timeContextStoreFor。
+	tcStore := timeContextStoreFor(cfg, storeInst)
+	pxHandler.SetTimeContextStore(tcStore)
+	gmHandler.SetTimeContext(&cfg.Proxy.TimeContext, tcStore)
 	ff := proxy.NewFastFailCache(time.Duration(cfg.Retry.FastFailMinutes) * time.Minute)
 	pxHandler.SetFastFail(ff)
 	admHandler.SetFastFail(ff)
@@ -682,6 +820,8 @@ func buildServeMux(cfg *config.Config, rt *router.Router, hc *health.Checker, re
 	mux.HandleFunc("POST /v1/rerank", apiKeys.Middleware(qm.Middleware(pxHandler.Rerank)))
 	antHandler := anthropic.New(rt, hc)
 	antHandler.SetTimeout(time.Duration(cfg.Retry.UpstreamTimeout) * time.Second)
+	// 时间线注入：与 OpenAI 入口共用同一张会话表，保证切协议时「距上轮」连续。
+	antHandler.SetTimeContext(&cfg.Proxy.TimeContext, tcStore)
 	if rec != nil {
 		antHandler.SetRecorder(rec)
 	}
@@ -874,7 +1014,3 @@ func sameHost(a, b string) bool {
 	}
 	return strings.EqualFold(ua.Host, ub.Host)
 }
-
-
-
-

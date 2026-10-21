@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/icefairy/xuanji/internal/config"
@@ -85,9 +86,16 @@ type Handler struct {
 	modelArrears       map[string]bool
 	modelArrearsMu     sync.RWMutex
 	arrearsModelMarker func(upstream, model, reason string) // 模型级欠费标记回调；nil 时不落库（仅内存）
+	// timeContext 是时间线注入的近似会话表（与 APIKey 一起做指纹），
+	// nil 时不启用。由 main 装配并在热重载时替换。
+	timeContext atomic.Pointer[TimeContextStore]
 }
 
+// SetTimeContextStore 注入/替换时间线会话表（nil 安全）。热重载时直接调本方法替换。
+func (h *Handler) SetTimeContextStore(s *TimeContextStore) { h.timeContext.Store(s) }
 
+// timeContextStore 返回当前会话表（可能为 nil）。
+func (h *Handler) timeContextStore() *TimeContextStore { return h.timeContext.Load() }
 
 // New 创建转发 Handler，共享一个 60s 连接超时的 HTTP 客户端。
 // health 用于健康过滤与失败切换；为 nil 时退化为只转发路由列表第一个上游。
@@ -1134,6 +1142,11 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 	if nb, changed := stripUpstreamFields(reqBody, up); changed {
 		reqBody = nb
 	}
+	// 时间线注入：给最后一条 user 消息附上当前时间与距上轮间隔（全局开关，默认关）。
+	// 只改最后一条消息，历史保持字节稳定 → 上游前缀缓存不受影响。
+	if nb, changed := InjectTimeLine(reqBody, &h.cfg.Proxy.TimeContext, h.recordAPIKey(r), h.timeContextStore(), time.Now()); changed {
+		reqBody = nb
+	}
 	// 视频透传开关：默认关闭。关闭时请求含 video_url 直接 400——视频流量大，
 	// 且多数模型不支持视频，需在系统设置显式开启才放行。
 	if !h.cfg.Proxy.VideoPassThrough && containsVideoURL(body) {
@@ -1149,7 +1162,6 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 			reqBody = nb
 		}
 	}
-
 
 	target := strings.TrimRight(up.BaseURL, "/") + "/chat/completions"
 	reqCtx := r.Context()

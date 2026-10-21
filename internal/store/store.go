@@ -472,6 +472,42 @@ func (s *Store) init() error {
 	// prune 按 created_at 范围删除，建索引避免全表扫描。
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_reasoning_cache_created_at ON reasoning_cache(created_at)`)
 
+	// time_context_sessions 表：时间线注入的近似会话记录（跨重启保留「距上轮」）。
+	// chain_key = hash(APIKey + 消息序列)，不存明文请求内容，无隐私泄露风险；
+	// tail_key 用于区分「同一条消息重发」（不算新一轮）。
+	//
+	// ⚠ last_seen 用 INTEGER Unix 秒，不用 TEXT：modernc.org/sqlite 写入 time.Time 时
+	// 生成的字符串格式与再读回时的 Scan 不兼容（实测 "unsupported Scan, storing
+	// driver.Value type string into type *time.Time"），会话就被静默丢弃了。
+	// 整数秒无格式问题，且范围比较/排序索引都更快。
+	s.db.Exec(`CREATE TABLE IF NOT EXISTS time_context_sessions (
+		chain_key  TEXT NOT NULL,
+		tail_key   TEXT NOT NULL DEFAULT '',
+		api_key    TEXT NOT NULL DEFAULT '',
+		last_seen  INTEGER NOT NULL DEFAULT 0,
+		PRIMARY KEY (chain_key)
+	)`)
+	// 清扫按 last_seen 范围删除 + 启动载入按 last_seen 降序，建索引避免全表扫。
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_time_context_last_seen ON time_context_sessions(last_seen)`)
+	// 按 API Key 限额统计需要按 api_key 过滤。
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_time_context_apikey ON time_context_sessions(api_key)`)
+	// 旧库兼容：早期版本 last_seen 为 TEXT（time.Time 默认序列化），读回会 Scan 失败。
+	// 检测到 TEXT 就重建为 INTEGER 秒，已存的会话直接丢弃（都是过期数据，无需迁移）。
+	var lastSeenType string
+	if err := s.db.QueryRow(`SELECT type FROM pragma_table_info('time_context_sessions') WHERE name='last_seen'`).Scan(&lastSeenType); err == nil &&
+		!strings.EqualFold(lastSeenType, "INTEGER") {
+		s.db.Exec(`DROP TABLE IF EXISTS time_context_sessions`)
+		s.db.Exec(`CREATE TABLE time_context_sessions (
+			chain_key  TEXT NOT NULL,
+			tail_key   TEXT NOT NULL DEFAULT '',
+			api_key    TEXT NOT NULL DEFAULT '',
+			last_seen  INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY (chain_key)
+		)`)
+		s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_time_context_last_seen ON time_context_sessions(last_seen)`)
+		s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_time_context_apikey ON time_context_sessions(api_key)`)
+	}
+
 	// model_token_limits 表：从上游 400 错误自动学习的模型 token 上限（按 上游+真实模型 唯一）。
 	// 目的：客户端 agent 按模型窗口自动填 max_tokens / max_completion_tokens 超大值时上游报
 	// "is too large: N. This model supports at most M"，网关记录 M 后自动 clamp 避免 400。
@@ -2732,4 +2768,112 @@ func (s *Store) AggregateRange(rangeStr string, loc *time.Location) (*RangeAgg, 
 	}
 	agg.mergeDay(todayDS)
 	return agg, nil
+}
+
+// ─────────────────── 时间线注入：近似会话持久化 ───────────────────
+
+// TimeContextRecord 是近似会话表的一行。
+// ChainKey 是「APIKey + 消息序列」的哈希（见 proxy/fingerprint），不含明文。
+type TimeContextRecord struct {
+	ChainKey string
+	TailKey  string
+	LastSeen time.Time
+	APIKey   string // 下游 API Key 展示名，仅用于按 key 限额与统计
+}
+
+// SaveTimeContextEntries 批量 UPSERT 会话记录（后台批量写入，单事务）。
+func (s *Store) SaveTimeContextEntries(recs []TimeContextRecord) error {
+	if len(recs) == 0 {
+		return nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	stmt, err := tx.Prepare(`INSERT INTO time_context_sessions (chain_key, tail_key, api_key, last_seen)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT(chain_key) DO UPDATE SET
+			tail_key  = excluded.tail_key,
+			api_key   = excluded.api_key,
+			last_seen = excluded.last_seen`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	for _, r := range recs {
+		if _, err := stmt.Exec(r.ChainKey, r.TailKey, r.APIKey, r.LastSeen.Unix()); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// DeleteTimeContextEntries 批量删除会话记录（LRU 淘汰 / 过期清理同步落库）。
+func (s *Store) DeleteTimeContextEntries(keys []string) error {
+	if len(keys) == 0 {
+		return nil
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	stmt, err := tx.Prepare(`DELETE FROM time_context_sessions WHERE chain_key = ?`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	for _, k := range keys {
+		if _, err := stmt.Exec(k); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// LoadTimeContextEntries 载入未过期（last_seen >= cutoff）的会话记录，
+// 最多 limit 条（按 last_seen 降序，保证重启后优先恢复最近的会话）。
+func (s *Store) LoadTimeContextEntries(cutoff time.Time, limit int) ([]TimeContextRecord, error) {
+	q := `SELECT chain_key, tail_key, api_key, last_seen FROM time_context_sessions
+	      WHERE last_seen >= ? ORDER BY last_seen DESC`
+	args := []interface{}{cutoff.Unix()}
+	if limit > 0 {
+		q += ` LIMIT ?`
+		args = append(args, limit)
+	}
+	rows, err := s.db.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []TimeContextRecord
+	for rows.Next() {
+		var r TimeContextRecord
+		var ts int64
+		if err := rows.Scan(&r.ChainKey, &r.TailKey, &r.APIKey, &ts); err != nil {
+			return nil, err
+		}
+		r.LastSeen = time.Unix(ts, 0).UTC()
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// PruneTimeContextSessions 删除 last_seen 早于 cutoff 的会话记录，返回删除行数。
+// 由后台清扫协程定期调用。
+func (s *Store) PruneTimeContextSessions(cutoff time.Time) (int64, error) {
+	res, err := s.db.Exec(`DELETE FROM time_context_sessions WHERE last_seen < ?`, cutoff.Unix())
+	if err != nil {
+		return 0, err
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}
+
+// CountTimeContextSessions 返回会话表总行数（容量告警用）。
+func (s *Store) CountTimeContextSessions() (int64, error) {
+	var n int64
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM time_context_sessions`).Scan(&n)
+	return n, err
 }
