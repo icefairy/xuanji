@@ -683,6 +683,9 @@ footer{border-top:1px solid var(--line);padding:52px 0 42px;margin-top:24px}
           <li><code>noul</code> 可省 <code>criteria</code>，网关自动补默认描述</li>
           <li>同时接受 OpenAI Decisions 格式（<code>predicate</code> / <code>choices</code> / <code>levels</code>），网关自动转换</li>
         </ul>
+        <p style="margin-top:14px;padding:10px 12px;border-left:3px solid #f5a524;background:rgba(245,165,36,.08);border-radius:0 8px 8px 0;font-size:.88rem;color:var(--fg-dim);line-height:1.65">
+          <strong>提示</strong>：识别依据是 <code>questions</code> 的 JSON 类型，<strong>不是请求路径</strong>——数组按 OpenAI Decisions 转换，对象 map 按 SystemOne 直透。两种疑问可交叉使用，但同一请求内的题目类型要自洽（Decisions 用 <code>predicate</code>，SystemOne 用 <code>noul</code>），否则上游返回 400。
+        </p>
       </div>
     </div>
 

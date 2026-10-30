@@ -93,6 +93,8 @@ curl -sS http://127.0.0.1:3001/v1/systemone \
 接入要点：
 
 - **两套决策格式都支持**：`/v1/decisions` 收 OpenAI Decisions 格式（`input` 消息数组 + `questions` **数组**，类型 `predicate`/`choice`/`score`），网关自动转成 SystemOne 发给上游、再把响应转回来；`/v1/systemone` 保持纯透传。
+  - ⚠️ **判定依据是 `questions` 的 JSON 类型而不是请求路径**：数组 → 按 OpenAI Decisions 处理并转换；对象 map → 按 SystemOne 原样转发。因此 `/v1/decisions` 收到 SystemOne 格式、`/v1/systemone` 收到 Decisions 格式都能正常工作，但混用时请确认格式自洽，否则上游会返回 400。
+  - 两类格式的题目类型不能混搭：Decisions 用 `predicate`/`choice`/`score`，SystemOne 用 `noul`/`choice`/`score`（`predicate` 与 `noul` 是同一语义的不同名字）。
 - **路径别名**：`/systemone`、`/v1/jev`、`/v1/predict` 同样命中，方便 base_url 已含 `/v1` 或沿用旧 SDK 的客户端，鉴权与配额一视同仁。
 - **路由完全复用**：和 chat 一样按 `tier → weight → 优惠时段 → 延迟` 选上游，5xx/超时自动换下一个，4xx 直接透传（不算上游故障）。
 - **配额与计费一致**：走同一套 API Key 鉴权与分组配额；`usage.input_tokens/output_tokens` 计入 `request_log`（endpoint 记为 `decisions`）与费用统计。
