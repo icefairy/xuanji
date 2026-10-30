@@ -333,6 +333,7 @@ footer{border-top:1px solid var(--line);padding:52px 0 42px;margin-top:24px}
     <div class="nav-links" id="navLinks">
       <a href="#why">为什么</a>
       <a href="#features">核心特性</a>
+      <a href="#decision">决策模型</a>
       <a href="#routing">路由</a>
       <a href="#thinking">思考归一化</a>
       <a href="#shots">界面</a>
@@ -444,6 +445,7 @@ footer{border-top:1px solid var(--line);padding:52px 0 42px;margin-top:24px}
           <li>鉴权双风格：<code>Authorization: Bearer</code> / <code>x-api-key</code></li>
           <li>流式 SSE 事件按 Anthropic 规范转换</li>
           <li>兼容各类官方 SDK，零改动接入</li>
+          <li>决策模型（SystemOne）也可走同一入口</li>
         </ul>
       </div>
 
@@ -649,6 +651,60 @@ footer{border-top:1px solid var(--line);padding:52px 0 42px;margin-top:24px}
   </div>
 </section>
 
+<!-- ══════════ 决策模型 ══════════ -->
+<section id="decision">
+  <div class="wrap">
+    <div class="sec-head rv">
+      <span class="sec-tag">Decision</span>
+      <h2>不止生成文本，也接决策模型</h2>
+      <p>SystemOne（Jev）协议：一次前向，给一堆问题同时打分。</p>
+    </div>
+
+    <div class="grid g2">
+      <div class="card rv">
+        <div class="ico">🎲</div>
+        <h3>三类问题，三种答案</h3>
+        <p>决策模型不写文字，只给概率。适合路由分类、意图识别、风控闸门这类要「机器可读答案」的场景。</p>
+        <ul>
+          <li><code>choice</code>：固定选项里选一个，返回命中的选项 + 每项概率</li>
+          <li><code>noul</code>：一个命题的真概率（0~1）</li>
+          <li><code>score</code>：有序量表上的期望分与分布</li>
+        </ul>
+      </div>
+
+      <div class="card rv">
+        <div class="ico">🔌</div>
+        <h3>与现有渠道无缝共存</h3>
+        <p>决策模型就是一个普通的路由目标，配置方式与 chat 模型完全一致。</p>
+        <ul>
+          <li>复用 <code>tier → 权重 → 优惠 → 延迟</code> 路由与失败切换</li>
+          <li>同一套 API Key 鉴权、分组配额与费用统计</li>
+          <li>5xx/超时自动换上游，4xx 透传且不拉黑上游</li>
+          <li><code>noul</code> 可省 <code>criteria</code>，网关自动补默认描述</li>
+        </ul>
+      </div>
+    </div>
+
+<pre class="rv" style="margin-top:26px;overflow-x:auto;background:var(--bg-soft);border:1px solid var(--line);border-radius:14px;padding:20px;font-size:.85rem;line-height:1.7"><code>curl -sS http://127.0.0.1:3001/v1/systemone \
+  -H "Authorization: Bearer $XUANJI_KEY" -H "Content-Type: application/json" \
+  -d '{
+    "model": "intern-decision-4b",
+    "state": "客户重复扣款，要求今天退款",
+    "questions": {
+      "team":   {"type": "choice", "instructions": "哪个团队处理?",
+                 "criteria": {"billing": "账单退款", "tech": "技术故障"}},
+      "urgent": {"type": "noul", "instructions": "客户要求今天回复?"},
+      "anger":  {"type": "score", "instructions": "客户情绪程度",
+                 "criteria": ["平静", "不满", "非常愤怒"]}
+    }
+  }'
+
+# → {"answers":{"team":{"choice":"billing","probabilities":{...}},
+#             "urgent":{"noul":0.93},
+#             "anger":{"score":1.09,"legend":{...}}}, "usage":{...}}</code></pre>
+  </div>
+</section>
+
 <!-- ══════════ 截图 ══════════ -->
 <section id="shots">
   <div class="wrap">
@@ -847,6 +903,8 @@ user=root</pre>
             <tr><td><code>POST /v1/audio/speech</code> · <code>/v1/audio/transcriptions</code></td><td>语音合成 / 语音识别</td></tr>
             <tr><td><code>GET /v1/models</code></td><td>模型列表</td></tr>
             <tr><td><b>Anthropic</b></td><td><code>POST /v1/messages</code></td><td>Claude 消息（流式事件转换）</td></tr>
+            <tr><td rowspan="2"><b>SystemOne</b></td><td><code>POST /v1/systemone</code></td><td>决策模型（choice / noul / score 概率打分）</td></tr>
+            <tr><td><code>POST /v1/decisions</code></td><td>同上协议的别名入口</td></tr>
             <tr><td><b>视频</b></td><td><code>POST /v1/videos</code> · <code>GET /v1/videos</code></td><td>视频生成透传 / 任务状态</td></tr>
             <tr><td><b>运维</b></td><td><code>GET /healthz</code></td><td>健康探针</td></tr>
           </tbody>

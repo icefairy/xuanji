@@ -37,6 +37,7 @@ import (
 	"github.com/icefairy/xuanji/internal/quota"
 	"github.com/icefairy/xuanji/internal/router"
 	"github.com/icefairy/xuanji/internal/store"
+	"github.com/icefairy/xuanji/internal/systemone"
 )
 
 //go:embed all:web
@@ -715,6 +716,9 @@ func buildServeMux(cfg *config.Config, rt *router.Router, hc *health.Checker, re
 			slog.Info("pruned reasoning cache", "rows", n, "retain_days", store.ReasoningCacheRetainDays)
 		}
 	}
+	// SystemOne（Jev）决策协议入口：/v1/systemone 与 /v1/decisions。
+	// 决策模型不生成文本、不流式，只做路由+透传+记录，因此独立于 chat 链路。
+	soHandler := systemone.New(cfg, rt, nil)
 	gmHandler := gemini.New(rt, hc)
 	gmHandler.SetTimeout(time.Duration(cfg.Retry.UpstreamTimeout) * time.Second)
 	// 时间线注入：会话表不应随热重载重建（重建会丢掉在途会话的「距上轮」）。
@@ -758,9 +762,11 @@ func buildServeMux(cfg *config.Config, rt *router.Router, hc *health.Checker, re
 		olHandler.SetRecorder(rec)
 		pxHandler.SetRecorder(rec)
 		gmHandler.SetRecorder(rec)
+		soHandler.SetRecorder(rec)
 		olHandler.SetKeyName(keyNameFn)
 		pxHandler.SetKeyName(keyNameFn)
 		gmHandler.SetKeyName(keyNameFn)
+		soHandler.SetKeyName(keyNameFn)
 		// 配额实时用量：转发放行并记录后，同步累加 (api_key, model) 内存窗口计数
 		rec.SetUsageHook(func(r store.Record) {
 			if qm != nil && r.Tokens > 0 {
@@ -818,6 +824,10 @@ func buildServeMux(cfg *config.Config, rt *router.Router, hc *health.Checker, re
 	mux.HandleFunc("POST /v1/completions", apiKeys.Middleware(qm.Middleware(pxHandler.Completions)))
 	mux.HandleFunc("POST /v1/embeddings", apiKeys.Middleware(qm.Middleware(dispatchEmbeddings(rt, olHandler, pxHandler))))
 	mux.HandleFunc("POST /v1/rerank", apiKeys.Middleware(qm.Middleware(pxHandler.Rerank)))
+	// SystemOne（Jev）决策协议：一次请求对一段 state 回答多个带类型的概率问题。
+	// 协议原文两个端点互为别名，上游（书生）只实现 /v1/systemone，两个入口共用同一实现。
+	mux.HandleFunc("POST /v1/systemone", apiKeys.Middleware(qm.Middleware(soHandler.Serve)))
+	mux.HandleFunc("POST /v1/decisions", apiKeys.Middleware(qm.Middleware(soHandler.Serve)))
 	antHandler := anthropic.New(rt, hc)
 	antHandler.SetTimeout(time.Duration(cfg.Retry.UpstreamTimeout) * time.Second)
 	// 时间线注入：与 OpenAI 入口共用同一张会话表，保证切协议时「距上轮」连续。

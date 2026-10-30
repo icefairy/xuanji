@@ -59,8 +59,44 @@
 | | `POST /v1/audio/transcriptions` | 语音识别 |
 | | `GET /v1/models` | 模型列表 |
 | **Anthropic** | `POST /v1/messages` | Claude 消息（Claude Code 直接接入，流式事件转换） |
+| **SystemOne** | `POST /v1/systemone` · `POST /v1/decisions` | 决策模型（choice / noul / score 概率打分） |
 
 鉴权双风格：`Authorization: Bearer <key>` 与 `x-api-key: <key>` 均可，兼容各类 SDK。
+
+### 🎲 SystemOne 决策协议
+
+除了「生成文本」的模型，网关也接**决策模型**（如 InternLM 的 `intern-decision-4b`）。
+这类模型不生成文字、不流式，而是对一段 state 一次性回答多个带类型的问题，每题给出概率分布：
+
+| 问题类型 | 请求 `criteria` | 返回 |
+|------|------|------|
+| `choice` | 选项 → 描述的映射 | `choice`（最可能选项）+ `probabilities` + `confidence` |
+| `noul` | 可选 `{"true":…,"false":…}` | `noul`（为真的概率，0~1） |
+| `score` | 有序档位数组（低 → 高，2~10 档） | `score`（0 基期望分）+ `probabilities` + `legend` |
+
+```bash
+curl -sS http://127.0.0.1:3001/v1/systemone \
+  -H "Authorization: Bearer $XUANJI_KEY" -H "Content-Type: application/json" \
+  -d '{
+    "model": "intern-decision-4b",
+    "state": "客户重复扣款，要求今天退款",
+    "questions": {
+      "team":   {"type": "choice", "instructions": "哪个团队处理?",
+                 "criteria": {"billing": "账单退款", "tech": "技术故障"}},
+      "urgent": {"type": "noul", "instructions": "客户要求今天回复?"},
+      "anger":  {"type": "score", "instructions": "客户情绪程度",
+                 "criteria": ["平静", "不满", "非常愤怒"]}
+    }
+  }'
+```
+
+接入要点：
+
+- **路由完全复用**：和 chat 一样按 `tier → weight → 优惠时段 → 延迟` 选上游，5xx/超时自动换下一个，4xx 直接透传（不算上游故障）。
+- **配额与计费一致**：走同一套 API Key 鉴权与分组配额；`usage.input_tokens/output_tokens` 计入 `request_log`（endpoint 记为 `decisions`）与费用统计。
+- **`noul` 可省 `criteria`**：网关会自动补 `true`/`false` 默认描述，兼容强制校验该字段的上游（书生）。
+- **上游路径固定 `/v1/systemone`**：多数实现（含书生）不提供 `/v1/decisions`，两个对外入口共用同一实现。
+- 决策模型不支持流式、聊天补全与嵌入，别把它配到 `/v1/chat/completions` 的路由规则上。
 
 ### 💰 成本优先的路由
 
