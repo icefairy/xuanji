@@ -92,11 +92,33 @@ curl -sS http://127.0.0.1:3001/v1/systemone \
 
 接入要点：
 
+- **两套决策格式都支持**：`/v1/decisions` 收 OpenAI Decisions 格式（`input` 消息数组 + `questions` **数组**，类型 `predicate`/`choice`/`score`），网关自动转成 SystemOne 发给上游、再把响应转回来；`/v1/systemone` 保持纯透传。
+- **路径别名**：`/systemone`、`/v1/jev`、`/v1/predict` 同样命中，方便 base_url 已含 `/v1` 或沿用旧 SDK 的客户端，鉴权与配额一视同仁。
 - **路由完全复用**：和 chat 一样按 `tier → weight → 优惠时段 → 延迟` 选上游，5xx/超时自动换下一个，4xx 直接透传（不算上游故障）。
 - **配额与计费一致**：走同一套 API Key 鉴权与分组配额；`usage.input_tokens/output_tokens` 计入 `request_log`（endpoint 记为 `decisions`）与费用统计。
 - **`noul` 可省 `criteria`**：网关会自动补 `true`/`false` 默认描述，兼容强制校验该字段的上游（书生）。
-- **上游路径固定 `/v1/systemone`**：多数实现（含书生）不提供 `/v1/decisions`，两个对外入口共用同一实现。
+- **上游路径固定 `/v1/systemone`**：实测书生 `intern-decision-4b` 的 `/v1/decisions`、`/v1/jev` 均返回 404，只提供 `/v1/systemone`，因此**无需给上游新增协议类型**，转发路径不变。
 - 决策模型不支持流式、聊天补全与嵌入，别把它配到 `/v1/chat/completions` 的路由规则上。
+
+OpenAI Decisions 格式示例（同一模型、同一上游）：
+
+```bash
+curl -sS http://127.0.0.1:3001/v1/decisions \
+  -H "Authorization: Bearer $XUANJI_KEY" -H "Content-Type: application/json" \
+  -d '{
+    "model": "intern-decision-4b",
+    "input": [{"role": "user", "content": "客户重复扣款，要求今天退款"}],
+    "questions": [
+      {"type": "predicate", "name": "refund", "instructions": "客户是否要求退款?"},
+      {"type": "choice", "name": "team", "instructions": "哪个团队处理?",
+       "choices": [{"value": "billing", "description": "账单"}, {"value": "tech", "description": "技术"}]},
+      {"type": "score", "name": "anger", "instructions": "情绪程度",
+       "levels": [{"label": "calm", "description": "平静"}, {"label": "angry", "description": "愤怒"}]}
+    ]
+  }'
+```
+
+字段映射：`predicate → noul`（答案 `noul` → `probability`）、`choices[] → criteria{}`、`levels[] → criteria[]`；响应按请求顺序返回，缺答案的题目不伪造概率。
 
 ### 💰 成本优先的路由
 

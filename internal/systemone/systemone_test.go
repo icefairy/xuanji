@@ -12,6 +12,7 @@ import (
 	"github.com/icefairy/xuanji/internal/config"
 	"github.com/icefairy/xuanji/internal/router"
 	"github.com/icefairy/xuanji/internal/store"
+	"github.com/tidwall/gjson"
 )
 
 // newTestHandler 构造一个上游指向 srv、单条路由规则（模型 decision-test）的 handler。
@@ -263,4 +264,65 @@ func (c *captureRecorder) Record(rec store.Record) {
 	c.prompt = rec.PromptTokens
 	c.completion = rec.CompletionTokens
 	c.endpoint = rec.Endpoint
+}
+
+// TestDecisionsCompatEndToEnd 校验 /v1/decisions 的 OpenAI 格式请求：
+// 网关转成 SystemOne 发给上游，再把上游响应转回 Decisions 格式。
+func TestDecisionsCompatEndToEnd(t *testing.T) {
+	var gotState, gotType string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		gotState, _ = body["state"].(string)
+		qs, _ := body["questions"].(map[string]any)
+		q, _ := qs["refund"].(map[string]any)
+		gotType, _ = q["type"].(string)
+		// 上游只认 SystemOne 结构
+		_, _ = w.Write([]byte(`{"model":"m","answers":{"refund":{"type":"noul","noul":0.77}},"usage":{"input_tokens":5,"output_tokens":1}}`))
+	}))
+	defer srv.Close()
+
+	h := newTestHandler(t, srv, "decision-test")
+	// 客户端发的是 OpenAI Decisions 格式：input + questions 数组 + predicate
+	body := `{"model":"decision-test","input":[{"role":"user","content":"客户要求退款"}],
+	  "questions":[{"type":"predicate","name":"refund","instructions":"是否要求退款?"}]}`
+	rec := httptest.NewRecorder()
+	h.Serve(rec, httptest.NewRequest(http.MethodPost, "/v1/decisions", strings.NewReader(body)))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200, body=%s", rec.Code, rec.Body.String())
+	}
+	// 上游收到的是 SystemOne 结构
+	if gotState != "客户要求退款" {
+		t.Errorf("upstream state = %q", gotState)
+	}
+	if gotType != "noul" {
+		t.Errorf("upstream question type = %q, want noul (predicate 应转成 noul)", gotType)
+	}
+	// 客户端收到的是 Decisions 结构
+	out := rec.Body.Bytes()
+	if got := gjson.GetBytes(out, "questions.0.probability").Float(); got != 0.77 {
+		t.Errorf("client probability = %v, want 0.77, body=%s", got, out)
+	}
+	if gjson.GetBytes(out, "answers").Exists() {
+		t.Errorf("response still in SystemOne shape: %s", out)
+	}
+}
+
+// TestSystemOneShapeUnchanged 校验标准 SystemOne 请求（questions 为对象）不被转换。
+func TestSystemOneShapeUnchanged(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"answers":{"q1":{"type":"noul","noul":0.5}}}`))
+	}))
+	defer srv.Close()
+
+	h := newTestHandler(t, srv, "decision-test")
+	body := `{"model":"decision-test","state":"x","questions":{"q1":{"type":"noul","instructions":"ok?","criteria":{"true":"y","false":"n"}}}}`
+	rec := httptest.NewRecorder()
+	h.Serve(rec, httptest.NewRequest(http.MethodPost, "/v1/systemone", strings.NewReader(body)))
+
+	// SystemOne 响应原样透传，仍是 answers map
+	if !strings.Contains(rec.Body.String(), `"answers"`) {
+		t.Errorf("systemone response was converted unexpectedly: %s", rec.Body.String())
+	}
 }

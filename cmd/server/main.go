@@ -827,7 +827,12 @@ func buildServeMux(cfg *config.Config, rt *router.Router, hc *health.Checker, re
 	// SystemOne（Jev）决策协议：一次请求对一段 state 回答多个带类型的概率问题。
 	// 协议原文两个端点互为别名，上游（书生）只实现 /v1/systemone，两个入口共用同一实现。
 	mux.HandleFunc("POST /v1/systemone", apiKeys.Middleware(qm.Middleware(soHandler.Serve)))
+	// OpenAI Decisions 格式（input + questions 数组）由 handler 入口自动识别并转换。
 	mux.HandleFunc("POST /v1/decisions", apiKeys.Middleware(qm.Middleware(soHandler.Serve)))
+	// 客户端 base_url 已含 /v1，或沿用 TypeSafe/其它 SDK 的旧路径时仍能命中同一实现。
+	for _, p := range []string{"/systemone", "/v1/jev", "/v1/predict"} {
+		mux.HandleFunc("POST "+p, apiKeys.Middleware(qm.Middleware(soHandler.Serve)))
+	}
 	antHandler := anthropic.New(rt, hc)
 	antHandler.SetTimeout(time.Duration(cfg.Retry.UpstreamTimeout) * time.Second)
 	// 时间线注入：与 OpenAI 入口共用同一张会话表，保证切协议时「距上轮」连续。

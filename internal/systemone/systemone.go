@@ -90,6 +90,21 @@ func (h *Handler) Serve(w http.ResponseWriter, r *http.Request) {
 		writeError(rec, http.StatusBadRequest, "model is required", "invalid_request_error", "missing_model")
 		return
 	}
+
+	// OpenAI Decisions 兼容：questions 为数组（SystemOne 是对象 map）时，说明客户端用的是
+	// /v1/decisions 那套格式。上游只认 SystemOne，这里先在入口转换，响应再转回去。
+	// 判定依据是 questions 类型而非路径，因此 /v1/systemone 收到 legacy 格式也能兼容。
+	decisionsCompat := gjson.GetBytes(body, "questions").IsArray()
+	origBody := body // 转换前的原始请求体，供响应侧还原问题顺序
+	if decisionsCompat {
+		converted, cerr := FromDecisions(body)
+		if cerr != nil {
+			writeError(rec, http.StatusBadRequest, cerr.Error(), "invalid_request_error", "invalid_request")
+			return
+		}
+		body = converted
+	}
+
 	// noul 问题缺 criteria 时补齐：部分上游（书生）强制校验该字段，缺了直接 400。
 	// 协议规定 criteria 可选，这里按标准语义补 true/false 默认描述。
 	body = fillNoulCriteria(body)
@@ -107,7 +122,7 @@ func (h *Handler) Serve(w http.ResponseWriter, r *http.Request) {
 		if r.Context().Err() != nil {
 			return
 		}
-		handled, retryable, ferr, _ := h.forward(rec, r, body, up, model)
+		handled, retryable, ferr, _ := h.forward(rec, r, body, up, model, decisionsCompat, origBody)
 		if handled {
 			upstream = up.Name
 			return
@@ -129,7 +144,7 @@ func (h *Handler) Serve(w http.ResponseWriter, r *http.Request) {
 // forward 向单个上游转发一次决策请求。返回值语义与 proxy 其它入口一致：
 //   - handled：已经向客户端写过响应（成功、透传 4xx、或错误已落盘），调用方不再重试
 //   - retryable：失败是否值得换下一个候选上游
-func (h *Handler) forward(w http.ResponseWriter, r *http.Request, body []byte, up *config.Upstream, model string) (
+func (h *Handler) forward(w http.ResponseWriter, r *http.Request, body []byte, up *config.Upstream, model string, decisionsCompat bool, origBody []byte) (
 	handled, retryable bool, err error, detail string) {
 	start := time.Now()
 	var status int
@@ -217,6 +232,15 @@ func (h *Handler) forward(w http.ResponseWriter, r *http.Request, body []byte, u
 	if promptTokens == 0 && completionTokens == 0 {
 		promptTokens = usage.Get("prompt_tokens").Int()
 		completionTokens = usage.Get("completion_tokens").Int()
+	}
+
+	if decisionsCompat {
+		// 把 SystemOne 响应转回 OpenAI Decisions 结构（questions 数组 + probability 字段）
+		converted, cerr := ToDecisions(origBody, data)
+		if cerr != nil {
+			return false, true, fmt.Errorf("convert decisions response: %w", cerr), cerr.Error()
+		}
+		data = converted
 	}
 
 	copyHeader(w.Header(), resp.Header)

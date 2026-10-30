@@ -681,6 +681,7 @@ footer{border-top:1px solid var(--line);padding:52px 0 42px;margin-top:24px}
           <li>同一套 API Key 鉴权、分组配额与费用统计</li>
           <li>5xx/超时自动换上游，4xx 透传且不拉黑上游</li>
           <li><code>noul</code> 可省 <code>criteria</code>，网关自动补默认描述</li>
+          <li>同时接受 OpenAI Decisions 格式（<code>predicate</code> / <code>choices</code> / <code>levels</code>），网关自动转换</li>
         </ul>
       </div>
     </div>
@@ -904,7 +905,7 @@ user=root</pre>
             <tr><td><code>GET /v1/models</code></td><td>模型列表</td></tr>
             <tr><td><b>Anthropic</b></td><td><code>POST /v1/messages</code></td><td>Claude 消息（流式事件转换）</td></tr>
             <tr><td rowspan="2"><b>SystemOne</b></td><td><code>POST /v1/systemone</code></td><td>决策模型（choice / noul / score 概率打分）</td></tr>
-            <tr><td><code>POST /v1/decisions</code></td><td>同上协议的别名入口</td></tr>
+            <tr><td><code>POST /v1/decisions</code></td><td>OpenAI Decisions 格式（自动转换为 SystemOne）</td></tr>
             <tr><td><b>视频</b></td><td><code>POST /v1/videos</code> · <code>GET /v1/videos</code></td><td>视频生成透传 / 任务状态</td></tr>
             <tr><td><b>运维</b></td><td><code>GET /healthz</code></td><td>健康探针</td></tr>
           </tbody>
