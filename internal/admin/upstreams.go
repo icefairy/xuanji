@@ -178,7 +178,7 @@ func (h *Handler) CreateUpstream(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]string{"error": err.Error()})
 		return
 	}
-	// 否则新建账号池型上游（codebuddy/cline/qoder）时无从配置厂商标识。
+	// 否则新建账号池型上游时无从配置厂商标识。
 	if h.store != nil {
 	}
 	if h.reload != nil {

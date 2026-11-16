@@ -2432,7 +2432,7 @@
         </table>
       </div>
 
-      <!-- 厂商账号（CodeBuddy 等账号池型上游：登录态 / 签到 / 积分） -->
+      <!-- 厂商账号（账号池型上游：登录态 / 签到 / 积分） -->
       <div class="tab-content" v-if="tab === 'settings'">
         <div
           style="
@@ -2679,9 +2679,7 @@
             >上游看到的客户端标识，默认 = pi agent（pi/0.84.1 …）。可选 Hermes
             agent（hermes-cli/0.20.2）、opencode
             （opencode/latest/1.18.21/cli，sst/opencode 官方 UA 格式
-            opencode/&lt;渠道&gt;/&lt;版本&gt;/&lt;客户端&gt;）、CodeBuddy CLI
-            （CLI/2.178.1 CodeBuddy/2.178.1，官方 CLI 格式
-            CLI/&lt;版本&gt; CodeBuddy/&lt;版本&gt;）或自定义。避免上游把默认
+            opencode/&lt;渠道&gt;/&lt;版本&gt;/&lt;客户端&gt;）或自定义。避免上游把默认
             Go-http-client/1.1 误判为脚本/网关程序。保存后立即热重载生效。</span
           >
         </div>
@@ -3176,7 +3174,6 @@
               <option value="opencode">opencode（Zen 免费层适配）</option>
             </select>
           </div>
-          </div>
           <div class="form-group">
             <label>成本层级</label
             ><select v-model="addForm.tier">
@@ -3218,7 +3215,6 @@
               <option value="gemini">gemini（自动转换）</option>
               <option value="opencode">opencode（Zen 免费层适配）</option>
             </select>
-          </div>
           </div>
           <div class="form-group">
             <label>Base URL</label><input v-model="editForm.base_url" />
@@ -4354,35 +4350,6 @@ curl -sS "$BASE/v1/messages" \\
             backupLoading: false,
           },
           methods: {
-            // dailyActiveSummary 汇总某账号最近几天的 Daily Active 观测，供签到列展示。
-            //
-            // 国际版没有签到接口：官方奖励是「当天通过客户端发起过对话 → 次日自动
-            // 发放 30 credits」，到账形态是一个独立的 Bonus Pack。这里只展示观测结果。
-            dailyActiveSummary: function (a) {
-              var rows = (a && a.daily_active) || [];
-              if (!rows.length) return { checked: false };
-              var latest = rows[0];
-              var total = 0,
-                daysWith = 0;
-              rows.forEach(function (r) {
-                total += r.bonus_credits || 0;
-                if ((r.bonus_credits || 0) > 0) daysWith++;
-              });
-              return {
-                checked: true,
-                credits: latest.bonus_credits || 0,
-                label: latest.bonus_credits > 0 ? "+" + latest.bonus_credits + " 积分" : "无新增",
-                title:
-                  latest.date_key +
-                  " 观测：新增奖励包 " + (latest.bonus_count || 0) + " 个 / " +
-                  (latest.bonus_credits || 0) + " 积分；当天网关调用 " +
-                  (latest.calls || 0) + " 次",
-                days:
-                  rows.length > 1
-                    ? "近 " + rows.length + " 天共 " + total + "，到账 " + daysWith + " 天"
-                    : "",
-              };
-            },
             // 规则列表上游状态类：绿=正常，红=黑名单/禁用/不可用，橙=降级，灰=未知
             ruleUpstreamClass: function (r, ui) {
               if (!r.fast_fail || r.fast_fail.length !== r.upstreams.length) {

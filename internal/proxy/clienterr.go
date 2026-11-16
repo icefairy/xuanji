@@ -31,7 +31,7 @@ func (e *clientRequestError) Is(t error) bool { return t == errClientRequest }
 //
 // 例（2026-09-12 日志实测）：
 //   - wechat 对未提供的模型名回 400 `invalid model: model name not found`
-//   - codebuddy 回 `Model hy3 is not supported`
+//   - 某网关回 `Model hy3 is not supported`
 //   - 各家输入超长回 400 `The input (N tokens) is longer than the model's context length`
 //     / `exceeds the model's maximum context length of M tokens` / `input length too long`
 //
@@ -98,7 +98,7 @@ var clientErrReasons = []string{
 	// 相当于让一个坏会话把整条 stepfun 链路拉黑。
 	"function.name is required",
 	"function.name is missing",
-	// 官方网关（workbuddy / codebuddy，同一套后端）对「本次请求参数被模型 provider 拒绝」
+	// 官方网关对「本次请求参数被模型 provider 拒绝」
 	// 固定回 code=11133，措辞有两版：
 	//   "the request parameters were rejected by the model provider"（2026-10-29 实测 6 次）
 	//   "Invalid request parameters"（2026-10-28 实测 hy3）
@@ -109,7 +109,7 @@ var clientErrReasons = []string{
 	// 判据（与 stepfun 那一批同口径）：同期其他客户端 / 同客户端换会话均 200，
 	// 上游当时在正常服务 → 换一个合法请求即可成功，属本次请求内容问题。
 	// 不归入本表的后果：一个坏会话反复重试（客户端通常 2~3 次）累计到 5 次
-	// 就把健康的 workbuddy / codebuddy 打成 dead，而它正在给别的 key 正常供数。
+	// 就把健康的上游打成 dead，而它正在给别的 key 正常供数。
 	//
 	// 注意：不拿裸的 "invalid_request_error" 当特征——那是各家 4xx 的通用 type，
 	// 会误伤鉴权/配额等其他错误（而且那些本应由上面的状态码开关先排掉）。
@@ -124,7 +124,7 @@ var clientErrReasons = []string{
 	//   2) 2026-10-29 本地复现（本仓库）：assistant 带 tool_calls 而紧跟的 tool 无 id 配对，
 	//      稳定得到与线上一致的 11148；
 	//   3) 历史真实客户端 192.168.1.10 在 10-15/10-16 连续触发 18 次，每次 3 条一组
-	//      （客户端自己的 2~3 轮重试），而同期 workbuddy 有 1125 次 200。
+	//      （客户端自己的 2~3 轮重试），而同期其它 key 有 1125 次 200。
 	//
 	// 与 11133 同性质。不归入本表的后果：两个坏会话的重试即可累计 5 次
 	// 把健康上游打成 dead。

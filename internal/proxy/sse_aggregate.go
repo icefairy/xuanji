@@ -14,7 +14,7 @@ import (
 // 两个厂商的 SSE 格式都是 OpenAI 兼容（data: {...chat.completion.chunk}），
 // 因此这份实现可直接复用，无需各自维护。
 
-// AggregateSSEToCompletion 把 CodeBuddy 的 SSE 流聚合成一个 OpenAI 非流式
+// AggregateSSEToCompletion 把厂商网关的 SSE 流聚合成一个 OpenAI 非流式
 // chat.completion 响应（移植自 Node 版 aggregateSseToCompletion）。
 //
 // 覆盖：content 分片拼接、reasoning_content 拼接、tool_calls 按 index 合并

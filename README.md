@@ -247,7 +247,6 @@ curl -sS http://127.0.0.1:3001/v1/decisions \
 **回传注入的兼容性实测（2026-10-05，直连上游、assistant 历史带 `reasoning_content`）：**
 
 - `gs` / `基元律动`（glm-5.3-flash）：空串、空格、真实文本 **均 200 不报错**；
-- `codebuddy`：直连 401（鉴权拦的、与字段无关），间接证据——其上的 deepseek 注入已长期运行无报错；
 - `opencode-zen`（MiMo）：被 Cloudflare 拦直连无法直测，但实测其响应**不含** `reasoning_content`，缓存无数据来源、注入实际不会触发。
 
 **注意事项：**

@@ -117,11 +117,11 @@ func TestApplyPiFingerprintHeaders_RespectsExisting(t *testing.T) {
 // TestApplyPiFingerprintHeaders_StripsConflicting 验证剥离他者身份头。
 func TestApplyPiFingerprintHeaders_StripsConflicting(t *testing.T) {
 	req := newTestRequest(t, "http://up.example.com/v1/chat/completions")
-	req.Header.Set("X-Codebuddy-Request", "1")
+	req.Header.Set("X-Agent-Type", "cli")
 	req.Header.Set("X-Product", "SaaS")
 	req.Header.Set("Traceparent", "00-abc-def-01")
 	ApplyPiFingerprintHeaders(req)
-	for _, k := range []string{"X-Codebuddy-Request", "X-Product", "Traceparent"} {
+	for _, k := range []string{"X-Agent-Type", "X-Product", "Traceparent"} {
 		if got := req.Header.Get(k); got != "" {
 			t.Errorf("应剥离 %q, got %q", k, got)
 		}

@@ -11,7 +11,7 @@ import (
 
 // normalizeFinishReason 把上游的 finish_reason 归一化成 OpenAI 标准取值。
 //
-// 为什么需要（WorkBuddy / CodeBuddy 官方网关）：
+// 为什么需要（部分官方网关）：
 // 官方 SSE 的 choices[0].finish_reason 会出现 `end_turn`——这是从内部 Anthropic
 // 表示层漏出来的语义值（app.asar 的 StreamEventConverter 用 Anthropic 事件名），
 // 而 OpenAI 协议里只有 stop / length / tool_calls / content_filter。

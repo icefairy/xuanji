@@ -387,7 +387,7 @@ func (h *Handler) ChatCompletions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 官方网关（WorkBuddy/CodeBuddy 的 /v2/chat/completions）自己就是权威协议转换方，
+	// 部分官方网关（/v2/chat/completions）自己就是权威协议转换方，
 	// 官方 CLI 对此类 host 直接跳过全部兼容改写（skippedProductGateway）。
 	// 这里先路由拿到候选，再按命中上游决定是否改写请求体（见 forwardOnce）。
 	upstreams, strategy, err := h.router.Route(model)
@@ -1333,14 +1333,14 @@ func (h *Handler) forwardOnce(w http.ResponseWriter, r *http.Request, body []byt
 			return true, false, nil, 0, 0, 0, 0
 		}
 	}
-	// ⚠ 官方网关（WorkBuddy / CodeBuddy 的 /v2/chat/completions）必须跳过下面这批
+	// ⚠ 部分官方网关（/v2/chat/completions）必须跳过下面这批
 	// 「为第三方宽松端点准备的」请求体改写。
 	//
 	// 依据：账号池型官方网关已移除，以下归一化对所有上游生效。
 	// tool_calls 函数名校验（**所有上游**，含官方网关）：
 	//
 	// 空 function.name 是请求本身非法，换账号/换上游都一样会失败（2026-10-29 实测：
-	// workbuddy 回 11133、stepfun 回 "function.name is required"、agnes 回
+	// 某网关回 11133、stepfun 回 "function.name is required"、agnes 回
 	// "missing field `name`" —— 三家措辞不同但拒的是同一个坑）。在网关侧直接拦下：
 	//  1) 不把必然失败的请求发往上游（省一次往返、不占账号额度）
 	//  2) 不污染上游健康计数（官方网关的 11133 已归入 clientErrReasons，但拦在前面更干净）
@@ -1918,7 +1918,7 @@ func (h *Handler) streamCopy(w http.ResponseWriter, resp *http.Response, reqBody
 // streamCopyWith 是 streamCopy 的可参数化版本。
 //
 // normalizeFR：是否把片内 finish_reason 归一化为 OpenAI 标准值。
-// 仅对官方网关（WorkBuddy/CodeBuddy）为 true——它们会漏出 Anthropic 语义的
+// 仅对部分官方网关为 true——它们会漏出 Anthropic 语义的
 // end_turn，而普通上游没有这个问题，不该在热路径上多付判定代价。
 func (h *Handler) streamCopyWith(w http.ResponseWriter, resp *http.Response, reqBody []byte, reqModel string, promptTokens, completionTokens, promptCacheHit, promptCacheMiss *int64, start time.Time, thinkingTokens *int64, thinkingEmbedded *bool, normalizeFR bool) (interrupted bool, ttftMS int64, readErr error) {
 	w.Header().Set("Content-Type", "text/event-stream")

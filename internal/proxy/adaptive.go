@@ -18,8 +18,8 @@ import (
 
 // 自适应权重（按真实请求成功率降权 / 按历史故障段时长预测复权）的常量。
 //
-// 背景（2026-11 实测）：workbuddy/deepseek-v4.1-flash 窗口成功率 24.9%（账号池耗尽，
-// 连续 538 分钟无一成功），却因静态 weight 排在 codebuddy（98.3%）前面，白吞流量。
+// 背景（2026-11 实测）：deepseek-v4.1-flash 窗口成功率 24.9%（账号池耗尽，
+// 连续 538 分钟无一成功），却因静态 weight 排在 98.3% 的上游前面，白吞流量。
 // 因此降权要快（窗口成功率），复权不能统一固定速率——瞬时 429（中位 6 秒恢复）与
 // 额度耗尽（数小时）必须区别对待，见 probeAt 的计算。
 const (
@@ -818,7 +818,7 @@ func (a *AdaptiveCache) setEntry(e adaptiveEntry, now time.Time) {
 }
 
 // logAdjust 打降权日志（仅在系数/样本发生变化时调用方才会走到这里）。
-// 示例：adaptive: adjust workbuddy/deepseek-v4.1-flash weight 211→87 (factor=0.415 rate=24.9% n=374)
+// 示例：adaptive: adjust deepseek-v4.1-flash weight 211→87 (factor=0.415 rate=24.9% n=374)
 func (a *AdaptiveCache) logAdjust(e adaptiveEntry, prev *adaptiveEntry) {
 	if prev != nil && math.Abs(prev.factor-e.factor) < 1e-6 && prev.samples == e.samples {
 		return // 无变化不打日志（60s 一次会刷屏）

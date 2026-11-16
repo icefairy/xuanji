@@ -63,11 +63,11 @@ func MergeSystemMessages(body []byte) ([]byte, bool) {
 //
 // 为什么要主动拦：tool_calls 里的空函数名在某些上游能直接读出原因
 // （stepfun: "tool_calls.function.name is required"、agnes: "missing field `name`"），
-// 而官方网关（workbuddy/codebuddy）会把根因吞掉，只回一句泛化的
+// 而部分官方网关会把根因吞掉，只回一句泛化的
 // code=11133「the request parameters were rejected by the model provider」，
 // 且 extError.param 为空、Request/Response 全为 null —— 客户端完全无从下手。
 //
-// 2026-10-29 实测（workbuddy / deepseek-v4.1-flash，6 次 11133）：本地用同样的
+// 2026-10-29 实测（deepseek-v4.1-flash，6 次 11133）：本地用同样的
 // 空名 tool_call 复现，得到与线上完全一致的 11133，确认为请求本身非法而非上游故障。
 // 该请求发往上游必然失败（换号、换上游都一样），故在网关侧提前拒绝：
 // 省一次往返、不污染上游健康计数、并给出精确到下标的自查线索。
