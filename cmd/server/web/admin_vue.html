@@ -44,6 +44,16 @@
         margin-left: 6px;
         vertical-align: middle;
       }
+      .peak-hint {
+        margin: -8px 0 12px;
+        padding: 6px 12px;
+        font-size: 12px;
+        line-height: 1.6;
+        color: #8a6d3b;
+        background: #fdf6ec;
+        border: 1px solid #faecd8;
+        border-radius: 6px;
+      }
       .tab-btn {
         padding: 8px 16px;
         border: none;
@@ -615,6 +625,10 @@
           >
           <button v-if="token" class="btn" @click="doLogout">退出</button>
         </span>
+      </div>
+
+      <div class="peak-hint">
+        💡 空闲时段价格为高峰时段的一半。高峰时段为北京时间周一至周五（不含中国法定节假日）9:00–12:00、14:00–18:00；其余时段（含周末及法定节假日全天）均为空闲时段。
       </div>
 
       <div class="group-nav">
