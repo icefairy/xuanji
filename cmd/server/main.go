@@ -1,0 +1,1193 @@
+// Package main 是璇玑网关的服务入口：加载配置、启动健康检查与 HTTP 服务。
+package main
+
+import (
+	"bytes"
+	"context"
+	"crypto/rand"
+	"embed"
+	"encoding/hex"
+	"encoding/json"
+	"flag"
+	"fmt"
+	"io"
+	"io/fs"
+	"log/slog"
+	"net/http"
+	"os"
+	"os/signal"
+	"path/filepath"
+	"sort"
+	"strings"
+	"sync"
+	"syscall"
+	"time"
+
+	"golang.org/x/crypto/bcrypt"
+
+	"github.com/icefairy/xuanji/internal/admin"
+	"github.com/icefairy/xuanji/internal/anthropic"
+	"github.com/icefairy/xuanji/internal/auth"
+	"github.com/icefairy/xuanji/internal/config"
+	"github.com/icefairy/xuanji/internal/debuglog"
+	"github.com/icefairy/xuanji/internal/gemini"
+	"github.com/icefairy/xuanji/internal/health"
+	"github.com/icefairy/xuanji/internal/ollama"
+	"github.com/icefairy/xuanji/internal/proxy"
+	"github.com/icefairy/xuanji/internal/quota"
+	"github.com/icefairy/xuanji/internal/router"
+	"github.com/icefairy/xuanji/internal/store"
+	"github.com/icefairy/xuanji/internal/systemone"
+)
+
+//go:embed all:web
+var embeddedWeb embed.FS
+
+// webFileSystem 返回管理界面静态文件系统根（含 admin_vue.html 与 vue/ 子目录）：
+// 优先磁盘 web/ 目录（开发时可改模板即时生效），不存在时回退到嵌入的 web
+// （单二进制发布/Docker 场景，保证管理页可用）。
+func webFileSystem() http.FileSystem {
+	if _, err := os.Stat("web"); err == nil {
+		return http.Dir("web")
+	}
+	sub, err := fs.Sub(embeddedWeb, "web")
+	if err != nil {
+		return http.FS(embeddedWeb)
+	}
+	return http.FS(sub)
+}
+
+// webVueFileSystem 返回 vue 静态资源子目录（/vue/ 路由专用）。
+func webVueFileSystem() http.FileSystem {
+	if _, err := os.Stat("web/vue"); err == nil {
+		return http.Dir("web/vue")
+	}
+	sub, err := fs.Sub(embeddedWeb, "web/vue")
+	if err != nil {
+		return http.FS(embeddedWeb)
+	}
+	return http.FS(sub)
+}
+
+// writeJSONError 以 JSON 格式写错误响应。
+func writeJSONError(w http.ResponseWriter, status int, msg string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": msg})
+}
+
+// probeRecorder 构造探测结果持久化器：健康检查每次探测后落库，
+// 供 metrics 按时间范围聚合健康度；重启后历史保留，健康度不归零。
+func probeRecorder(st *store.Store) health.ProbeRecorder {
+	if st == nil {
+		return nil
+	}
+	return probeStoreRecorder{st: st}
+}
+
+// probeStoreRecorder 是 health.ProbeRecorder 的 store 实现。
+type probeStoreRecorder struct {
+	st *store.Store
+}
+
+func (r probeStoreRecorder) RecordProbe(upstream string, ok bool, at time.Time) {
+	if err := r.st.RecordProbe(upstream, ok, at); err != nil {
+		slog.Debug("record probe failed", "upstream", upstream, "ok", ok, "error", err)
+	}
+}
+
+// admJWTSecret 从 config 表读取/生成 JWT 签名密钥（与 admin.Handler 共用）。
+func admJWTSecret(st *store.Store) string {
+	if st == nil {
+		return ""
+	}
+	v, _ := st.GetConfig("admin.jwt_secret")
+	if v != "" {
+		return v
+	}
+	// 生成随机 secret 并持久化（首次启动）
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err == nil {
+		v = "xuanji-" + hex.EncodeToString(b)
+	} else {
+		v = fmt.Sprintf("xuanji-%d", time.Now().UnixNano())
+	}
+	_ = st.SetConfig("admin.jwt_secret", v)
+	return v
+}
+
+// appState 持有运行时可热替换的组件。
+type appState struct {
+	mu        sync.RWMutex
+	hc        *health.Checker
+	srv       *http.Server
+	qm        *quota.Service // 配额策略（组×模型 白名单+模型级配额）
+	stopProbe func()         // fastfail 冷却清理探针停止函数（热重载时替换，防 goroutine 泄漏）
+	// adaptive 成功率自适应权重缓存：跨热重载复用同一实例（内部状态落 DB，
+	// 每次 buildServeMux 只刷新配置快照），避免反复启停后台 goroutine。
+	adaptive     *proxy.AdaptiveCache
+	stopAdaptive func()
+}
+
+var (
+	cfg   *config.Config
+	state appState
+
+	flagPort = flag.Int("port", 8787, "监听端口（默认 8787）")
+	flagDB   = flag.String("db", "xuanji.db", "数据库路径（默认 当前目录下 xuanji.db）")
+	flagHelp = flag.Bool("help", false, "显示帮助")
+)
+
+func main() {
+	flag.Parse()
+	if *flagHelp {
+		flag.Usage()
+		os.Exit(0)
+	}
+
+	// 1. 打开数据库（必须，所有配置存于此）
+	storeInst, err := store.Open(*flagDB)
+	if err != nil {
+		slog.Error("open store", "path", *flagDB, "error", err)
+		os.Exit(1)
+	}
+	rec := store.NewRecorder(storeInst)
+	defer func() {
+		slog.Info("closing store")
+		rec.Close()
+		storeInst.Close()
+	}()
+	slog.Info("store opened", "path", *flagDB)
+
+	// 2. 写入默认配置（仅首次启动）
+	if err := storeInst.SeedDefaults(); err != nil {
+		slog.Error("seed defaults", "error", err)
+		os.Exit(1)
+	}
+
+	// 2.2 确保管理 API key 存在（首次生成随机 key，系统设置页可见可改）
+	if err := ensureAdminAPIKey(storeInst); err != nil {
+		slog.Error("ensure admin api key", "error", err)
+		os.Exit(1)
+	}
+
+	// 2.5 首次启动创建默认管理用户 admin / xuanji123
+	if n, _ := storeInst.CountUsers(); n == 0 {
+		hash, _ := bcrypt.GenerateFromPassword([]byte("xuanji123"), bcrypt.DefaultCost)
+		if _, err := storeInst.CreateUser("admin", string(hash)); err != nil {
+			slog.Error("create default user", "error", err)
+		} else {
+			slog.Info("created default admin user (admin / xuanji123)")
+		}
+	}
+
+	// 3. 从 DB 加载全部配置
+	cfg, err = config.LoadFromDB(storeInst)
+	if err != nil {
+		slog.Error("load config from db", "error", err)
+		os.Exit(1)
+	}
+
+	// 4. CLI 端口覆盖数据库配置
+	cfg.Server.Port = *flagPort
+
+	slog.Info("config loaded from database", "upstreams", len(cfg.Upstreams), "rules", len(cfg.Routing.Rules))
+
+	rt := router.New(cfg)
+	hc := health.New(cfg)
+	hc.SetProbeRecorder(probeRecorder(storeInst))
+	hc.SetAlerter(health.NewWebhookAlerter(cfg.Alert))
+	hc.Start()
+
+	state.mu.Lock()
+	state.hc = hc
+	state.mu.Unlock()
+
+	// API key 鉴权（server.api_keys 配置后生效，/healthz 不鉴权）
+	// storeInst 非 nil 时，api_tokens 表中的下游 key 也参与转发鉴权；
+	// 管理端 JWT 也放行（前端测试按钮直接用登录 token 调转发）
+	keys := auth.New(storeInst, admJWTSecret(storeInst))
+	// 配额策略（组×模型 白名单 + 模型级配额；启动即加载，管理端改动后 Refresh）
+	qm := quota.New(storeInst)
+	state.mu.Lock()
+	state.qm = qm
+	state.mu.Unlock()
+	mux := buildServeMux(cfg, rt, hc, rec, storeInst, keys, qm)
+
+	addr := fmt.Sprintf(":%d", cfg.Server.Port)
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+		// 限制读取请求头+请求体的总时长，抵御慢速 body 占连接（slowloris）。
+		// 不影响 SSE：读超时只约束请求方向，不约束流式响应。
+		ReadTimeout: 5 * time.Minute,
+		IdleTimeout: 120 * time.Second,
+		// 不设置 WriteTimeout：SSE 流式响应可能持续数分钟，写超时会把长流截断。
+	}
+
+	state.mu.Lock()
+	state.srv = srv
+	state.mu.Unlock()
+
+	// 优雅关闭：SIGINT/SIGTERM 时停止健康检查并退出 HTTP 服务。
+	go func() {
+		quit := make(chan os.Signal, 1)
+		signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+		<-quit
+		slog.Info("shutting down")
+		closeCurrentHealth()
+		stopFastFailProbe()
+		closeDebugLog()
+		stopAdaptiveCache()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(ctx)
+	}()
+
+	// 每周自动备份：启动后立即做一次（确保服务重启也有备份），之后每 7 天一次。
+	// 备份为 gzip 压缩快照，自动保留最近 10 个（store.CreateBackup 由 admin 层轮转）。
+	if storeInst != nil {
+		go func() {
+			backupOnce(storeInst)
+			ticker := time.NewTicker(7 * 24 * time.Hour)
+			defer ticker.Stop()
+			for range ticker.C {
+				backupOnce(storeInst)
+			}
+		}()
+	}
+
+	// 每日统计预聚合：启动后后台全量重算一次（填充历史 daily_stats），之后每天 00:05 聚合前一天。
+	if storeInst != nil {
+		go dailyStatsTicker(storeInst)
+	}
+
+
+
+	slog.Info("xuanji gateway listening",
+		"addr", addr,
+		"upstreams", len(cfg.Upstreams),
+		"default_strategy", cfg.Routing.DefaultStrategy,
+	)
+	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		slog.Error("server error", "error", err)
+		os.Exit(1)
+	}
+	closeCurrentHealth()
+	stopFastFailProbe()
+	closeDebugLog()
+	stopAdaptiveCache()
+}
+
+// closeCurrentHealth 关闭当前健康检查器（热重载后指向最新实例，避免关闭已失效的启动实例）。
+func closeCurrentHealth() {
+	state.mu.RLock()
+	hc := state.hc
+	state.mu.RUnlock()
+	if hc != nil {
+		hc.Close()
+	}
+}
+
+// stopFastFailProbe 停止当前 fastfail 冷却清理探针（幂等）。
+func stopFastFailProbe() {
+	state.mu.Lock()
+	if state.stopProbe != nil {
+		state.stopProbe()
+		state.stopProbe = nil
+	}
+	state.mu.Unlock()
+}
+
+// ─────────────── 异常请求完整诊断日志（writer 单例 + 惰性创建）───────────────
+
+// debugLogState 持有全局唯一的调试日志 writer。
+//
+// 为什么单例 + 惰性：buildServeMux 在启动与每次热重载都会执行，若每次新建 writer
+// 就会重复 open 文件、泄漏句柄；而开关默认关闭，关闭时不该产生任何目录/文件。
+// 因此这里只做「按开关决定 use/close」，writer 实例开关不变时复用。
+var debugLogState = struct {
+	sync.Mutex
+	writer *debuglog.Writer
+	dir    string
+}{}
+
+// debugLogWriterFor 返回当前应使用的 writer（开关关闭时返回 nil 并关闭旧 writer）。
+//
+// 目录默认 <数据库文件所在目录>/debug-logs；该目录不在任何静态路由/下载接口下，
+// 仅本机文件系统可读。创建失败（如只读磁盘）只告警一次并降级为不记录——绝不阻断转发。
+func debugLogWriterFor(cfg *config.Config, st *store.Store) *debuglog.Writer {
+	enabled := cfg != nil && cfg.Proxy.DebugRequestLog
+	debugLogState.Lock()
+	defer debugLogState.Unlock()
+
+	if !enabled {
+		if debugLogState.writer != nil {
+			if err := debugLogState.writer.Close(); err != nil {
+				slog.Warn("close debug log writer failed", "error", err)
+			}
+			slog.Info("debug request log disabled, writer closed",
+				"dir", debugLogState.writer.Dir())
+			debugLogState.writer = nil
+		}
+		return nil
+	}
+	if debugLogState.writer != nil {
+		return debugLogState.writer
+	}
+	dir := debugLogDir(st)
+	w, err := debuglog.New(dir, debuglog.Options{})
+	if err != nil {
+		slog.Error("open debug request log failed (debug logging disabled)", "dir", dir, "error", err)
+		return nil
+	}
+	debugLogState.writer = w
+	debugLogState.dir = dir
+	slog.Warn("debug request log ENABLED: 完整请求体会写入磁盘（含提示词等敏感数据），排查完请关闭",
+		"dir", dir, "max_file_mb", debuglog.DefaultMaxFileBytes>>20, "retain_days", debuglog.DefaultRetainDays)
+	return w
+}
+
+// debugLogDir 返回调试日志目录：数据库同目录下的 debug-logs（数据库内存模式时退回临时目录）。
+func debugLogDir(st *store.Store) string {
+	if st != nil {
+		if p := st.DBPath(); p != "" && p != ":memory:" {
+			return filepath.Join(filepath.Dir(p), "debug-logs")
+		}
+	}
+	return filepath.Join(os.TempDir(), "xuanji-debug-logs")
+}
+
+// closeDebugLog 进程退出时刷盘关闭（幂等）。
+func closeDebugLog() {
+	debugLogState.Lock()
+	defer debugLogState.Unlock()
+	if debugLogState.writer == nil {
+		return
+	}
+	if err := debugLogState.writer.Close(); err != nil {
+		slog.Warn("close debug log writer failed", "error", err)
+	}
+	debugLogState.writer = nil
+}
+
+// registerAdaptiveCache 创建/复用成功率自适应权重缓存并注入 proxy Handler。
+//
+// 设计：缓存实例跨热重载复用（与其在 reload 里重建 goroutine，不如只刷新配置快照）。
+// 运行期状态（惩罚系数/试探时间）落在 adaptive_weights 表，重建也不会丢，但热重载会
+// 导致 ticker 启停抖动与在途试探被重置，因此只在首次创建或开关切换时启停 goroutine。
+func registerAdaptiveCache(cfg *config.Config, rt *router.Router, storeInst *store.Store, px *proxy.Handler) {
+	state.mu.Lock()
+	ac := state.adaptive
+	if ac == nil {
+		ac = proxy.NewAdaptiveCache(cfg, storeInst, rt)
+		state.adaptive = ac
+		if ac.Enabled() {
+			state.stopAdaptive = ac.Start(context.Background())
+		}
+	} else {
+		// 复用实例：刷新配置 + router 引用（路由规则热重载后变了）
+		ac.Update(cfg, rt)
+		if ac.Enabled() && state.stopAdaptive == nil {
+			state.stopAdaptive = ac.Start(context.Background())
+		} else if !ac.Enabled() && state.stopAdaptive != nil {
+			state.stopAdaptive()
+			state.stopAdaptive = nil
+		}
+	}
+	state.mu.Unlock()
+
+	// 日志展示用：按上游名取配置 weight（有效权重换算只用于打日志）
+	ac.SetBaseWeightLookup(func(name string) (int, bool) {
+		for i := range cfg.Upstreams {
+			if cfg.Upstreams[i].Name == name {
+				return cfg.Upstreams[i].Weight, true
+			}
+		}
+		return 0, false
+	})
+	px.SetAdaptive(ac)
+}
+
+// stopAdaptiveCache 停止自适应权重后台任务（幂等，进程退出时调用）。
+func stopAdaptiveCache() {
+	state.mu.Lock()
+	if state.stopAdaptive != nil {
+		state.stopAdaptive()
+		state.stopAdaptive = nil
+	}
+	state.mu.Unlock()
+}
+
+// dailyStatsTicker 后台维护每日统计预聚合表（daily_stats）。
+// 启动后立即全量重算一次（填充历史），之后每天东八区 00:05 聚合前一天，保证趋势数据最新且轻量。
+func dailyStatsTicker(s *store.Store) {
+	loc := time.FixedZone("CST", 8*3600)
+	// 启动后后台全量重算，填充历史 daily_stats（幂等 upsert）。
+	go func() {
+		if err := s.RebuildDailyStats(); err != nil {
+			slog.Error("initial daily stats rebuild failed", "error", err)
+		}
+		// 启动时清一次过期探针（把存量压到保留期内）
+		if n, err := s.PruneHealthProbeLog(store.ProbeRetainDays); err != nil {
+			slog.Error("initial prune health probe log failed", "error", err)
+		} else if n > 0 {
+			slog.Info("pruned health probe log", "rows", n, "retain_days", store.ProbeRetainDays)
+		}
+		// 启动时清一次过期请求明细（历史统计已由 daily_stats 兜底）
+		if n, err := s.PruneRequestLog(store.RequestLogRetainDays); err != nil {
+			slog.Error("initial prune request log failed", "error", err)
+		} else if n > 0 {
+			slog.Info("pruned request log", "rows", n, "retain_days", store.RequestLogRetainDays)
+		}
+	}()
+	for {
+		now := time.Now().In(loc)
+		// 下一个 00:05
+		next := time.Date(now.Year(), now.Month(), now.Day(), 0, 5, 0, 0, loc).Add(24 * time.Hour)
+		timer := time.NewTimer(time.Until(next))
+		<-timer.C
+		y := time.Now().In(loc).AddDate(0, 0, -1).Format("2006-01-02")
+		ds, err := s.AggregateDay(y)
+		if err != nil {
+			slog.Error("aggregate yesterday failed", "date", y, "error", err)
+			continue
+		}
+		if err := s.UpsertDayStats(ds); err != nil {
+			slog.Error("upsert daily stats failed", "date", y, "error", err)
+		}
+		if n, err := s.PruneHealthProbeLog(store.ProbeRetainDays); err != nil {
+			slog.Error("prune health probe log failed", "error", err)
+		} else if n > 0 {
+			slog.Info("pruned health probe log", "rows", n, "retain_days", store.ProbeRetainDays)
+		}
+		if n, err := s.PruneRequestLog(store.RequestLogRetainDays); err != nil {
+			slog.Error("prune request log failed", "error", err)
+		} else if n > 0 {
+			slog.Info("pruned request log", "rows", n, "retain_days", store.RequestLogRetainDays)
+		}
+		if n, err := s.PruneReasoningCache(store.ReasoningCacheRetainDays); err != nil {
+			slog.Error("prune reasoning cache failed", "error", err)
+		} else if n > 0 {
+			slog.Info("pruned reasoning cache", "rows", n, "retain_days", store.ReasoningCacheRetainDays)
+		}
+		// 最后 VACUUM 回收空间：DELETE 只标记空闲页不缩文件，长期累积会留下
+		// 大量空洞（实测 32MB 数据占 183MB 文件）。必须放在所有 prune 之后，
+		// 一次性把当日删除的页真正归还磁盘。启动路径不调用（避免拖慢启动 +
+		// 与首次全量 rebuild 争锁）。
+		vacuumStart := time.Now()
+		if err := s.Vacuum(); err != nil {
+			slog.Error("vacuum failed", "error", err)
+		} else {
+			slog.Info("vacuum done", "elapsed", time.Since(vacuumStart).Round(time.Millisecond))
+		}
+	}
+}
+
+// backupOnce 执行一次自动备份并轮转保留最近 10 个，失败只记日志不影响主流程。
+func backupOnce(storeInst *store.Store) {
+	name, err := storeInst.CreateBackup()
+	if err != nil {
+		slog.Error("auto backup failed", "error", err)
+		return
+	}
+	// 轮转保留最近 10 个
+	entries, _ := os.ReadDir(storeInst.BackupDir())
+	var gz []string
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".gz") {
+			gz = append(gz, e.Name())
+		}
+	}
+	removed := 0
+	for len(gz) > 10 {
+		sort.Strings(gz)
+		old := gz[0]
+		if os.Remove(filepath.Join(storeInst.BackupDir(), old)) == nil {
+			removed++
+		}
+		gz = gz[1:]
+	}
+	slog.Info("auto backup done", "name", name, "pruned", removed)
+}
+
+// ─────────────── 时间线注入的会话表（单例 + 持久化）───────────────
+
+// tcStoreState 保存全局唯一的会话表实例与其后台协程开关。
+//
+// 为什么必须单例：buildServeMux 在启动与每次热重载都会执行，若每次重建会丢掉
+// 在途会话的「距上轮」（用户看到的间隔会无故归零）。只在容量变化或开关切换时替换。
+var tcStoreState = struct {
+	sync.Mutex
+	store     *proxy.TimeContextStore
+	capacity  int
+	persist   bool
+	stopFlush func()
+}{}
+
+// timeContextStoreFor 返回当前时间线会话表（必要时创建/替换）。
+//
+// 关闭时返回容量为 0 的表而非 nil：调用方无需到处判 nil，
+// Touch/Get 在 capacity=0 时都是空操作。
+func timeContextStoreFor(cfg *config.Config, st *store.Store) *proxy.TimeContextStore {
+	tc := &cfg.Proxy.TimeContext
+	capacity := 0
+	if tc.Enabled && tc.MaxSessions > 0 {
+		capacity = tc.MaxSessions
+	}
+
+	tcStoreState.Lock()
+	defer tcStoreState.Unlock()
+
+	if tcStoreState.store != nil &&
+		tcStoreState.capacity == capacity &&
+		tcStoreState.persist == tc.Persist {
+		return tcStoreState.store
+	}
+
+	// 参数变了：停掉旧的后台写库协程，重建（已持久化的记录会在下面重新载入）
+	if tcStoreState.stopFlush != nil {
+		tcStoreState.stopFlush()
+		tcStoreState.stopFlush = nil
+	}
+
+	s := proxy.NewTimeContextStore(capacity)
+	if capacity > 0 && tc.Persist && st != nil {
+		cutoff := time.Now().Add(-tc.SessionTTL())
+		if recs, err := st.LoadTimeContextEntries(cutoff, capacity); err != nil {
+			slog.Warn("load time context sessions failed", "error", err)
+		} else if len(recs) > 0 {
+			entries := make(map[string]proxy.TimeContextEntry, len(recs))
+			for _, r := range recs {
+				entries[r.ChainKey] = proxy.TimeContextEntry{TailKey: r.TailKey, LastSeen: r.LastSeen}
+			}
+			s.Load(entries)
+			slog.Info("loaded time context sessions", "count", len(entries))
+		}
+		tcStoreState.stopFlush = startTimeContextFlusher(s, st, time.Duration(tc.FlushSeconds)*time.Second)
+	}
+
+	tcStoreState.store = s
+	tcStoreState.capacity = capacity
+	tcStoreState.persist = tc.Persist
+	return s
+}
+
+// startTimeContextFlusher 启动后台协程：每 interval 把累积变更写进 SQLite。
+// 返回停止函数（sync.Once 保证重复调用安全）。
+func startTimeContextFlusher(s *proxy.TimeContextStore, st *store.Store, interval time.Duration) func() {
+	if interval <= 0 {
+		interval = 10 * time.Second
+	}
+	done := make(chan struct{})
+	var once sync.Once
+	go func() {
+		t := time.NewTicker(interval)
+		defer t.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-t.C:
+				flushTimeContextOnce(s, st)
+			}
+		}
+	}()
+	return func() { once.Do(func() { close(done) }) }
+}
+
+// flushTimeContextOnce 把内存变更同步到 DB。
+func flushTimeContextOnce(s *proxy.TimeContextStore, st *store.Store) {
+	if s == nil || st == nil {
+		return
+	}
+	s.FlushWith(func(dirty map[string]proxy.TimeContextEntry, removals []string) {
+		if len(removals) > 0 {
+			if err := st.DeleteTimeContextEntries(removals); err != nil {
+				slog.Warn("delete time context sessions failed", "error", err)
+			}
+		}
+		if len(dirty) == 0 {
+			return
+		}
+		recs := make([]store.TimeContextRecord, 0, len(dirty))
+		for k, v := range dirty {
+			recs = append(recs, store.TimeContextRecord{
+				ChainKey: k, TailKey: v.TailKey, LastSeen: v.LastSeen,
+			})
+		}
+		if err := st.SaveTimeContextEntries(recs); err != nil {
+			slog.Warn("save time context sessions failed", "error", err)
+		}
+	})
+}
+
+// maxRequestBodyBytes 是单个请求体的上限（64MB）。多模态请求可能携带较大 base64
+// 图片/音频，故给足空间；同时防止超大 body 打爆内存（此前所有入口均无限制）。
+const maxRequestBodyBytes = 64 << 20
+
+// limitRequestBody 包装 mux，限制请求体大小。超限时读取返回错误，
+// 各 handler 会以 4xx 拒绝请求，避免 OOM。
+func limitRequestBody(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Body != nil {
+			r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// buildServeMux 构造 HTTP 路由 mux。
+// qm 为配额策略服务（nil 时不启用配额检查）。
+func buildServeMux(cfg *config.Config, rt *router.Router, hc *health.Checker, rec *store.Recorder, storeInst *store.Store, apiKeys *auth.APIKeys, qm *quota.Service) http.Handler {
+	// 上游 User-Agent：配置为空时默认用 pi agent 的 UA（可在系统设置自定）。
+	// 启动与热重载都经过 buildServeMux，这里统一生效。
+	ua := cfg.Proxy.UserAgent
+	if ua == "" {
+		ua = config.DefaultUpstreamUserAgent
+	}
+	config.SetUpstreamUserAgent(ua)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", healthzHandler)
+	// 管理界面（Vue 页面，/admin/* 留给 JSON API）
+	// 静态资源从 webFileSystem 读取：磁盘 web/ 目录优先（开发），否则用 go:embed 嵌入资源（单二进制/Docker）。
+	webFS := webFileSystem()
+	mux.Handle("GET /vue/", http.StripPrefix("/vue/", http.FileServer(webVueFileSystem())))
+	mux.Handle("GET /web/", http.StripPrefix("/web/", http.FileServer(webFS)))
+	// 站点图标（从嵌入的 web/ 提供，浏览器请求 /favicon.ico 与 /favicon.svg）
+	mux.HandleFunc("GET /favicon.svg", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/svg+xml")
+		w.Header().Set("Cache-Control", "public, max-age=86400")
+		f, err := webFS.Open("favicon.svg")
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		defer f.Close()
+		http.ServeContent(w, r, "favicon.svg", time.Time{}, f)
+	})
+	mux.HandleFunc("GET /favicon.ico", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "image/svg+xml")
+		w.Header().Set("Cache-Control", "public, max-age=86400")
+		f, err := webFS.Open("favicon.svg")
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		defer f.Close()
+		http.ServeContent(w, r, "favicon.svg", time.Time{}, f)
+	})
+	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+		f, err := webFS.Open("admin_vue.html")
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		defer f.Close()
+		http.ServeContent(w, r, "admin_vue.html", time.Time{}, f)
+	})
+
+	// 管理接口（admin API，加认证：检查 Authorization header 是否匹配 server.api_keys）
+	admHandler := admin.New(cfg, hc)
+	admHandler.SetAuth(apiKeys)
+	if qm != nil {
+		admHandler.SetQuotaReload(qm.Refresh)
+	}
+	if rec != nil {
+		admHandler.SetStore(rec.Store())
+	}
+	if storeInst != nil {
+		admHandler.SetReload(func() error {
+			return reloadConfig(storeInst, rec)
+		})
+	}
+	adminAuth := func(next http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			// 管理端统一走 JWT（用户名密码登录），不再用 API Key
+			authHdr := r.Header.Get("Authorization")
+			token := strings.TrimPrefix(authHdr, "Bearer ")
+			if token == "" || token == authHdr {
+				writeJSONError(w, http.StatusUnauthorized, "未登录")
+				return
+			}
+			username, err := auth.VerifyToken(admHandler.JWTSecret(), token)
+			if err != nil {
+				writeJSONError(w, http.StatusUnauthorized, "登录已过期，请重新登录")
+				return
+			}
+			// 将用户名写入请求上下文，供 ChangePassword 使用
+			ctx := context.WithValue(r.Context(), "xuanji-username", username)
+			next(w, r.WithContext(ctx))
+		}
+	}
+	// 登录接口不鉴权
+	mux.HandleFunc("POST /admin/login", admHandler.Login)
+
+	// 管理 API 中间件：独立 key（config 表 admin.api_key）鉴权，供 AI 助手免登录调用
+	adminKeyAuth := func(next http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			if cfg.Server.AdminAPIKey == "" {
+				writeJSONError(w, http.StatusUnauthorized, "管理 API key 未配置")
+				return
+			}
+			authHdr := r.Header.Get("Authorization")
+			token := strings.TrimPrefix(authHdr, "Bearer ")
+			if token == "" || token == authHdr || token != cfg.Server.AdminAPIKey {
+				writeJSONError(w, http.StatusUnauthorized, "无效的管理 API key")
+				return
+			}
+			next(w, r)
+		}
+	}
+	mux.HandleFunc("PUT /admin/password", adminAuth(admHandler.ChangePassword))
+	mux.HandleFunc("GET /admin/status", adminAuth(admHandler.Status))
+	mux.HandleFunc("GET /admin/upstreams", adminAuth(admHandler.Upstreams))
+	mux.HandleFunc("GET /admin/rules", adminAuth(admHandler.Rules))
+	mux.HandleFunc("GET /admin/config", adminAuth(admHandler.GetAllConfig))
+	mux.HandleFunc("PUT /admin/config", adminAuth(admHandler.UpdateConfig))
+	mux.HandleFunc("DELETE /admin/config", adminAuth(admHandler.BatchDeleteConfig))
+	mux.HandleFunc("DELETE /admin/config/{key}", adminAuth(admHandler.DeleteConfig))
+	mux.HandleFunc("GET /admin/config/orphans", adminAuth(admHandler.OrphanConfigs))
+	// 时间线注入的会话表状态（运维诊断：看会话是否被正确识别、清理是否生效）
+	mux.HandleFunc("GET /admin/time-context/sessions", adminAuth(func(w http.ResponseWriter, r *http.Request) {
+		s := tcStoreState.store
+		n := 0
+		if s != nil {
+			n = s.Len()
+		}
+		total := int64(0)
+		if storeInst != nil {
+			total, _ = storeInst.CountTimeContextSessions()
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"enabled":     cfg.Proxy.TimeContext.Enabled,
+			"memory":      n,
+			"persisted":   total,
+			"capacity":    cfg.Proxy.TimeContext.MaxSessions,
+			"ttl_days":    cfg.Proxy.TimeContext.TTLDays,
+			"persist":     cfg.Proxy.TimeContext.Persist,
+			"include_gap": !cfg.Proxy.TimeContext.HideGap,
+			"min_gap":     cfg.Proxy.TimeContext.MinGapMinutes,
+			"timezone":    cfg.Proxy.TimeContext.TZ,
+		})
+	}))
+	mux.HandleFunc("GET /admin/metrics/summary", adminAuth(admHandler.MetricsSummary))
+	mux.HandleFunc("GET /admin/metrics/upstreams", adminAuth(admHandler.MetricsUpstreams))
+	mux.HandleFunc("GET /admin/metrics/upstream-models", adminAuth(admHandler.MetricsUpstreamModels))
+	mux.HandleFunc("GET /admin/metrics/models", adminAuth(admHandler.MetricsByModel))
+	mux.HandleFunc("GET /admin/metrics/hourly", adminAuth(admHandler.MetricsHourly))
+	mux.HandleFunc("GET /admin/metrics/daily", adminAuth(admHandler.MetricsDaily))
+	mux.HandleFunc("GET /admin/metrics/keys", adminAuth(admHandler.MetricsByAPIKey))
+	mux.HandleFunc("GET /admin/metrics/keys/{name}/models", adminAuth(admHandler.MetricsByAPIKeyModels))
+	mux.HandleFunc("POST /admin/metrics/rebuild", adminAuth(admHandler.MetricsRebuild))
+	mux.HandleFunc("GET /admin/config/retry", adminAuth(admHandler.GetRetryConfig))
+	mux.HandleFunc("GET /admin/logs", adminAuth(admHandler.RequestLogs))
+	mux.HandleFunc("POST /admin/logs/recalc-cost", adminAuth(admHandler.RecalcCost))
+	mux.HandleFunc("GET /admin/api-keys", adminAuth(admHandler.APIKeys))
+	mux.HandleFunc("POST /admin/api-keys", adminAuth(admHandler.AddAPIKey))
+	mux.HandleFunc("DELETE /admin/api-keys/{key}", adminAuth(admHandler.DeleteAPIKey))
+	mux.HandleFunc("PUT /admin/api-keys/{id}/toggle", adminAuth(admHandler.SetAPIKeyEnabled))
+	mux.HandleFunc("PUT /admin/api-keys/{id}/name", adminAuth(admHandler.RenameAPIKey))
+	mux.HandleFunc("PUT /admin/api-keys/{id}/policy", adminAuth(admHandler.UpdateAPIKeyPolicy))
+
+	// 分组管理（配额矩阵）：组∖模型 独立配额，组内每人默认，key 可覆盖
+	mux.HandleFunc("GET /admin/groups", adminAuth(admHandler.Groups))
+	mux.HandleFunc("POST /admin/groups", adminAuth(admHandler.CreateGroup))
+	mux.HandleFunc("PUT /admin/groups/{id}", adminAuth(admHandler.UpdateGroup))
+	mux.HandleFunc("DELETE /admin/groups/{id}", adminAuth(admHandler.DeleteGroup))
+	mux.HandleFunc("PUT /admin/groups/{id}/quotas", adminAuth(admHandler.UpdateGroupQuota))
+	mux.HandleFunc("DELETE /admin/groups/{id}/quotas/{model}", adminAuth(admHandler.DeleteGroupQuota))
+
+	// CRUD 端点
+	mux.HandleFunc("POST /admin/upstreams", adminAuth(admHandler.CreateUpstream))
+	mux.HandleFunc("POST /admin/upstreams/batch-delete", adminAuth(admHandler.BatchDeleteUpstreams))
+	mux.HandleFunc("PUT /admin/upstreams/{name}", adminAuth(admHandler.UpdateUpstream))
+	mux.HandleFunc("DELETE /admin/upstreams/{name}", adminAuth(admHandler.DeleteUpstream))
+	mux.HandleFunc("POST /admin/upstreams/{name}/clone", adminAuth(admHandler.CloneUpstream))
+	mux.HandleFunc("POST /admin/upstreams/{name}/test", adminAuth(admHandler.TestUpstream))
+	mux.HandleFunc("GET /admin/upstreams/{name}/models", adminAuth(admHandler.UpstreamModels))
+	mux.HandleFunc("POST /admin/rules", adminAuth(admHandler.CreateRoutingRule))
+	mux.HandleFunc("PUT /admin/rules/{model}", adminAuth(admHandler.UpdateRoutingRule))
+	mux.HandleFunc("DELETE /admin/rules/{model}", adminAuth(admHandler.DeleteRoutingRule))
+	mux.HandleFunc("GET /admin/efforts", adminAuth(admHandler.EffortConfigs))
+	mux.HandleFunc("POST /admin/efforts", adminAuth(admHandler.CreateEffortConfig))
+	mux.HandleFunc("PUT /admin/efforts/{model}", adminAuth(admHandler.UpdateEffortConfig))
+	mux.HandleFunc("DELETE /admin/efforts/{model}", adminAuth(admHandler.DeleteEffortConfig))
+	// 模型 token 上限（自动学习自上游 400 错误，见 proxy/tokenlimit.go）
+	mux.HandleFunc("GET /admin/token-limits", adminAuth(admHandler.TokenLimits))
+	mux.HandleFunc("DELETE /admin/token-limits/{upstream}/{model}", adminAuth(admHandler.DeleteTokenLimit))
+	mux.HandleFunc("POST /admin/token-limits", adminAuth(admHandler.UpsertTokenLimit))
+	mux.HandleFunc("POST /admin/reload", adminAuth(admHandler.Reload))
+	mux.HandleFunc("PUT /admin/upstreams/{name}/toggle", adminAuth(admHandler.ToggleUpstream))
+
+	// 管理 API（/api/admin/*）：AI 助手用 admin.api_key 免登录调用，动态修改配置立即生效
+	mux.HandleFunc("GET /api/admin/status", adminKeyAuth(admHandler.Status))
+	mux.HandleFunc("GET /api/admin/upstreams", adminKeyAuth(admHandler.Upstreams))
+	mux.HandleFunc("POST /api/admin/upstreams", adminKeyAuth(admHandler.CreateUpstream))
+	mux.HandleFunc("PUT /api/admin/upstreams/{name}", adminKeyAuth(admHandler.UpdateUpstream))
+	mux.HandleFunc("PUT /api/admin/upstreams/{name}/toggle", adminKeyAuth(admHandler.ToggleUpstream))
+	mux.HandleFunc("DELETE /api/admin/upstreams/{name}", adminKeyAuth(admHandler.DeleteUpstream))
+	mux.HandleFunc("POST /api/admin/upstreams/{name}/clone", adminKeyAuth(admHandler.CloneUpstream))
+	mux.HandleFunc("POST /api/admin/upstreams/{name}/test", adminKeyAuth(admHandler.TestUpstream))
+	mux.HandleFunc("GET /api/admin/upstreams/{name}/models", adminKeyAuth(admHandler.UpstreamModels))
+	mux.HandleFunc("GET /api/admin/rules", adminKeyAuth(admHandler.Rules))
+	mux.HandleFunc("POST /api/admin/rules", adminKeyAuth(admHandler.CreateRoutingRule))
+	mux.HandleFunc("PUT /api/admin/rules/{model}", adminKeyAuth(admHandler.UpdateRoutingRule))
+	mux.HandleFunc("DELETE /api/admin/rules/{model}", adminKeyAuth(admHandler.DeleteRoutingRule))
+	mux.HandleFunc("GET /api/admin/config", adminKeyAuth(admHandler.GetAllConfig))
+	mux.HandleFunc("PUT /api/admin/config", adminKeyAuth(admHandler.UpdateConfig))
+	mux.HandleFunc("DELETE /api/admin/config", adminKeyAuth(admHandler.BatchDeleteConfig))
+	mux.HandleFunc("GET /api/admin/config/orphans", adminKeyAuth(admHandler.OrphanConfigs))
+	mux.HandleFunc("POST /api/admin/upstreams/batch-delete", adminKeyAuth(admHandler.BatchDeleteUpstreams))
+	mux.HandleFunc("GET /api/admin/logs", adminKeyAuth(admHandler.RequestLogs))
+	mux.HandleFunc("POST /api/admin/reload", adminKeyAuth(admHandler.Reload))
+	// AI 助手管理 API（免登录）：token 上限
+	mux.HandleFunc("GET /api/admin/token-limits", adminKeyAuth(admHandler.TokenLimits))
+	mux.HandleFunc("DELETE /api/admin/token-limits/{upstream}/{model}", adminKeyAuth(admHandler.DeleteTokenLimit))
+	mux.HandleFunc("POST /api/admin/token-limits", adminKeyAuth(admHandler.UpsertTokenLimit))
+
+	// 渠道优惠时段
+	mux.HandleFunc("GET /admin/discounts", adminAuth(admHandler.Discounts))
+	mux.HandleFunc("POST /admin/discounts", adminAuth(admHandler.AddDiscount))
+	mux.HandleFunc("PUT /admin/discounts/{id}", adminAuth(admHandler.UpdateDiscount))
+	mux.HandleFunc("DELETE /admin/discounts/{id}", adminAuth(admHandler.DeleteDiscount))
+
+	// 模型单价（计费）
+	mux.HandleFunc("GET /admin/prices", adminAuth(admHandler.Prices))
+	mux.HandleFunc("POST /admin/prices", adminAuth(admHandler.AddPrice))
+	mux.HandleFunc("PUT /admin/prices/{model}", adminAuth(admHandler.UpdatePrice))
+	mux.HandleFunc("DELETE /admin/prices/{model}", adminAuth(admHandler.DeletePrice))
+	// 费用统计（总金额/上游/apikey/模型 四维）
+	mux.HandleFunc("GET /admin/metrics/cost", adminAuth(admHandler.MetricsCost))
+
+	// 数据库备份（手动 + 列表 + 删除）
+	mux.HandleFunc("GET /admin/backups", adminAuth(admHandler.Backups))
+	mux.HandleFunc("POST /admin/backups", adminAuth(admHandler.CreateBackup))
+	mux.HandleFunc("DELETE /admin/backups/{name}", adminAuth(admHandler.DeleteBackup))
+
+	// 对话调试：走完整网关路由链路（依赖 pxHandler，见上方 SetProxy 注入）
+	mux.HandleFunc("POST /admin/chat", adminAuth(admHandler.Chat))
+
+	olHandler := ollama.New(rt, hc)
+	olHandler.SetTimeout(time.Duration(cfg.Retry.UpstreamTimeout) * time.Second)
+	pxHandler := proxy.New(cfg, rt, hc)
+	// 注入 store 以启用 reasoning_content DB 持久化（跨重启保留最近 ReasoningCacheRetainDays 天）
+	pxHandler.SetStore(storeInst)
+	// 注入 token 上限学习存储（模型 max_tokens 超限自动 clamp，见 tokenlimit.go）
+	pxHandler.SetTokenLimits(storeInst)
+	if storeInst != nil {
+		if n, err := storeInst.PruneReasoningCache(store.ReasoningCacheRetainDays); err != nil {
+			slog.Error("initial prune reasoning cache failed", "error", err)
+		} else if n > 0 {
+			slog.Info("pruned reasoning cache", "rows", n, "retain_days", store.ReasoningCacheRetainDays)
+		}
+	}
+	// SystemOne（Jev）决策协议入口：/v1/systemone 与 /v1/decisions。
+	// 决策模型不生成文本、不流式，只做路由+透传+记录，因此独立于 chat 链路。
+	soHandler := systemone.New(cfg, rt, nil)
+	gmHandler := gemini.New(rt, hc)
+	gmHandler.SetTimeout(time.Duration(cfg.Retry.UpstreamTimeout) * time.Second)
+	// 时间线注入：会话表不应随热重载重建（重建会丢掉在途会话的「距上轮」）。
+	// 只在全局首次创建或开关/容量变化时替换，见 timeContextStoreFor。
+	tcStore := timeContextStoreFor(cfg, storeInst)
+	pxHandler.SetTimeContextStore(tcStore)
+	gmHandler.SetTimeContext(&cfg.Proxy.TimeContext, tcStore)
+	ff := proxy.NewFastFailCache(time.Duration(cfg.Retry.FastFailMinutes) * time.Minute)
+	pxHandler.SetFastFail(ff)
+	admHandler.SetFastFail(ff)
+	// 异常请求完整诊断日志（默认关闭）：writer 跨热重载复用，关闭时立即 flush+close。
+	pxHandler.SetDebugLog(debugLogWriterFor(cfg, storeInst))
+	// 对话调试（/admin/chat）注入完整转发链路与路由探测器：走完整网关路由链路
+	admHandler.SetProxy(pxHandler, rt)
+	stopProbe := pxHandler.StartFastFailProbe(time.Duration(cfg.Retry.FastFailProbeMinutes) * time.Minute)
+	// 成功率自适应权重：降权/复权靠内存缓存 + 后台 ticker 生效，**不触发 reloadConfig**。
+	// 缓存跨热重载复用（统计状态在 DB），这里只刷新配置快照并重新注入。
+	registerAdaptiveCache(cfg, rt, storeInst, pxHandler)
+	// 停止上一次构建启动的探针后替换。buildServeMux 在启动与每次热重载都会执行，
+	// 若不停止旧探针，每次 reload 都会泄漏一个 ticker goroutine。
+	state.mu.Lock()
+	if state.stopProbe != nil {
+		state.stopProbe()
+	}
+	state.stopProbe = stopProbe
+	state.mu.Unlock()
+	tz := proxy.NewTokenizer()
+	pxHandler.SetTokenizer(tz)
+	if dl, derr := storeInst.ListDiscounts(); derr == nil {
+		pxHandler.SetDiscounts(dl)
+	}
+	// 下游 API Key 展示名解析器：从请求头取 Bearer token → auth.Name（按 Key 统计用）
+	keyNameFn := func(r *http.Request) string {
+		if apiKeys == nil {
+			return ""
+		}
+		token := ""
+		if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
+			token = strings.TrimSpace(strings.TrimPrefix(h, "Bearer "))
+		} else if xk := r.Header.Get("x-api-key"); xk != "" {
+			token = strings.TrimSpace(xk)
+		}
+		return apiKeys.Name(token)
+	}
+	if rec != nil {
+		olHandler.SetRecorder(rec)
+		pxHandler.SetRecorder(rec)
+		gmHandler.SetRecorder(rec)
+		soHandler.SetRecorder(rec)
+		olHandler.SetKeyName(keyNameFn)
+		pxHandler.SetKeyName(keyNameFn)
+		gmHandler.SetKeyName(keyNameFn)
+		soHandler.SetKeyName(keyNameFn)
+		// 配额实时用量：转发放行并记录后，同步累加 (api_key, model) 内存窗口计数
+		rec.SetUsageHook(func(r store.Record) {
+			if qm != nil && r.Tokens > 0 {
+				qm.AddUsage(r.APIKey, r.Model, r.Tokens)
+			}
+		})
+	}
+	// 模型单价查询：按上游真实模型名定价（默认价兜底在 store.PriceFor 内部）
+	pxHandler.SetPriceFor(storeInst.PriceFor)
+	// 欠费标记回调：上游命中余额不足类错误时自动写库 + 热重载。
+	// 幂等：已欠费则不再写库/reload（防并发重复重建）。
+	pxHandler.SetArrearsMarker(func(name string) {
+		if storeInst == nil || storeInst.IsArrears(name) {
+			return
+		}
+		if err := storeInst.SetUpstreamArrears(name, 1); err != nil {
+			slog.Error("mark upstream arrears failed", "upstream", name, "error", err)
+			return
+		}
+		slog.Warn("upstream marked as arrear, reloading", "upstream", name)
+		if err := reloadConfig(storeInst, rec); err != nil {
+			slog.Error("reload after arrear mark failed", "upstream", name, "error", err)
+		}
+	})
+	// 模型级欠费标记回调（per_model_billing 上游）：写 upstream_model_arrears 表。
+	// 内存缓存已在 markModelArrear 中先行更新（路由立即跳过），无需热重载；
+	// reload/重启后的新 Handler 由下方 LoadModelArrears 从 DB 重建缓存。
+	pxHandler.SetArrearsModelMarker(func(upstream, model, reason string) {
+		if storeInst == nil {
+			return
+		}
+		if err := storeInst.SetModelArrears(upstream, model, reason); err != nil {
+			slog.Error("mark model arrears failed", "upstream", upstream, "model", model, "error", err)
+			return
+		}
+		slog.Warn("upstream model marked as arrear", "upstream", upstream, "model", model)
+	})
+	// 启动/reload 后从 DB 加载模型级欠费缓存
+	if rows, lerr := storeInst.ListModelArrears(); lerr == nil {
+		pxHandler.LoadModelArrears(rows)
+	} else {
+		slog.Error("load model arrears failed", "error", lerr)
+	}
+	// 计费初始化：所有模型默认按 deepseek-v4-flash 定价
+	// （输入缓存命中 0.02 元/M，输入缓存未命中 1 元/M，输出 2 元/M）
+	storeInst.EnsureDefaultPrice()
+	// ⚠ 2026-08-02 用户拍板：对外只暴露 OpenAI 协议 + Anthropic 协议，
+	// 不提供 Ollama 原生入口（/api/chat /api/generate /api/embed）。
+	// ollama 类型上游仍支持——通过 /v1/* OpenAI 入口自动转换（dispatchOpenAI/dispatchEmbeddings）。
+
+	// OpenAI 兼容入口：按路由结果分发（ollama 上游走转换，其余走 proxy）
+	mux.HandleFunc("GET /v1/models", apiKeys.Middleware(admHandler.Models))
+	mux.HandleFunc("POST /v1/chat/completions", apiKeys.Middleware(qm.Middleware(dispatchOpenAI(rt, olHandler, pxHandler, gmHandler))))
+	// 老版 OpenAI 兼容接口（text 补全）：直接走 proxy 转换转发，ollama 上游兼容暂不考虑
+	mux.HandleFunc("POST /v1/completions", apiKeys.Middleware(qm.Middleware(pxHandler.Completions)))
+	mux.HandleFunc("POST /v1/embeddings", apiKeys.Middleware(qm.Middleware(dispatchEmbeddings(rt, olHandler, pxHandler))))
+	mux.HandleFunc("POST /v1/rerank", apiKeys.Middleware(qm.Middleware(pxHandler.Rerank)))
+	// SystemOne（Jev）决策协议：一次请求对一段 state 回答多个带类型的概率问题。
+	// 协议原文两个端点互为别名，上游（书生）只实现 /v1/systemone，两个入口共用同一实现。
+	mux.HandleFunc("POST /v1/systemone", apiKeys.Middleware(qm.Middleware(soHandler.Serve)))
+	// OpenAI Decisions 格式（input + questions 数组）由 handler 入口自动识别并转换。
+	mux.HandleFunc("POST /v1/decisions", apiKeys.Middleware(qm.Middleware(soHandler.Serve)))
+	// 客户端 base_url 已含 /v1，或沿用 TypeSafe/其它 SDK 的旧路径时仍能命中同一实现。
+	for _, p := range []string{"/systemone", "/v1/jev", "/v1/predict"} {
+		mux.HandleFunc("POST "+p, apiKeys.Middleware(qm.Middleware(soHandler.Serve)))
+	}
+	antHandler := anthropic.New(rt, hc)
+	antHandler.SetTimeout(time.Duration(cfg.Retry.UpstreamTimeout) * time.Second)
+	// 时间线注入：与 OpenAI 入口共用同一张会话表，保证切协议时「距上轮」连续。
+	antHandler.SetTimeContext(&cfg.Proxy.TimeContext, tcStore)
+	if rec != nil {
+		antHandler.SetRecorder(rec)
+	}
+	mux.HandleFunc("POST /v1/messages", apiKeys.Middleware(qm.Middleware(antHandler.Messages)))
+
+	// Gemini 上游：由 dispatchOpenAI 在路由命中 gemini 类型上游时调用转换（见上方）。
+	mux.HandleFunc("POST /v1/images/generations", apiKeys.Middleware(qm.Middleware(pxHandler.ImageGenerations)))
+	mux.HandleFunc("POST /v1/audio/speech", apiKeys.Middleware(qm.Middleware(pxHandler.AudioSpeech)))
+	mux.HandleFunc("POST /v1/audio/transcriptions", apiKeys.Middleware(qm.Middleware(pxHandler.AudioTranscriptions)))
+	mux.HandleFunc("POST /v1/videos", apiKeys.Middleware(qm.Middleware(pxHandler.VideoCreate)))
+	mux.HandleFunc("GET /v1/videos", apiKeys.Middleware(qm.Middleware(pxHandler.VideoQuery)))
+	// OpenAI Videos 协议标准路径式查询（与 query 参数式等价，内部同一逻辑；
+	// 归属路由基于创建时落库的 video_jobs 记录，无需配额检查）
+	mux.HandleFunc("GET /v1/videos/{id}", apiKeys.Middleware(pxHandler.VideoGetByID))
+
+	return limitRequestBody(mux)
+}
+
+// reloadMu 串行化热重载：管理端改配置与欠费回调都可能触发 reload，
+// 并发重建组件会导致旧 health checker 被双重 Close、新 checker 泄漏。
+var reloadMu sync.Mutex
+
+// reloadConfig 从 DB 重新加载配置并重建所有组件。
+func reloadConfig(storeInst *store.Store, rec *store.Recorder) error {
+	reloadMu.Lock()
+	defer reloadMu.Unlock()
+
+	state.mu.RLock()
+	oldHC := state.hc
+	state.mu.RUnlock()
+
+	newCfg, err := config.LoadFromDB(storeInst)
+	if err != nil {
+		return fmt.Errorf("load from db: %w", err)
+	}
+	// CLI 端口覆盖数据库配置
+	newCfg.Server.Port = *flagPort
+
+	// 关闭旧的 health checker
+	if oldHC != nil {
+		oldHC.Close()
+	}
+
+	// 创建新组件
+	rt := router.New(newCfg)
+	hc := health.New(newCfg)
+	hc.SetProbeRecorder(probeRecorder(rec.Store()))
+	hc.SetAlerter(health.NewWebhookAlerter(newCfg.Alert))
+	hc.Start()
+
+	state.mu.Lock()
+	state.hc = hc
+	state.mu.Unlock()
+
+	// 创建新 handler
+	apiKeys := auth.New(storeInst, admJWTSecret(storeInst))
+	if state.qm != nil {
+		state.qm.Refresh()
+	}
+	newHandler := buildServeMux(newCfg, rt, hc, rec, storeInst, apiKeys, state.qm)
+
+	// 替换 srv.Handler
+	state.mu.Lock()
+	if state.srv != nil {
+		state.srv.Handler = newHandler
+	}
+	state.mu.Unlock()
+
+	// 更新全局 cfg 引用
+	cfg = newCfg
+
+	slog.Info("config reloaded", "upstreams", len(newCfg.Upstreams), "rules", len(newCfg.Routing.Rules))
+	return nil
+}
+
+// dispatchOpenAI 按请求 model 的路由结果分发 /v1/chat/completions：
+// 命中 ollama 上游走 ollama 协议转换，命中 gemini 上游走 Gemini 转换，
+// 其余走 OpenAI proxy 转发。
+func dispatchOpenAI(rt *router.Router, ol *ollama.Handler, px *proxy.Handler, gm *gemini.Handler) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, `{"error":{"message":"read body failed","type":"invalid_request_error"}}`, http.StatusBadRequest)
+			return
+		}
+		r.Body = io.NopCloser(bytes.NewReader(body))
+
+		var req struct {
+			Model string `json:"model"`
+		}
+		_ = json.Unmarshal(body, &req)
+		if req.Model == "" {
+			px.ChatCompletions(w, r)
+			return
+		}
+		ups, _, err := rt.Route(req.Model)
+		if err != nil {
+			px.ChatCompletions(w, r) // 让 proxy 返回标准 404
+			return
+		}
+		// 第一个候选（按 tier+priority 排序）是 ollama 则走转换
+		if len(ups) > 0 && ups[0].IsOllama() {
+			ol.OpenAICompletions(w, r)
+			return
+		}
+		if len(ups) > 0 && ups[0].IsGemini() {
+			gm.OpenAICompletions(w, r)
+			return
+		}
+		px.ChatCompletions(w, r)
+	}
+}
+
+// dispatchEmbeddings 处理 /v1/embeddings 分发：路由结果第一个候选是 ollama 走转换，
+// 否则走 OpenAI proxy 转发（修复：此前非 ollama 上游嵌入请求被 ollama handler 502）。
+func dispatchEmbeddings(rt *router.Router, ol *ollama.Handler, px *proxy.Handler) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, `{"error":{"message":"read body failed","type":"invalid_request_error"}}`, http.StatusBadRequest)
+			return
+		}
+		r.Body = io.NopCloser(bytes.NewReader(body))
+
+		var req struct {
+			Model string `json:"model"`
+		}
+		_ = json.Unmarshal(body, &req)
+		if req.Model == "" {
+			px.Embeddings(w, r)
+			return
+		}
+		ups, _, err := rt.Route(req.Model)
+		if err != nil {
+			px.Embeddings(w, r) // 让 proxy 返回标准 404
+			return
+		}
+		// 第一个候选（按 tier+priority 排序）是 ollama 则走转换
+		if len(ups) > 0 && ups[0].IsOllama() {
+			ol.OpenAIEmbeddings(w, r)
+			return
+		}
+		px.Embeddings(w, r)
+	}
+}
+
+// buildDate 构建日期，发布时通过 -ldflags "-X main.buildDate=2026-08-03" 注入；
+// 开发/本地运行时保持 "dev"。
+var buildDate = "dev"
+
+// healthzHandler 返回服务健康状态。
+func healthzHandler(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok", "build_date": buildDate})
+}
+
+// ensureAdminAPIKey 确保管理 API key（config 表 admin.api_key）存在。
+// 首次启动生成随机 key（xjk- 前缀 + 32 hex），存 DB；用户可在系统设置页查看/修改。
+func ensureAdminAPIKey(s *store.Store) error {
+	all, err := s.GetAllConfig()
+	if err != nil {
+		return err
+	}
+	if v, ok := all["admin.api_key"]; ok && strings.TrimSpace(v) != "" {
+		return nil
+	}
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return err
+	}
+	key := "xjk-" + hex.EncodeToString(b)
+	if err := s.SetConfig("admin.api_key", key); err != nil {
+		return err
+	}
+	// 只打印前缀，避免明文管理凭证进入日志/采集系统（完整 key 可在系统设置页查看）。
+	slog.Info("generated admin api key", "key_prefix", key[:8]+"...")
+	return nil
+}
+

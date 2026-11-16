@@ -1,0 +1,5751 @@
+{
+  "model": "hy4-preview",
+  "bench": "deepseek-v4.1-flash",
+  "base": "http://127.0.0.1:3001",
+  "workers": 6,
+  "max_tokens": 8192,
+  "rounds": 3,
+  "efforts": [
+    "low",
+    "medium",
+    "high",
+    "max"
+  ],
+  "generated_at": "2026-09-26 23:47:44",
+  "per_round": {
+    "low": [
+      {
+        "round": 1,
+        "model": {
+          "correct": 52,
+          "total": 57,
+          "rate": 91.2,
+          "duration_s": 470.1,
+          "usage": {
+            "requests": 55,
+            "prompt_tokens": 3063,
+            "completion_tokens": 33346,
+            "thinking_tokens": 32861
+          }
+        },
+        "bench": {
+          "correct": 52,
+          "total": 57,
+          "rate": 91.2,
+          "duration_s": 26.5,
+          "usage": {
+            "requests": 57,
+            "prompt_tokens": 3761,
+            "completion_tokens": 9820,
+            "thinking_tokens": 9413
+          }
+        },
+        "raw_json": "/tmp/hy4-sweep-2/hy4-preview-low-r1.json",
+        "api_errors": 2,
+        "categories": {
+          "中医·知识": {
+            "correct": 9,
+            "total": 10
+          },
+          "养生·知识": {
+            "correct": 6,
+            "total": 6
+          },
+          "玄学·知识": {
+            "correct": 8,
+            "total": 8
+          },
+          "生活·知识": {
+            "correct": 6,
+            "total": 6
+          },
+          "逻辑·智商": {
+            "correct": 10,
+            "total": 13
+          },
+          "数学·智商": {
+            "correct": 8,
+            "total": 8
+          },
+          "代码·智商": {
+            "correct": 5,
+            "total": 6
+          }
+        },
+        "items": {
+          "中医·知识": [
+            {
+              "q": "中医理论中，\"五行\"指的是金、木、水、火、土五种基本元素及其相互关系。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "中医认为\"肝主疏泄\"，主要功能是调节全身气机。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "下列哪味中药属于补气药？\nA. 当归  B. 黄芪  C. 熟地黄  D. 川芎",
+              "answer": "B",
+              "score": 1,
+              "detail": "B"
+            },
+            {
+              "q": "中医里\"六淫\"指风、寒、暑、湿、燥、火六种外感病邪。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "《黄帝内经》分为《素问》和《灵枢》两部分。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "中医\"四诊\"是望、闻、问、切。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "下列哪项不属于中医\"八纲辨证\"的内容？\nA. 表里  B. 寒热  C. 虚实  D. 阴阳  E.",
+              "answer": "E",
+              "score": 0,
+              "detail": "无法解析: E"
+            },
+            {
+              "q": "中医认为\"肾为先天之本，脾为后天之本\"。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "针灸中的\"足三里\"穴位于小腿外侧，是足阳明胃经的穴位。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "中药\"四气五味\"中的\"四气\"指寒、热、温、凉。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            }
+          ],
+          "养生·知识": [
+            {
+              "q": "中医认为\"子时\"（23:00-1:00）是胆经当令，此时应进入睡眠状态以养肝胆。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "\"饭后百步走，活到九十九\"，饭后立即剧烈运动有助于消化。判断对错。",
+              "answer": "错",
+              "score": 1,
+              "detail": "错"
+            },
+            {
+              "q": "中医养生讲究\"春夏养阳，秋冬养阴\"。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "下列哪种饮品睡前饮用最不利于睡眠？\nA. 温牛奶  B. 淡蜂蜜水  C. 浓茶  D. 菊花茶",
+              "answer": "C",
+              "score": 1,
+              "detail": "C"
+            },
+            {
+              "q": "中医认为\"怒伤肝，喜伤心，思伤脾，忧伤肺，恐伤肾\"。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "三伏天进行艾灸（\"冬病夏治\"）的理论基础是顺应阳气最盛之时驱散寒邪。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            }
+          ],
+          "玄学·知识": [
+            {
+              "q": "八字命理中，天干有十个：甲乙丙丁戊己庚辛壬癸。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "十二地支的第六位是什么？\nA. 卯  B. 辰  C. 巳  D. 午",
+              "answer": "C",
+              "score": 1,
+              "detail": "C"
+            },
+            {
+              "q": "五行相生顺序是：木生火，火生土，土生金，金生水，水生木。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "地支六合中，子与什么相合？\nA. 丑  B. 寅  C. 卯  D. 辰",
+              "answer": "A",
+              "score": 1,
+              "detail": "A"
+            },
+            {
+              "q": "八字中\"日主\"指的是日柱的天干，代表命主自身。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "五行相克顺序是：木克土，土克水，水克火，火克金，金克木。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "十天干中，属于阳干的是甲丙戊庚壬。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "2026年是丙午年（天干地支纪年）。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            }
+          ],
+          "生活·知识": [
+            {
+              "q": "人体正常体温（腋下）大约在36.1°C至37.2°C之间。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "维生素C在高温烹饪中容易被破坏。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "酱油的主要酿造原料是大豆和小麦。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "我国标准电压是220伏，频率50赫兹。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "日常使用的食盐主要成分是氯化钠。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "在室温下，鲜牛奶放置超过4小时容易变质。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            }
+          ],
+          "逻辑·智商": [
+            {
+              "q": "如果所有的A都是B，并且所有的B都是C，那么以下哪项一定正确？\nA. 所有C都是A  B. 所有A都",
+              "answer": "B",
+              "score": 1,
+              "detail": "B"
+            },
+            {
+              "q": "小明比小红大3岁，小红比小刚大5岁，那么小明比小刚大几岁？直接回答数字。",
+              "answer": "8",
+              "score": 1,
+              "detail": "8.0"
+            },
+            {
+              "q": "一个数列：2, 6, 12, 20, 30, 下一个数是多少？直接回答数字。",
+              "answer": "42",
+              "score": 1,
+              "detail": "42.0"
+            },
+            {
+              "q": "袋子里有3个红球和2个蓝球，随机摸一个，摸到红球的概率是多少？直接回答分数或小数。",
+              "answer": "3/5",
+              "score": 1,
+              "detail": "0.6"
+            },
+            {
+              "q": "甲乙丙三人中只有一人说真话。甲说：\"乙在说谎\"；乙说：\"丙在说谎\"；丙说：\"甲和乙都在说谎\"。谁说真",
+              "answer": "B",
+              "score": 0,
+              "detail": "B"
+            },
+            {
+              "q": "时钟显示3点15分，时针和分针的夹角约多少度？直接回答数字。",
+              "answer": "7.5",
+              "score": 1,
+              "detail": "7.5"
+            },
+            {
+              "q": "一个正方体有6个面，切一刀最多能把它分成几块？直接回答数字。",
+              "answer": "__ERROR__: timed out",
+              "score": 0,
+              "detail": "__ERROR__: timed out"
+            },
+            {
+              "q": "如果昨天是明天的话就好了，这样今天就周五了。问：句子中的\"今天\"实际上是星期几？\nA. 周三  B.",
+              "answer": "__ERROR__: timed out",
+              "score": 0,
+              "detail": "__ERROR__: timed out"
+            },
+            {
+              "q": "1+2+3+...+100 = ? 直接回答数字。",
+              "answer": "5050",
+              "score": 1,
+              "detail": "5050.0"
+            },
+            {
+              "q": "三个连续奇数之和是57，最大的那个奇数是多少？直接回答数字。",
+              "answer": "21",
+              "score": 1,
+              "detail": "21.0"
+            },
+            {
+              "q": "甲、乙合作一项工程需12天，甲单独做需20天，乙单独做需多少天？直接回答数字。",
+              "answer": "30",
+              "score": 1,
+              "detail": "30.0"
+            },
+            {
+              "q": "以下哪个推理是有效的？\nA. 所有猫都怕水，X怕水，所以X是猫\nB. 所有猫都怕水，X是猫，所以X怕",
+              "answer": "B",
+              "score": 1,
+              "detail": "B"
+            },
+            {
+              "q": "一间房里有4个人，每人都有1只猫，每只猫有4条腿，房间里共有多少条腿（人和猫）？直接回答数字。",
+              "answer": "24",
+              "score": 1,
+              "detail": "24.0"
+            }
+          ],
+          "数学·智商": [
+            {
+              "q": "求解：3x + 7 = 22，x = ? 直接回答数字。",
+              "answer": "5",
+              "score": 1,
+              "detail": "5.0"
+            },
+            {
+              "q": "一个圆的半径是7，面积约是多少？（π取3.14）直接回答数字。",
+              "answer": "153.86",
+              "score": 1,
+              "detail": "153.86"
+            },
+            {
+              "q": "2的10次方等于多少？直接回答数字。",
+              "answer": "1024",
+              "score": 1,
+              "detail": "1024.0"
+            },
+            {
+              "q": "一个三角形三个内角的度数比是1:2:3，最大的角是多少度？直接回答数字。",
+              "answer": "90",
+              "score": 1,
+              "detail": "90.0"
+            },
+            {
+              "q": "某商品原价200元，打八折后又降价10%，现价多少元？直接回答数字。",
+              "answer": "144",
+              "score": 1,
+              "detail": "144.0"
+            },
+            {
+              "q": "log2(64) = ? 直接回答数字。",
+              "answer": "6",
+              "score": 1,
+              "detail": "6.0"
+            },
+            {
+              "q": "一个等差数列首项3，公差4，第10项是多少？直接回答数字。",
+              "answer": "39",
+              "score": 1,
+              "detail": "39.0"
+            },
+            {
+              "q": "计算：7! (7的阶乘) = ? 直接回答数字。",
+              "answer": "5040",
+              "score": 1,
+              "detail": "5040.0"
+            }
+          ],
+          "代码·智商": [
+            {
+              "q": "写一个Python函数 is_palindrome(s)，判断字符串s是否为回文（忽略大小写和空格）",
+              "answer": "def is_palindrome(s):\n    cleaned = s.replace(' ', '').lower",
+              "score": 1,
+              "detail": "全部通过"
+            },
+            {
+              "q": "写一个Python函数 fibonacci(n)，返回斐波那契数列的第n项（n从1开始，第1项=0，",
+              "answer": "def fibonacci(n):\n    a, b = 0, 1\n    for _ in range(n - 1):",
+              "score": 1,
+              "detail": "全部通过"
+            },
+            {
+              "q": "写一个Python函数 count_vowels(s)，返回字符串中元音字母（aeiou，不分大小写",
+              "answer": "def count_vowels(s):\n    vowels = set(\"aeiou\")\n    return su",
+              "score": 1,
+              "detail": "全部通过"
+            },
+            {
+              "q": "写一个Python函数 fizzbuzz(n)，返回1到n的列表：3的倍数输出'Fizz'，5的倍数",
+              "answer": "def fizzbuzz(n):\n    result = []\n    for i in range(1, n + 1",
+              "score": 0,
+              "detail": "(15,): 期望 [1, 2, 'Fizz', 4, 'Buzz', 'Fizz', 7, 8, 'Fizz', 'Buzz', 11, 'Fizz', 13, 14, 'FizzBuzz'] 得到 (1, 2, 'Fizz', 4, 'Buzz', 'Fizz', 7, 8, 'Fizz', 'Buzz', 11, 'Fizz', 13, 14, 'FizzBuzz')"
+            },
+            {
+              "q": "写一个Python函数 longest_word(s)，返回字符串中最长单词（单词以空格分隔，忽略标",
+              "answer": "import string\n\ndef longest_word(s):\n    translator = str.mak",
+              "score": 1,
+              "detail": "全部通过"
+            },
+            {
+              "q": "写一个Python函数 two_sum(nums, target)，返回两个数下标（从0开始），使得",
+              "answer": "def two_sum(nums, target):\n    seen = {}\n    for i, num in e",
+              "score": 1,
+              "detail": "全部通过"
+            }
+          ]
+        },
+        "bench_categories": {
+          "中医·知识": {
+            "correct": 8,
+            "total": 10
+          },
+          "养生·知识": {
+            "correct": 6,
+            "total": 6
+          },
+          "玄学·知识": {
+            "correct": 8,
+            "total": 8
+          },
+          "生活·知识": {
+            "correct": 5,
+            "total": 6
+          },
+          "逻辑·智商": {
+            "correct": 12,
+            "total": 13
+          },
+          "数学·智商": {
+            "correct": 8,
+            "total": 8
+          },
+          "代码·智商": {
+            "correct": 5,
+            "total": 6
+          }
+        }
+      },
+      {
+        "round": 2,
+        "model": {
+          "correct": 52,
+          "total": 57,
+          "rate": 91.2,
+          "duration_s": 451.4,
+          "usage": {
+            "requests": 55,
+            "prompt_tokens": 3063,
+            "completion_tokens": 30322,
+            "thinking_tokens": 29839
+          }
+        },
+        "bench": {
+          "correct": 53,
+          "total": 57,
+          "rate": 93.0,
+          "duration_s": 21.4,
+          "usage": {
+            "requests": 57,
+            "prompt_tokens": 3761,
+            "completion_tokens": 8595,
+            "thinking_tokens": 8151
+          }
+        },
+        "raw_json": "/tmp/hy4-sweep-2/hy4-preview-low-r2.json",
+        "api_errors": 2,
+        "categories": {
+          "中医·知识": {
+            "correct": 9,
+            "total": 10
+          },
+          "养生·知识": {
+            "correct": 6,
+            "total": 6
+          },
+          "玄学·知识": {
+            "correct": 8,
+            "total": 8
+          },
+          "生活·知识": {
+            "correct": 6,
+            "total": 6
+          },
+          "逻辑·智商": {
+            "correct": 10,
+            "total": 13
+          },
+          "数学·智商": {
+            "correct": 8,
+            "total": 8
+          },
+          "代码·智商": {
+            "correct": 5,
+            "total": 6
+          }
+        },
+        "items": {
+          "中医·知识": [
+            {
+              "q": "中医理论中，\"五行\"指的是金、木、水、火、土五种基本元素及其相互关系。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "中医认为\"肝主疏泄\"，主要功能是调节全身气机。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "下列哪味中药属于补气药？\nA. 当归  B. 黄芪  C. 熟地黄  D. 川芎",
+              "answer": "B",
+              "score": 1,
+              "detail": "B"
+            },
+            {
+              "q": "中医里\"六淫\"指风、寒、暑、湿、燥、火六种外感病邪。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "《黄帝内经》分为《素问》和《灵枢》两部分。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "中医\"四诊\"是望、闻、问、切。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "下列哪项不属于中医\"八纲辨证\"的内容？\nA. 表里  B. 寒热  C. 虚实  D. 阴阳  E.",
+              "answer": "E",
+              "score": 0,
+              "detail": "无法解析: E"
+            },
+            {
+              "q": "中医认为\"肾为先天之本，脾为后天之本\"。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "针灸中的\"足三里\"穴位于小腿外侧，是足阳明胃经的穴位。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "中药\"四气五味\"中的\"四气\"指寒、热、温、凉。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            }
+          ],
+          "养生·知识": [
+            {
+              "q": "中医认为\"子时\"（23:00-1:00）是胆经当令，此时应进入睡眠状态以养肝胆。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "\"饭后百步走，活到九十九\"，饭后立即剧烈运动有助于消化。判断对错。",
+              "answer": "错",
+              "score": 1,
+              "detail": "错"
+            },
+            {
+              "q": "中医养生讲究\"春夏养阳，秋冬养阴\"。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "下列哪种饮品睡前饮用最不利于睡眠？\nA. 温牛奶  B. 淡蜂蜜水  C. 浓茶  D. 菊花茶",
+              "answer": "C",
+              "score": 1,
+              "detail": "C"
+            },
+            {
+              "q": "中医认为\"怒伤肝，喜伤心，思伤脾，忧伤肺，恐伤肾\"。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "三伏天进行艾灸（\"冬病夏治\"）的理论基础是顺应阳气最盛之时驱散寒邪。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            }
+          ],
+          "玄学·知识": [
+            {
+              "q": "八字命理中，天干有十个：甲乙丙丁戊己庚辛壬癸。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "十二地支的第六位是什么？\nA. 卯  B. 辰  C. 巳  D. 午",
+              "answer": "C",
+              "score": 1,
+              "detail": "C"
+            },
+            {
+              "q": "五行相生顺序是：木生火，火生土，土生金，金生水，水生木。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "地支六合中，子与什么相合？\nA. 丑  B. 寅  C. 卯  D. 辰",
+              "answer": "A",
+              "score": 1,
+              "detail": "A"
+            },
+            {
+              "q": "八字中\"日主\"指的是日柱的天干，代表命主自身。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "五行相克顺序是：木克土，土克水，水克火，火克金，金克木。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "十天干中，属于阳干的是甲丙戊庚壬。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "2026年是丙午年（天干地支纪年）。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            }
+          ],
+          "生活·知识": [
+            {
+              "q": "人体正常体温（腋下）大约在36.1°C至37.2°C之间。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "维生素C在高温烹饪中容易被破坏。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "酱油的主要酿造原料是大豆和小麦。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "我国标准电压是220伏，频率50赫兹。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "日常使用的食盐主要成分是氯化钠。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "在室温下，鲜牛奶放置超过4小时容易变质。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            }
+          ],
+          "逻辑·智商": [
+            {
+              "q": "如果所有的A都是B，并且所有的B都是C，那么以下哪项一定正确？\nA. 所有C都是A  B. 所有A都",
+              "answer": "B",
+              "score": 1,
+              "detail": "B"
+            },
+            {
+              "q": "小明比小红大3岁，小红比小刚大5岁，那么小明比小刚大几岁？直接回答数字。",
+              "answer": "8",
+              "score": 1,
+              "detail": "8.0"
+            },
+            {
+              "q": "一个数列：2, 6, 12, 20, 30, 下一个数是多少？直接回答数字。",
+              "answer": "42",
+              "score": 1,
+              "detail": "42.0"
+            },
+            {
+              "q": "袋子里有3个红球和2个蓝球，随机摸一个，摸到红球的概率是多少？直接回答分数或小数。",
+              "answer": "0.6",
+              "score": 1,
+              "detail": "0.6"
+            },
+            {
+              "q": "甲乙丙三人中只有一人说真话。甲说：\"乙在说谎\"；乙说：\"丙在说谎\"；丙说：\"甲和乙都在说谎\"。谁说真",
+              "answer": "B",
+              "score": 0,
+              "detail": "B"
+            },
+            {
+              "q": "时钟显示3点15分，时针和分针的夹角约多少度？直接回答数字。",
+              "answer": "7.5",
+              "score": 1,
+              "detail": "7.5"
+            },
+            {
+              "q": "一个正方体有6个面，切一刀最多能把它分成几块？直接回答数字。",
+              "answer": "__ERROR__: timed out",
+              "score": 0,
+              "detail": "__ERROR__: timed out"
+            },
+            {
+              "q": "如果昨天是明天的话就好了，这样今天就周五了。问：句子中的\"今天\"实际上是星期几？\nA. 周三  B.",
+              "answer": "__ERROR__: timed out",
+              "score": 0,
+              "detail": "__ERROR__: timed out"
+            },
+            {
+              "q": "1+2+3+...+100 = ? 直接回答数字。",
+              "answer": "5050",
+              "score": 1,
+              "detail": "5050.0"
+            },
+            {
+              "q": "三个连续奇数之和是57，最大的那个奇数是多少？直接回答数字。",
+              "answer": "21",
+              "score": 1,
+              "detail": "21.0"
+            },
+            {
+              "q": "甲、乙合作一项工程需12天，甲单独做需20天，乙单独做需多少天？直接回答数字。",
+              "answer": "30",
+              "score": 1,
+              "detail": "30.0"
+            },
+            {
+              "q": "以下哪个推理是有效的？\nA. 所有猫都怕水，X怕水，所以X是猫\nB. 所有猫都怕水，X是猫，所以X怕",
+              "answer": "B",
+              "score": 1,
+              "detail": "B"
+            },
+            {
+              "q": "一间房里有4个人，每人都有1只猫，每只猫有4条腿，房间里共有多少条腿（人和猫）？直接回答数字。",
+              "answer": "24",
+              "score": 1,
+              "detail": "24.0"
+            }
+          ],
+          "数学·智商": [
+            {
+              "q": "求解：3x + 7 = 22，x = ? 直接回答数字。",
+              "answer": "5",
+              "score": 1,
+              "detail": "5.0"
+            },
+            {
+              "q": "一个圆的半径是7，面积约是多少？（π取3.14）直接回答数字。",
+              "answer": "153.86",
+              "score": 1,
+              "detail": "153.86"
+            },
+            {
+              "q": "2的10次方等于多少？直接回答数字。",
+              "answer": "1024",
+              "score": 1,
+              "detail": "1024.0"
+            },
+            {
+              "q": "一个三角形三个内角的度数比是1:2:3，最大的角是多少度？直接回答数字。",
+              "answer": "90",
+              "score": 1,
+              "detail": "90.0"
+            },
+            {
+              "q": "某商品原价200元，打八折后又降价10%，现价多少元？直接回答数字。",
+              "answer": "144",
+              "score": 1,
+              "detail": "144.0"
+            },
+            {
+              "q": "log2(64) = ? 直接回答数字。",
+              "answer": "6",
+              "score": 1,
+              "detail": "6.0"
+            },
+            {
+              "q": "一个等差数列首项3，公差4，第10项是多少？直接回答数字。",
+              "answer": "39",
+              "score": 1,
+              "detail": "39.0"
+            },
+            {
+              "q": "计算：7! (7的阶乘) = ? 直接回答数字。",
+              "answer": "5040",
+              "score": 1,
+              "detail": "5040.0"
+            }
+          ],
+          "代码·智商": [
+            {
+              "q": "写一个Python函数 is_palindrome(s)，判断字符串s是否为回文（忽略大小写和空格）",
+              "answer": "def is_palindrome(s):\n    cleaned = s.replace(\" \", \"\").lower",
+              "score": 1,
+              "detail": "全部通过"
+            },
+            {
+              "q": "写一个Python函数 fibonacci(n)，返回斐波那契数列的第n项（n从1开始，第1项=0，",
+              "answer": "def fibonacci(n):\n    a, b = 0, 1\n    for _ in range(n - 1):",
+              "score": 1,
+              "detail": "全部通过"
+            },
+            {
+              "q": "写一个Python函数 count_vowels(s)，返回字符串中元音字母（aeiou，不分大小写",
+              "answer": "def count_vowels(s):\n    return sum(1 for ch in s if ch in \"",
+              "score": 1,
+              "detail": "全部通过"
+            },
+            {
+              "q": "写一个Python函数 fizzbuzz(n)，返回1到n的列表：3的倍数输出'Fizz'，5的倍数",
+              "answer": "def fizzbuzz(n):\n    result = []\n    for i in range(1, n + 1",
+              "score": 0,
+              "detail": "(15,): 期望 [1, 2, 'Fizz', 4, 'Buzz', 'Fizz', 7, 8, 'Fizz', 'Buzz', 11, 'Fizz', 13, 14, 'FizzBuzz'] 得到 (1, 2, 'Fizz', 4, 'Buzz', 'Fizz', 7, 8, 'Fizz', 'Buzz', 11, 'Fizz', 13, 14, 'FizzBuzz')"
+            },
+            {
+              "q": "写一个Python函数 longest_word(s)，返回字符串中最长单词（单词以空格分隔，忽略标",
+              "answer": "import string\n\ndef longest_word(s):\n    trans = str.maketran",
+              "score": 1,
+              "detail": "全部通过"
+            },
+            {
+              "q": "写一个Python函数 two_sum(nums, target)，返回两个数下标（从0开始），使得",
+              "answer": "def two_sum(nums, target):\n    seen = {}\n    for i, num in e",
+              "score": 1,
+              "detail": "全部通过"
+            }
+          ]
+        },
+        "bench_categories": {
+          "中医·知识": {
+            "correct": 9,
+            "total": 10
+          },
+          "养生·知识": {
+            "correct": 6,
+            "total": 6
+          },
+          "玄学·知识": {
+            "correct": 8,
+            "total": 8
+          },
+          "生活·知识": {
+            "correct": 5,
+            "total": 6
+          },
+          "逻辑·智商": {
+            "correct": 12,
+            "total": 13
+          },
+          "数学·智商": {
+            "correct": 8,
+            "total": 8
+          },
+          "代码·智商": {
+            "correct": 5,
+            "total": 6
+          }
+        }
+      },
+      {
+        "round": 3,
+        "model": {
+          "correct": 51,
+          "total": 57,
+          "rate": 89.5,
+          "duration_s": 480.4,
+          "usage": {
+            "requests": 56,
+            "prompt_tokens": 3101,
+            "completion_tokens": 35394,
+            "thinking_tokens": 34909
+          }
+        },
+        "bench": {
+          "correct": 54,
+          "total": 57,
+          "rate": 94.7,
+          "duration_s": 23.1,
+          "usage": {
+            "requests": 57,
+            "prompt_tokens": 3761,
+            "completion_tokens": 9185,
+            "thinking_tokens": 8762
+          }
+        },
+        "raw_json": "/tmp/hy4-sweep-2/hy4-preview-low-r3.json",
+        "api_errors": 3,
+        "categories": {
+          "中医·知识": {
+            "correct": 9,
+            "total": 10
+          },
+          "养生·知识": {
+            "correct": 6,
+            "total": 6
+          },
+          "玄学·知识": {
+            "correct": 8,
+            "total": 8
+          },
+          "生活·知识": {
+            "correct": 5,
+            "total": 6
+          },
+          "逻辑·智商": {
+            "correct": 10,
+            "total": 13
+          },
+          "数学·智商": {
+            "correct": 8,
+            "total": 8
+          },
+          "代码·智商": {
+            "correct": 5,
+            "total": 6
+          }
+        },
+        "items": {
+          "中医·知识": [
+            {
+              "q": "中医理论中，\"五行\"指的是金、木、水、火、土五种基本元素及其相互关系。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "中医认为\"肝主疏泄\"，主要功能是调节全身气机。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "下列哪味中药属于补气药？\nA. 当归  B. 黄芪  C. 熟地黄  D. 川芎",
+              "answer": "B",
+              "score": 1,
+              "detail": "B"
+            },
+            {
+              "q": "中医里\"六淫\"指风、寒、暑、湿、燥、火六种外感病邪。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "《黄帝内经》分为《素问》和《灵枢》两部分。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "中医\"四诊\"是望、闻、问、切。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "下列哪项不属于中医\"八纲辨证\"的内容？\nA. 表里  B. 寒热  C. 虚实  D. 阴阳  E.",
+              "answer": "E",
+              "score": 0,
+              "detail": "无法解析: E"
+            },
+            {
+              "q": "中医认为\"肾为先天之本，脾为后天之本\"。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "针灸中的\"足三里\"穴位于小腿外侧，是足阳明胃经的穴位。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "中药\"四气五味\"中的\"四气\"指寒、热、温、凉。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            }
+          ],
+          "养生·知识": [
+            {
+              "q": "中医认为\"子时\"（23:00-1:00）是胆经当令，此时应进入睡眠状态以养肝胆。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "\"饭后百步走，活到九十九\"，饭后立即剧烈运动有助于消化。判断对错。",
+              "answer": "错",
+              "score": 1,
+              "detail": "错"
+            },
+            {
+              "q": "中医养生讲究\"春夏养阳，秋冬养阴\"。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "下列哪种饮品睡前饮用最不利于睡眠？\nA. 温牛奶  B. 淡蜂蜜水  C. 浓茶  D. 菊花茶",
+              "answer": "C",
+              "score": 1,
+              "detail": "C"
+            },
+            {
+              "q": "中医认为\"怒伤肝，喜伤心，思伤脾，忧伤肺，恐伤肾\"。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "三伏天进行艾灸（\"冬病夏治\"）的理论基础是顺应阳气最盛之时驱散寒邪。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            }
+          ],
+          "玄学·知识": [
+            {
+              "q": "八字命理中，天干有十个：甲乙丙丁戊己庚辛壬癸。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "十二地支的第六位是什么？\nA. 卯  B. 辰  C. 巳  D. 午",
+              "answer": "C",
+              "score": 1,
+              "detail": "C"
+            },
+            {
+              "q": "五行相生顺序是：木生火，火生土，土生金，金生水，水生木。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "地支六合中，子与什么相合？\nA. 丑  B. 寅  C. 卯  D. 辰",
+              "answer": "A",
+              "score": 1,
+              "detail": "A"
+            },
+            {
+              "q": "八字中\"日主\"指的是日柱的天干，代表命主自身。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "五行相克顺序是：木克土，土克水，水克火，火克金，金克木。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "十天干中，属于阳干的是甲丙戊庚壬。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "2026年是丙午年（天干地支纪年）。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            }
+          ],
+          "生活·知识": [
+            {
+              "q": "人体正常体温（腋下）大约在36.1°C至37.2°C之间。判断对错。",
+              "answer": "__ERROR__: timed out",
+              "score": 0,
+              "detail": "__ERROR__: timed out"
+            },
+            {
+              "q": "维生素C在高温烹饪中容易被破坏。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "酱油的主要酿造原料是大豆和小麦。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "我国标准电压是220伏，频率50赫兹。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "日常使用的食盐主要成分是氯化钠。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "在室温下，鲜牛奶放置超过4小时容易变质。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            }
+          ],
+          "逻辑·智商": [
+            {
+              "q": "如果所有的A都是B，并且所有的B都是C，那么以下哪项一定正确？\nA. 所有C都是A  B. 所有A都",
+              "answer": "B",
+              "score": 1,
+              "detail": "B"
+            },
+            {
+              "q": "小明比小红大3岁，小红比小刚大5岁，那么小明比小刚大几岁？直接回答数字。",
+              "answer": "8",
+              "score": 1,
+              "detail": "8.0"
+            },
+            {
+              "q": "一个数列：2, 6, 12, 20, 30, 下一个数是多少？直接回答数字。",
+              "answer": "42",
+              "score": 1,
+              "detail": "42.0"
+            },
+            {
+              "q": "袋子里有3个红球和2个蓝球，随机摸一个，摸到红球的概率是多少？直接回答分数或小数。",
+              "answer": "3/5",
+              "score": 1,
+              "detail": "0.6"
+            },
+            {
+              "q": "甲乙丙三人中只有一人说真话。甲说：\"乙在说谎\"；乙说：\"丙在说谎\"；丙说：\"甲和乙都在说谎\"。谁说真",
+              "answer": "B",
+              "score": 0,
+              "detail": "B"
+            },
+            {
+              "q": "时钟显示3点15分，时针和分针的夹角约多少度？直接回答数字。",
+              "answer": "7.5",
+              "score": 1,
+              "detail": "7.5"
+            },
+            {
+              "q": "一个正方体有6个面，切一刀最多能把它分成几块？直接回答数字。",
+              "answer": "__ERROR__: timed out",
+              "score": 0,
+              "detail": "__ERROR__: timed out"
+            },
+            {
+              "q": "如果昨天是明天的话就好了，这样今天就周五了。问：句子中的\"今天\"实际上是星期几？\nA. 周三  B.",
+              "answer": "__ERROR__: timed out",
+              "score": 0,
+              "detail": "__ERROR__: timed out"
+            },
+            {
+              "q": "1+2+3+...+100 = ? 直接回答数字。",
+              "answer": "5050",
+              "score": 1,
+              "detail": "5050.0"
+            },
+            {
+              "q": "三个连续奇数之和是57，最大的那个奇数是多少？直接回答数字。",
+              "answer": "21",
+              "score": 1,
+              "detail": "21.0"
+            },
+            {
+              "q": "甲、乙合作一项工程需12天，甲单独做需20天，乙单独做需多少天？直接回答数字。",
+              "answer": "30",
+              "score": 1,
+              "detail": "30.0"
+            },
+            {
+              "q": "以下哪个推理是有效的？\nA. 所有猫都怕水，X怕水，所以X是猫\nB. 所有猫都怕水，X是猫，所以X怕",
+              "answer": "B",
+              "score": 1,
+              "detail": "B"
+            },
+            {
+              "q": "一间房里有4个人，每人都有1只猫，每只猫有4条腿，房间里共有多少条腿（人和猫）？直接回答数字。",
+              "answer": "24",
+              "score": 1,
+              "detail": "24.0"
+            }
+          ],
+          "数学·智商": [
+            {
+              "q": "求解：3x + 7 = 22，x = ? 直接回答数字。",
+              "answer": "5",
+              "score": 1,
+              "detail": "5.0"
+            },
+            {
+              "q": "一个圆的半径是7，面积约是多少？（π取3.14）直接回答数字。",
+              "answer": "153.86",
+              "score": 1,
+              "detail": "153.86"
+            },
+            {
+              "q": "2的10次方等于多少？直接回答数字。",
+              "answer": "1024",
+              "score": 1,
+              "detail": "1024.0"
+            },
+            {
+              "q": "一个三角形三个内角的度数比是1:2:3，最大的角是多少度？直接回答数字。",
+              "answer": "90",
+              "score": 1,
+              "detail": "90.0"
+            },
+            {
+              "q": "某商品原价200元，打八折后又降价10%，现价多少元？直接回答数字。",
+              "answer": "144",
+              "score": 1,
+              "detail": "144.0"
+            },
+            {
+              "q": "log2(64) = ? 直接回答数字。",
+              "answer": "6",
+              "score": 1,
+              "detail": "6.0"
+            },
+            {
+              "q": "一个等差数列首项3，公差4，第10项是多少？直接回答数字。",
+              "answer": "39",
+              "score": 1,
+              "detail": "39.0"
+            },
+            {
+              "q": "计算：7! (7的阶乘) = ? 直接回答数字。",
+              "answer": "5040",
+              "score": 1,
+              "detail": "5040.0"
+            }
+          ],
+          "代码·智商": [
+            {
+              "q": "写一个Python函数 is_palindrome(s)，判断字符串s是否为回文（忽略大小写和空格）",
+              "answer": "def is_palindrome(s):\n    cleaned = ''.join(ch.lower() for c",
+              "score": 1,
+              "detail": "全部通过"
+            },
+            {
+              "q": "写一个Python函数 fibonacci(n)，返回斐波那契数列的第n项（n从1开始，第1项=0，",
+              "answer": "def fibonacci(n):\n    a, b = 0, 1\n    if n == 1:\n        ret",
+              "score": 1,
+              "detail": "全部通过"
+            },
+            {
+              "q": "写一个Python函数 count_vowels(s)，返回字符串中元音字母（aeiou，不分大小写",
+              "answer": "def count_vowels(s):\n    return sum(1 for char in s if char.",
+              "score": 1,
+              "detail": "全部通过"
+            },
+            {
+              "q": "写一个Python函数 fizzbuzz(n)，返回1到n的列表：3的倍数输出'Fizz'，5的倍数",
+              "answer": "def fizzbuzz(n):\n    result = []\n    for i in range(1, n + 1",
+              "score": 0,
+              "detail": "(15,): 期望 [1, 2, 'Fizz', 4, 'Buzz', 'Fizz', 7, 8, 'Fizz', 'Buzz', 11, 'Fizz', 13, 14, 'FizzBuzz'] 得到 (1, 2, 'Fizz', 4, 'Buzz', 'Fizz', 7, 8, 'Fizz', 'Buzz', 11, 'Fizz', 13, 14, 'FizzBuzz')"
+            },
+            {
+              "q": "写一个Python函数 longest_word(s)，返回字符串中最长单词（单词以空格分隔，忽略标",
+              "answer": "import string\n\ndef longest_word(s):\n    s = s.translate(str.",
+              "score": 1,
+              "detail": "全部通过"
+            },
+            {
+              "q": "写一个Python函数 two_sum(nums, target)，返回两个数下标（从0开始），使得",
+              "answer": "def two_sum(nums, target):\n    num_map = {}\n    for i, num i",
+              "score": 1,
+              "detail": "全部通过"
+            }
+          ]
+        },
+        "bench_categories": {
+          "中医·知识": {
+            "correct": 9,
+            "total": 10
+          },
+          "养生·知识": {
+            "correct": 6,
+            "total": 6
+          },
+          "玄学·知识": {
+            "correct": 8,
+            "total": 8
+          },
+          "生活·知识": {
+            "correct": 6,
+            "total": 6
+          },
+          "逻辑·智商": {
+            "correct": 12,
+            "total": 13
+          },
+          "数学·智商": {
+            "correct": 8,
+            "total": 8
+          },
+          "代码·智商": {
+            "correct": 5,
+            "total": 6
+          }
+        }
+      }
+    ],
+    "medium": [
+      {
+        "round": 1,
+        "model": {
+          "correct": 51,
+          "total": 57,
+          "rate": 89.5,
+          "duration_s": 473.8,
+          "usage": {
+            "requests": 57,
+            "prompt_tokens": 3155,
+            "completion_tokens": 49577,
+            "thinking_tokens": 49084
+          }
+        },
+        "bench": {
+          "correct": 53,
+          "total": 57,
+          "rate": 93.0,
+          "duration_s": 111.5,
+          "usage": {
+            "requests": 59,
+            "prompt_tokens": 3927,
+            "completion_tokens": 28309,
+            "thinking_tokens": 27892
+          }
+        },
+        "raw_json": "/tmp/hy4-sweep-2/hy4-preview-medium-r1.json",
+        "api_errors": 2,
+        "categories": {
+          "中医·知识": {
+            "correct": 9,
+            "total": 10
+          },
+          "养生·知识": {
+            "correct": 6,
+            "total": 6
+          },
+          "玄学·知识": {
+            "correct": 8,
+            "total": 8
+          },
+          "生活·知识": {
+            "correct": 5,
+            "total": 6
+          },
+          "逻辑·智商": {
+            "correct": 10,
+            "total": 13
+          },
+          "数学·智商": {
+            "correct": 8,
+            "total": 8
+          },
+          "代码·智商": {
+            "correct": 5,
+            "total": 6
+          }
+        },
+        "items": {
+          "中医·知识": [
+            {
+              "q": "中医理论中，\"五行\"指的是金、木、水、火、土五种基本元素及其相互关系。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "中医认为\"肝主疏泄\"，主要功能是调节全身气机。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "下列哪味中药属于补气药？\nA. 当归  B. 黄芪  C. 熟地黄  D. 川芎",
+              "answer": "B",
+              "score": 1,
+              "detail": "B"
+            },
+            {
+              "q": "中医里\"六淫\"指风、寒、暑、湿、燥、火六种外感病邪。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "《黄帝内经》分为《素问》和《灵枢》两部分。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "中医\"四诊\"是望、闻、问、切。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "下列哪项不属于中医\"八纲辨证\"的内容？\nA. 表里  B. 寒热  C. 虚实  D. 阴阳  E.",
+              "answer": "E",
+              "score": 0,
+              "detail": "无法解析: E"
+            },
+            {
+              "q": "中医认为\"肾为先天之本，脾为后天之本\"。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "针灸中的\"足三里\"穴位于小腿外侧，是足阳明胃经的穴位。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "中药\"四气五味\"中的\"四气\"指寒、热、温、凉。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            }
+          ],
+          "养生·知识": [
+            {
+              "q": "中医认为\"子时\"（23:00-1:00）是胆经当令，此时应进入睡眠状态以养肝胆。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "\"饭后百步走，活到九十九\"，饭后立即剧烈运动有助于消化。判断对错。",
+              "answer": "错",
+              "score": 1,
+              "detail": "错"
+            },
+            {
+              "q": "中医养生讲究\"春夏养阳，秋冬养阴\"。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "下列哪种饮品睡前饮用最不利于睡眠？\nA. 温牛奶  B. 淡蜂蜜水  C. 浓茶  D. 菊花茶",
+              "answer": "C",
+              "score": 1,
+              "detail": "C"
+            },
+            {
+              "q": "中医认为\"怒伤肝，喜伤心，思伤脾，忧伤肺，恐伤肾\"。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "三伏天进行艾灸（\"冬病夏治\"）的理论基础是顺应阳气最盛之时驱散寒邪。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            }
+          ],
+          "玄学·知识": [
+            {
+              "q": "八字命理中，天干有十个：甲乙丙丁戊己庚辛壬癸。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "十二地支的第六位是什么？\nA. 卯  B. 辰  C. 巳  D. 午",
+              "answer": "C",
+              "score": 1,
+              "detail": "C"
+            },
+            {
+              "q": "五行相生顺序是：木生火，火生土，土生金，金生水，水生木。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "地支六合中，子与什么相合？\nA. 丑  B. 寅  C. 卯  D. 辰",
+              "answer": "A",
+              "score": 1,
+              "detail": "A"
+            },
+            {
+              "q": "八字中\"日主\"指的是日柱的天干，代表命主自身。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "五行相克顺序是：木克土，土克水，水克火，火克金，金克木。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "十天干中，属于阳干的是甲丙戊庚壬。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "2026年是丙午年（天干地支纪年）。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            }
+          ],
+          "生活·知识": [
+            {
+              "q": "人体正常体温（腋下）大约在36.1°C至37.2°C之间。判断对错。",
+              "answer": "错",
+              "score": 0,
+              "detail": "错"
+            },
+            {
+              "q": "维生素C在高温烹饪中容易被破坏。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "酱油的主要酿造原料是大豆和小麦。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "我国标准电压是220伏，频率50赫兹。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "日常使用的食盐主要成分是氯化钠。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "在室温下，鲜牛奶放置超过4小时容易变质。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            }
+          ],
+          "逻辑·智商": [
+            {
+              "q": "如果所有的A都是B，并且所有的B都是C，那么以下哪项一定正确？\nA. 所有C都是A  B. 所有A都",
+              "answer": "B",
+              "score": 1,
+              "detail": "B"
+            },
+            {
+              "q": "小明比小红大3岁，小红比小刚大5岁，那么小明比小刚大几岁？直接回答数字。",
+              "answer": "8",
+              "score": 1,
+              "detail": "8.0"
+            },
+            {
+              "q": "一个数列：2, 6, 12, 20, 30, 下一个数是多少？直接回答数字。",
+              "answer": "42",
+              "score": 1,
+              "detail": "42.0"
+            },
+            {
+              "q": "袋子里有3个红球和2个蓝球，随机摸一个，摸到红球的概率是多少？直接回答分数或小数。",
+              "answer": "0.6",
+              "score": 1,
+              "detail": "0.6"
+            },
+            {
+              "q": "甲乙丙三人中只有一人说真话。甲说：\"乙在说谎\"；乙说：\"丙在说谎\"；丙说：\"甲和乙都在说谎\"。谁说真",
+              "answer": "B",
+              "score": 0,
+              "detail": "B"
+            },
+            {
+              "q": "时钟显示3点15分，时针和分针的夹角约多少度？直接回答数字。",
+              "answer": "7.5",
+              "score": 1,
+              "detail": "7.5"
+            },
+            {
+              "q": "一个正方体有6个面，切一刀最多能把它分成几块？直接回答数字。",
+              "answer": "__ERROR__: timed out",
+              "score": 0,
+              "detail": "__ERROR__: timed out"
+            },
+            {
+              "q": "如果昨天是明天的话就好了，这样今天就周五了。问：句子中的\"今天\"实际上是星期几？\nA. 周三  B.",
+              "answer": "__ERROR__: timed out",
+              "score": 0,
+              "detail": "__ERROR__: timed out"
+            },
+            {
+              "q": "1+2+3+...+100 = ? 直接回答数字。",
+              "answer": "5050",
+              "score": 1,
+              "detail": "5050.0"
+            },
+            {
+              "q": "三个连续奇数之和是57，最大的那个奇数是多少？直接回答数字。",
+              "answer": "21",
+              "score": 1,
+              "detail": "21.0"
+            },
+            {
+              "q": "甲、乙合作一项工程需12天，甲单独做需20天，乙单独做需多少天？直接回答数字。",
+              "answer": "30",
+              "score": 1,
+              "detail": "30.0"
+            },
+            {
+              "q": "以下哪个推理是有效的？\nA. 所有猫都怕水，X怕水，所以X是猫\nB. 所有猫都怕水，X是猫，所以X怕",
+              "answer": "B",
+              "score": 1,
+              "detail": "B"
+            },
+            {
+              "q": "一间房里有4个人，每人都有1只猫，每只猫有4条腿，房间里共有多少条腿（人和猫）？直接回答数字。",
+              "answer": "24",
+              "score": 1,
+              "detail": "24.0"
+            }
+          ],
+          "数学·智商": [
+            {
+              "q": "求解：3x + 7 = 22，x = ? 直接回答数字。",
+              "answer": "5",
+              "score": 1,
+              "detail": "5.0"
+            },
+            {
+              "q": "一个圆的半径是7，面积约是多少？（π取3.14）直接回答数字。",
+              "answer": "153.86",
+              "score": 1,
+              "detail": "153.86"
+            },
+            {
+              "q": "2的10次方等于多少？直接回答数字。",
+              "answer": "1024",
+              "score": 1,
+              "detail": "1024.0"
+            },
+            {
+              "q": "一个三角形三个内角的度数比是1:2:3，最大的角是多少度？直接回答数字。",
+              "answer": "90",
+              "score": 1,
+              "detail": "90.0"
+            },
+            {
+              "q": "某商品原价200元，打八折后又降价10%，现价多少元？直接回答数字。",
+              "answer": "144",
+              "score": 1,
+              "detail": "144.0"
+            },
+            {
+              "q": "log2(64) = ? 直接回答数字。",
+              "answer": "6",
+              "score": 1,
+              "detail": "6.0"
+            },
+            {
+              "q": "一个等差数列首项3，公差4，第10项是多少？直接回答数字。",
+              "answer": "39",
+              "score": 1,
+              "detail": "39.0"
+            },
+            {
+              "q": "计算：7! (7的阶乘) = ? 直接回答数字。",
+              "answer": "5040",
+              "score": 1,
+              "detail": "5040.0"
+            }
+          ],
+          "代码·智商": [
+            {
+              "q": "写一个Python函数 is_palindrome(s)，判断字符串s是否为回文（忽略大小写和空格）",
+              "answer": "def is_palindrome(s):\n    s = s.replace(\" \", \"\").lower()\n   ",
+              "score": 1,
+              "detail": "全部通过"
+            },
+            {
+              "q": "写一个Python函数 fibonacci(n)，返回斐波那契数列的第n项（n从1开始，第1项=0，",
+              "answer": "def fibonacci(n):\n    if n == 1:\n        return 0\n    if n =",
+              "score": 1,
+              "detail": "全部通过"
+            },
+            {
+              "q": "写一个Python函数 count_vowels(s)，返回字符串中元音字母（aeiou，不分大小写",
+              "answer": "def count_vowels(s):\n    return sum(1 for ch in s.lower() if",
+              "score": 1,
+              "detail": "全部通过"
+            },
+            {
+              "q": "写一个Python函数 fizzbuzz(n)，返回1到n的列表：3的倍数输出'Fizz'，5的倍数",
+              "answer": "def fizzbuzz(n):\n    result = []\n    for i in range(1, n + 1",
+              "score": 0,
+              "detail": "(15,): 期望 [1, 2, 'Fizz', 4, 'Buzz', 'Fizz', 7, 8, 'Fizz', 'Buzz', 11, 'Fizz', 13, 14, 'FizzBuzz'] 得到 (1, 2, 'Fizz', 4, 'Buzz', 'Fizz', 7, 8, 'Fizz', 'Buzz', 11, 'Fizz', 13, 14, 'FizzBuzz')"
+            },
+            {
+              "q": "写一个Python函数 longest_word(s)，返回字符串中最长单词（单词以空格分隔，忽略标",
+              "answer": "def longest_word(s):\n    import string\n    max_len = 0\n    l",
+              "score": 1,
+              "detail": "全部通过"
+            },
+            {
+              "q": "写一个Python函数 two_sum(nums, target)，返回两个数下标（从0开始），使得",
+              "answer": "def two_sum(nums, target):\n    lookup = {}\n    for i, num in",
+              "score": 1,
+              "detail": "全部通过"
+            }
+          ]
+        },
+        "bench_categories": {
+          "中医·知识": {
+            "correct": 8,
+            "total": 10
+          },
+          "养生·知识": {
+            "correct": 6,
+            "total": 6
+          },
+          "玄学·知识": {
+            "correct": 8,
+            "total": 8
+          },
+          "生活·知识": {
+            "correct": 6,
+            "total": 6
+          },
+          "逻辑·智商": {
+            "correct": 12,
+            "total": 13
+          },
+          "数学·智商": {
+            "correct": 8,
+            "total": 8
+          },
+          "代码·智商": {
+            "correct": 5,
+            "total": 6
+          }
+        }
+      },
+      {
+        "round": 2,
+        "model": {
+          "correct": 52,
+          "total": 57,
+          "rate": 91.2,
+          "duration_s": 453.8,
+          "usage": {
+            "requests": 56,
+            "prompt_tokens": 3113,
+            "completion_tokens": 33991,
+            "thinking_tokens": 33549
+          }
+        },
+        "bench": {
+          "correct": 52,
+          "total": 57,
+          "rate": 91.2,
+          "duration_s": 47.9,
+          "usage": {
+            "requests": 57,
+            "prompt_tokens": 3761,
+            "completion_tokens": 18962,
+            "thinking_tokens": 18514
+          }
+        },
+        "raw_json": "/tmp/hy4-sweep-2/hy4-preview-medium-r2.json",
+        "api_errors": 1,
+        "categories": {
+          "中医·知识": {
+            "correct": 9,
+            "total": 10
+          },
+          "养生·知识": {
+            "correct": 6,
+            "total": 6
+          },
+          "玄学·知识": {
+            "correct": 8,
+            "total": 8
+          },
+          "生活·知识": {
+            "correct": 5,
+            "total": 6
+          },
+          "逻辑·智商": {
+            "correct": 11,
+            "total": 13
+          },
+          "数学·智商": {
+            "correct": 8,
+            "total": 8
+          },
+          "代码·智商": {
+            "correct": 5,
+            "total": 6
+          }
+        },
+        "items": {
+          "中医·知识": [
+            {
+              "q": "中医理论中，\"五行\"指的是金、木、水、火、土五种基本元素及其相互关系。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "中医认为\"肝主疏泄\"，主要功能是调节全身气机。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "下列哪味中药属于补气药？\nA. 当归  B. 黄芪  C. 熟地黄  D. 川芎",
+              "answer": "B",
+              "score": 1,
+              "detail": "B"
+            },
+            {
+              "q": "中医里\"六淫\"指风、寒、暑、湿、燥、火六种外感病邪。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "《黄帝内经》分为《素问》和《灵枢》两部分。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "中医\"四诊\"是望、闻、问、切。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "下列哪项不属于中医\"八纲辨证\"的内容？\nA. 表里  B. 寒热  C. 虚实  D. 阴阳  E.",
+              "answer": "E",
+              "score": 0,
+              "detail": "无法解析: E"
+            },
+            {
+              "q": "中医认为\"肾为先天之本，脾为后天之本\"。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "针灸中的\"足三里\"穴位于小腿外侧，是足阳明胃经的穴位。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "中药\"四气五味\"中的\"四气\"指寒、热、温、凉。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            }
+          ],
+          "养生·知识": [
+            {
+              "q": "中医认为\"子时\"（23:00-1:00）是胆经当令，此时应进入睡眠状态以养肝胆。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "\"饭后百步走，活到九十九\"，饭后立即剧烈运动有助于消化。判断对错。",
+              "answer": "错",
+              "score": 1,
+              "detail": "错"
+            },
+            {
+              "q": "中医养生讲究\"春夏养阳，秋冬养阴\"。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "下列哪种饮品睡前饮用最不利于睡眠？\nA. 温牛奶  B. 淡蜂蜜水  C. 浓茶  D. 菊花茶",
+              "answer": "C",
+              "score": 1,
+              "detail": "C"
+            },
+            {
+              "q": "中医认为\"怒伤肝，喜伤心，思伤脾，忧伤肺，恐伤肾\"。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "三伏天进行艾灸（\"冬病夏治\"）的理论基础是顺应阳气最盛之时驱散寒邪。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            }
+          ],
+          "玄学·知识": [
+            {
+              "q": "八字命理中，天干有十个：甲乙丙丁戊己庚辛壬癸。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "十二地支的第六位是什么？\nA. 卯  B. 辰  C. 巳  D. 午",
+              "answer": "C",
+              "score": 1,
+              "detail": "C"
+            },
+            {
+              "q": "五行相生顺序是：木生火，火生土，土生金，金生水，水生木。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "地支六合中，子与什么相合？\nA. 丑  B. 寅  C. 卯  D. 辰",
+              "answer": "A",
+              "score": 1,
+              "detail": "A"
+            },
+            {
+              "q": "八字中\"日主\"指的是日柱的天干，代表命主自身。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "五行相克顺序是：木克土，土克水，水克火，火克金，金克木。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "十天干中，属于阳干的是甲丙戊庚壬。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "2026年是丙午年（天干地支纪年）。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            }
+          ],
+          "生活·知识": [
+            {
+              "q": "人体正常体温（腋下）大约在36.1°C至37.2°C之间。判断对错。",
+              "answer": "错",
+              "score": 0,
+              "detail": "错"
+            },
+            {
+              "q": "维生素C在高温烹饪中容易被破坏。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "酱油的主要酿造原料是大豆和小麦。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "我国标准电压是220伏，频率50赫兹。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "日常使用的食盐主要成分是氯化钠。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "在室温下，鲜牛奶放置超过4小时容易变质。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            }
+          ],
+          "逻辑·智商": [
+            {
+              "q": "如果所有的A都是B，并且所有的B都是C，那么以下哪项一定正确？\nA. 所有C都是A  B. 所有A都",
+              "answer": "B",
+              "score": 1,
+              "detail": "B"
+            },
+            {
+              "q": "小明比小红大3岁，小红比小刚大5岁，那么小明比小刚大几岁？直接回答数字。",
+              "answer": "8",
+              "score": 1,
+              "detail": "8.0"
+            },
+            {
+              "q": "一个数列：2, 6, 12, 20, 30, 下一个数是多少？直接回答数字。",
+              "answer": "42",
+              "score": 1,
+              "detail": "42.0"
+            },
+            {
+              "q": "袋子里有3个红球和2个蓝球，随机摸一个，摸到红球的概率是多少？直接回答分数或小数。",
+              "answer": "3/5",
+              "score": 1,
+              "detail": "0.6"
+            },
+            {
+              "q": "甲乙丙三人中只有一人说真话。甲说：\"乙在说谎\"；乙说：\"丙在说谎\"；丙说：\"甲和乙都在说谎\"。谁说真",
+              "answer": "B",
+              "score": 0,
+              "detail": "B"
+            },
+            {
+              "q": "时钟显示3点15分，时针和分针的夹角约多少度？直接回答数字。",
+              "answer": "7.5",
+              "score": 1,
+              "detail": "7.5"
+            },
+            {
+              "q": "一个正方体有6个面，切一刀最多能把它分成几块？直接回答数字。",
+              "answer": "2",
+              "score": 1,
+              "detail": "2.0"
+            },
+            {
+              "q": "如果昨天是明天的话就好了，这样今天就周五了。问：句子中的\"今天\"实际上是星期几？\nA. 周三  B.",
+              "answer": "__ERROR__: timed out",
+              "score": 0,
+              "detail": "__ERROR__: timed out"
+            },
+            {
+              "q": "1+2+3+...+100 = ? 直接回答数字。",
+              "answer": "5050",
+              "score": 1,
+              "detail": "5050.0"
+            },
+            {
+              "q": "三个连续奇数之和是57，最大的那个奇数是多少？直接回答数字。",
+              "answer": "21",
+              "score": 1,
+              "detail": "21.0"
+            },
+            {
+              "q": "甲、乙合作一项工程需12天，甲单独做需20天，乙单独做需多少天？直接回答数字。",
+              "answer": "30",
+              "score": 1,
+              "detail": "30.0"
+            },
+            {
+              "q": "以下哪个推理是有效的？\nA. 所有猫都怕水，X怕水，所以X是猫\nB. 所有猫都怕水，X是猫，所以X怕",
+              "answer": "B",
+              "score": 1,
+              "detail": "B"
+            },
+            {
+              "q": "一间房里有4个人，每人都有1只猫，每只猫有4条腿，房间里共有多少条腿（人和猫）？直接回答数字。",
+              "answer": "24",
+              "score": 1,
+              "detail": "24.0"
+            }
+          ],
+          "数学·智商": [
+            {
+              "q": "求解：3x + 7 = 22，x = ? 直接回答数字。",
+              "answer": "5",
+              "score": 1,
+              "detail": "5.0"
+            },
+            {
+              "q": "一个圆的半径是7，面积约是多少？（π取3.14）直接回答数字。",
+              "answer": "153.86",
+              "score": 1,
+              "detail": "153.86"
+            },
+            {
+              "q": "2的10次方等于多少？直接回答数字。",
+              "answer": "1024",
+              "score": 1,
+              "detail": "1024.0"
+            },
+            {
+              "q": "一个三角形三个内角的度数比是1:2:3，最大的角是多少度？直接回答数字。",
+              "answer": "90",
+              "score": 1,
+              "detail": "90.0"
+            },
+            {
+              "q": "某商品原价200元，打八折后又降价10%，现价多少元？直接回答数字。",
+              "answer": "144",
+              "score": 1,
+              "detail": "144.0"
+            },
+            {
+              "q": "log2(64) = ? 直接回答数字。",
+              "answer": "6",
+              "score": 1,
+              "detail": "6.0"
+            },
+            {
+              "q": "一个等差数列首项3，公差4，第10项是多少？直接回答数字。",
+              "answer": "39",
+              "score": 1,
+              "detail": "39.0"
+            },
+            {
+              "q": "计算：7! (7的阶乘) = ? 直接回答数字。",
+              "answer": "5040",
+              "score": 1,
+              "detail": "5040.0"
+            }
+          ],
+          "代码·智商": [
+            {
+              "q": "写一个Python函数 is_palindrome(s)，判断字符串s是否为回文（忽略大小写和空格）",
+              "answer": "def is_palindrome(s):\n    s = s.lower().replace(' ', '')\n   ",
+              "score": 1,
+              "detail": "全部通过"
+            },
+            {
+              "q": "写一个Python函数 fibonacci(n)，返回斐波那契数列的第n项（n从1开始，第1项=0，",
+              "answer": "def fibonacci(n):\n    a, b = 0, 1\n    for _ in range(1, n):\n",
+              "score": 1,
+              "detail": "全部通过"
+            },
+            {
+              "q": "写一个Python函数 count_vowels(s)，返回字符串中元音字母（aeiou，不分大小写",
+              "answer": "def count_vowels(s):\n    return sum(1 for ch in s.lower() if",
+              "score": 1,
+              "detail": "全部通过"
+            },
+            {
+              "q": "写一个Python函数 fizzbuzz(n)，返回1到n的列表：3的倍数输出'Fizz'，5的倍数",
+              "answer": "def fizzbuzz(n):\n    return ['FizzBuzz' if i % 15 == 0 else ",
+              "score": 0,
+              "detail": "(15,): 期望 [1, 2, 'Fizz', 4, 'Buzz', 'Fizz', 7, 8, 'Fizz', 'Buzz', 11, 'Fizz', 13, 14, 'FizzBuzz'] 得到 (1, 2, 'Fizz', 4, 'Buzz', 'Fizz', 7, 8, 'Fizz', 'Buzz', 11, 'Fizz', 13, 14, 'FizzBuzz')"
+            },
+            {
+              "q": "写一个Python函数 longest_word(s)，返回字符串中最长单词（单词以空格分隔，忽略标",
+              "answer": "import unicodedata\n\ndef longest_word(s):\n    longest = \"\"\n  ",
+              "score": 1,
+              "detail": "全部通过"
+            },
+            {
+              "q": "写一个Python函数 two_sum(nums, target)，返回两个数下标（从0开始），使得",
+              "answer": "def two_sum(nums, target):\n    seen = {}\n    for i, num in e",
+              "score": 1,
+              "detail": "全部通过"
+            }
+          ]
+        },
+        "bench_categories": {
+          "中医·知识": {
+            "correct": 8,
+            "total": 10
+          },
+          "养生·知识": {
+            "correct": 6,
+            "total": 6
+          },
+          "玄学·知识": {
+            "correct": 8,
+            "total": 8
+          },
+          "生活·知识": {
+            "correct": 5,
+            "total": 6
+          },
+          "逻辑·智商": {
+            "correct": 12,
+            "total": 13
+          },
+          "数学·智商": {
+            "correct": 8,
+            "total": 8
+          },
+          "代码·智商": {
+            "correct": 5,
+            "total": 6
+          }
+        }
+      },
+      {
+        "round": 3,
+        "model": {
+          "correct": 53,
+          "total": 57,
+          "rate": 93.0,
+          "duration_s": 465.7,
+          "usage": {
+            "requests": 56,
+            "prompt_tokens": 3113,
+            "completion_tokens": 24381,
+            "thinking_tokens": 23903
+          }
+        },
+        "bench": {
+          "correct": 52,
+          "total": 57,
+          "rate": 91.2,
+          "duration_s": 91.8,
+          "usage": {
+            "requests": 58,
+            "prompt_tokens": 3844,
+            "completion_tokens": 25914,
+            "thinking_tokens": 25484
+          }
+        },
+        "raw_json": "/tmp/hy4-sweep-2/hy4-preview-medium-r3.json",
+        "api_errors": 1,
+        "categories": {
+          "中医·知识": {
+            "correct": 9,
+            "total": 10
+          },
+          "养生·知识": {
+            "correct": 6,
+            "total": 6
+          },
+          "玄学·知识": {
+            "correct": 8,
+            "total": 8
+          },
+          "生活·知识": {
+            "correct": 6,
+            "total": 6
+          },
+          "逻辑·智商": {
+            "correct": 11,
+            "total": 13
+          },
+          "数学·智商": {
+            "correct": 8,
+            "total": 8
+          },
+          "代码·智商": {
+            "correct": 5,
+            "total": 6
+          }
+        },
+        "items": {
+          "中医·知识": [
+            {
+              "q": "中医理论中，\"五行\"指的是金、木、水、火、土五种基本元素及其相互关系。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "中医认为\"肝主疏泄\"，主要功能是调节全身气机。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "下列哪味中药属于补气药？\nA. 当归  B. 黄芪  C. 熟地黄  D. 川芎",
+              "answer": "B",
+              "score": 1,
+              "detail": "B"
+            },
+            {
+              "q": "中医里\"六淫\"指风、寒、暑、湿、燥、火六种外感病邪。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "《黄帝内经》分为《素问》和《灵枢》两部分。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "中医\"四诊\"是望、闻、问、切。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "下列哪项不属于中医\"八纲辨证\"的内容？\nA. 表里  B. 寒热  C. 虚实  D. 阴阳  E.",
+              "answer": "E",
+              "score": 0,
+              "detail": "无法解析: E"
+            },
+            {
+              "q": "中医认为\"肾为先天之本，脾为后天之本\"。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "针灸中的\"足三里\"穴位于小腿外侧，是足阳明胃经的穴位。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "中药\"四气五味\"中的\"四气\"指寒、热、温、凉。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            }
+          ],
+          "养生·知识": [
+            {
+              "q": "中医认为\"子时\"（23:00-1:00）是胆经当令，此时应进入睡眠状态以养肝胆。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "\"饭后百步走，活到九十九\"，饭后立即剧烈运动有助于消化。判断对错。",
+              "answer": "错",
+              "score": 1,
+              "detail": "错"
+            },
+            {
+              "q": "中医养生讲究\"春夏养阳，秋冬养阴\"。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "下列哪种饮品睡前饮用最不利于睡眠？\nA. 温牛奶  B. 淡蜂蜜水  C. 浓茶  D. 菊花茶",
+              "answer": "C",
+              "score": 1,
+              "detail": "C"
+            },
+            {
+              "q": "中医认为\"怒伤肝，喜伤心，思伤脾，忧伤肺，恐伤肾\"。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "三伏天进行艾灸（\"冬病夏治\"）的理论基础是顺应阳气最盛之时驱散寒邪。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            }
+          ],
+          "玄学·知识": [
+            {
+              "q": "八字命理中，天干有十个：甲乙丙丁戊己庚辛壬癸。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "十二地支的第六位是什么？\nA. 卯  B. 辰  C. 巳  D. 午",
+              "answer": "C",
+              "score": 1,
+              "detail": "C"
+            },
+            {
+              "q": "五行相生顺序是：木生火，火生土，土生金，金生水，水生木。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "地支六合中，子与什么相合？\nA. 丑  B. 寅  C. 卯  D. 辰",
+              "answer": "A",
+              "score": 1,
+              "detail": "A"
+            },
+            {
+              "q": "八字中\"日主\"指的是日柱的天干，代表命主自身。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "五行相克顺序是：木克土，土克水，水克火，火克金，金克木。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "十天干中，属于阳干的是甲丙戊庚壬。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "2026年是丙午年（天干地支纪年）。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            }
+          ],
+          "生活·知识": [
+            {
+              "q": "人体正常体温（腋下）大约在36.1°C至37.2°C之间。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "维生素C在高温烹饪中容易被破坏。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "酱油的主要酿造原料是大豆和小麦。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "我国标准电压是220伏，频率50赫兹。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "日常使用的食盐主要成分是氯化钠。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "在室温下，鲜牛奶放置超过4小时容易变质。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            }
+          ],
+          "逻辑·智商": [
+            {
+              "q": "如果所有的A都是B，并且所有的B都是C，那么以下哪项一定正确？\nA. 所有C都是A  B. 所有A都",
+              "answer": "B",
+              "score": 1,
+              "detail": "B"
+            },
+            {
+              "q": "小明比小红大3岁，小红比小刚大5岁，那么小明比小刚大几岁？直接回答数字。",
+              "answer": "8",
+              "score": 1,
+              "detail": "8.0"
+            },
+            {
+              "q": "一个数列：2, 6, 12, 20, 30, 下一个数是多少？直接回答数字。",
+              "answer": "42",
+              "score": 1,
+              "detail": "42.0"
+            },
+            {
+              "q": "袋子里有3个红球和2个蓝球，随机摸一个，摸到红球的概率是多少？直接回答分数或小数。",
+              "answer": "3/5",
+              "score": 1,
+              "detail": "0.6"
+            },
+            {
+              "q": "甲乙丙三人中只有一人说真话。甲说：\"乙在说谎\"；乙说：\"丙在说谎\"；丙说：\"甲和乙都在说谎\"。谁说真",
+              "answer": "B",
+              "score": 0,
+              "detail": "B"
+            },
+            {
+              "q": "时钟显示3点15分，时针和分针的夹角约多少度？直接回答数字。",
+              "answer": "7.5",
+              "score": 1,
+              "detail": "7.5"
+            },
+            {
+              "q": "一个正方体有6个面，切一刀最多能把它分成几块？直接回答数字。",
+              "answer": "2",
+              "score": 1,
+              "detail": "2.0"
+            },
+            {
+              "q": "如果昨天是明天的话就好了，这样今天就周五了。问：句子中的\"今天\"实际上是星期几？\nA. 周三  B.",
+              "answer": "__ERROR__: timed out",
+              "score": 0,
+              "detail": "__ERROR__: timed out"
+            },
+            {
+              "q": "1+2+3+...+100 = ? 直接回答数字。",
+              "answer": "5050",
+              "score": 1,
+              "detail": "5050.0"
+            },
+            {
+              "q": "三个连续奇数之和是57，最大的那个奇数是多少？直接回答数字。",
+              "answer": "21",
+              "score": 1,
+              "detail": "21.0"
+            },
+            {
+              "q": "甲、乙合作一项工程需12天，甲单独做需20天，乙单独做需多少天？直接回答数字。",
+              "answer": "30",
+              "score": 1,
+              "detail": "30.0"
+            },
+            {
+              "q": "以下哪个推理是有效的？\nA. 所有猫都怕水，X怕水，所以X是猫\nB. 所有猫都怕水，X是猫，所以X怕",
+              "answer": "B",
+              "score": 1,
+              "detail": "B"
+            },
+            {
+              "q": "一间房里有4个人，每人都有1只猫，每只猫有4条腿，房间里共有多少条腿（人和猫）？直接回答数字。",
+              "answer": "24",
+              "score": 1,
+              "detail": "24.0"
+            }
+          ],
+          "数学·智商": [
+            {
+              "q": "求解：3x + 7 = 22，x = ? 直接回答数字。",
+              "answer": "5",
+              "score": 1,
+              "detail": "5.0"
+            },
+            {
+              "q": "一个圆的半径是7，面积约是多少？（π取3.14）直接回答数字。",
+              "answer": "153.86",
+              "score": 1,
+              "detail": "153.86"
+            },
+            {
+              "q": "2的10次方等于多少？直接回答数字。",
+              "answer": "1024",
+              "score": 1,
+              "detail": "1024.0"
+            },
+            {
+              "q": "一个三角形三个内角的度数比是1:2:3，最大的角是多少度？直接回答数字。",
+              "answer": "90",
+              "score": 1,
+              "detail": "90.0"
+            },
+            {
+              "q": "某商品原价200元，打八折后又降价10%，现价多少元？直接回答数字。",
+              "answer": "144",
+              "score": 1,
+              "detail": "144.0"
+            },
+            {
+              "q": "log2(64) = ? 直接回答数字。",
+              "answer": "6",
+              "score": 1,
+              "detail": "6.0"
+            },
+            {
+              "q": "一个等差数列首项3，公差4，第10项是多少？直接回答数字。",
+              "answer": "39",
+              "score": 1,
+              "detail": "39.0"
+            },
+            {
+              "q": "计算：7! (7的阶乘) = ? 直接回答数字。",
+              "answer": "5040",
+              "score": 1,
+              "detail": "5040.0"
+            }
+          ],
+          "代码·智商": [
+            {
+              "q": "写一个Python函数 is_palindrome(s)，判断字符串s是否为回文（忽略大小写和空格）",
+              "answer": "def is_palindrome(s):\n    cleaned = ''.join(ch.lower() for c",
+              "score": 1,
+              "detail": "全部通过"
+            },
+            {
+              "q": "写一个Python函数 fibonacci(n)，返回斐波那契数列的第n项（n从1开始，第1项=0，",
+              "answer": "def fibonacci(n):\n    a, b = 0, 1\n    for _ in range(n - 1):",
+              "score": 1,
+              "detail": "全部通过"
+            },
+            {
+              "q": "写一个Python函数 count_vowels(s)，返回字符串中元音字母（aeiou，不分大小写",
+              "answer": "def count_vowels(s):\n    return sum(1 for char in s.lower() ",
+              "score": 1,
+              "detail": "全部通过"
+            },
+            {
+              "q": "写一个Python函数 fizzbuzz(n)，返回1到n的列表：3的倍数输出'Fizz'，5的倍数",
+              "answer": "def fizzbuzz(n):\n    result = []\n    for i in range(1, n + 1",
+              "score": 0,
+              "detail": "(15,): 期望 [1, 2, 'Fizz', 4, 'Buzz', 'Fizz', 7, 8, 'Fizz', 'Buzz', 11, 'Fizz', 13, 14, 'FizzBuzz'] 得到 (1, 2, 'Fizz', 4, 'Buzz', 'Fizz', 7, 8, 'Fizz', 'Buzz', 11, 'Fizz', 13, 14, 'FizzBuzz')"
+            },
+            {
+              "q": "写一个Python函数 longest_word(s)，返回字符串中最长单词（单词以空格分隔，忽略标",
+              "answer": "import string\n\ndef longest_word(s):\n    translator = str.mak",
+              "score": 1,
+              "detail": "全部通过"
+            },
+            {
+              "q": "写一个Python函数 two_sum(nums, target)，返回两个数下标（从0开始），使得",
+              "answer": "def two_sum(nums, target):\n    lookup = {}\n    for i, num in",
+              "score": 1,
+              "detail": "全部通过"
+            }
+          ]
+        },
+        "bench_categories": {
+          "中医·知识": {
+            "correct": 9,
+            "total": 10
+          },
+          "养生·知识": {
+            "correct": 6,
+            "total": 6
+          },
+          "玄学·知识": {
+            "correct": 8,
+            "total": 8
+          },
+          "生活·知识": {
+            "correct": 5,
+            "total": 6
+          },
+          "逻辑·智商": {
+            "correct": 11,
+            "total": 13
+          },
+          "数学·智商": {
+            "correct": 8,
+            "total": 8
+          },
+          "代码·智商": {
+            "correct": 5,
+            "total": 6
+          }
+        }
+      }
+    ],
+    "high": [
+      {
+        "round": 1,
+        "model": {
+          "correct": 52,
+          "total": 57,
+          "rate": 91.2,
+          "duration_s": 422.1,
+          "usage": {
+            "requests": 55,
+            "prompt_tokens": 3063,
+            "completion_tokens": 19866,
+            "thinking_tokens": 19400
+          }
+        },
+        "bench": {
+          "correct": 53,
+          "total": 57,
+          "rate": 93.0,
+          "duration_s": 22.5,
+          "usage": {
+            "requests": 57,
+            "prompt_tokens": 3761,
+            "completion_tokens": 10677,
+            "thinking_tokens": 10267
+          }
+        },
+        "raw_json": "/tmp/hy4-sweep-2/hy4-preview-high-r1.json",
+        "api_errors": 2,
+        "categories": {
+          "中医·知识": {
+            "correct": 9,
+            "total": 10
+          },
+          "养生·知识": {
+            "correct": 6,
+            "total": 6
+          },
+          "玄学·知识": {
+            "correct": 8,
+            "total": 8
+          },
+          "生活·知识": {
+            "correct": 6,
+            "total": 6
+          },
+          "逻辑·智商": {
+            "correct": 10,
+            "total": 13
+          },
+          "数学·智商": {
+            "correct": 8,
+            "total": 8
+          },
+          "代码·智商": {
+            "correct": 5,
+            "total": 6
+          }
+        },
+        "items": {
+          "中医·知识": [
+            {
+              "q": "中医理论中，\"五行\"指的是金、木、水、火、土五种基本元素及其相互关系。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "中医认为\"肝主疏泄\"，主要功能是调节全身气机。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "下列哪味中药属于补气药？\nA. 当归  B. 黄芪  C. 熟地黄  D. 川芎",
+              "answer": "B",
+              "score": 1,
+              "detail": "B"
+            },
+            {
+              "q": "中医里\"六淫\"指风、寒、暑、湿、燥、火六种外感病邪。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "《黄帝内经》分为《素问》和《灵枢》两部分。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "中医\"四诊\"是望、闻、问、切。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "下列哪项不属于中医\"八纲辨证\"的内容？\nA. 表里  B. 寒热  C. 虚实  D. 阴阳  E.",
+              "answer": "E",
+              "score": 0,
+              "detail": "无法解析: E"
+            },
+            {
+              "q": "中医认为\"肾为先天之本，脾为后天之本\"。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "针灸中的\"足三里\"穴位于小腿外侧，是足阳明胃经的穴位。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "中药\"四气五味\"中的\"四气\"指寒、热、温、凉。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            }
+          ],
+          "养生·知识": [
+            {
+              "q": "中医认为\"子时\"（23:00-1:00）是胆经当令，此时应进入睡眠状态以养肝胆。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "\"饭后百步走，活到九十九\"，饭后立即剧烈运动有助于消化。判断对错。",
+              "answer": "错",
+              "score": 1,
+              "detail": "错"
+            },
+            {
+              "q": "中医养生讲究\"春夏养阳，秋冬养阴\"。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "下列哪种饮品睡前饮用最不利于睡眠？\nA. 温牛奶  B. 淡蜂蜜水  C. 浓茶  D. 菊花茶",
+              "answer": "C",
+              "score": 1,
+              "detail": "C"
+            },
+            {
+              "q": "中医认为\"怒伤肝，喜伤心，思伤脾，忧伤肺，恐伤肾\"。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "三伏天进行艾灸（\"冬病夏治\"）的理论基础是顺应阳气最盛之时驱散寒邪。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            }
+          ],
+          "玄学·知识": [
+            {
+              "q": "八字命理中，天干有十个：甲乙丙丁戊己庚辛壬癸。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "十二地支的第六位是什么？\nA. 卯  B. 辰  C. 巳  D. 午",
+              "answer": "C",
+              "score": 1,
+              "detail": "C"
+            },
+            {
+              "q": "五行相生顺序是：木生火，火生土，土生金，金生水，水生木。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "地支六合中，子与什么相合？\nA. 丑  B. 寅  C. 卯  D. 辰",
+              "answer": "A",
+              "score": 1,
+              "detail": "A"
+            },
+            {
+              "q": "八字中\"日主\"指的是日柱的天干，代表命主自身。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "五行相克顺序是：木克土，土克水，水克火，火克金，金克木。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "十天干中，属于阳干的是甲丙戊庚壬。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "2026年是丙午年（天干地支纪年）。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            }
+          ],
+          "生活·知识": [
+            {
+              "q": "人体正常体温（腋下）大约在36.1°C至37.2°C之间。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "维生素C在高温烹饪中容易被破坏。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "酱油的主要酿造原料是大豆和小麦。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "我国标准电压是220伏，频率50赫兹。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "日常使用的食盐主要成分是氯化钠。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "在室温下，鲜牛奶放置超过4小时容易变质。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            }
+          ],
+          "逻辑·智商": [
+            {
+              "q": "如果所有的A都是B，并且所有的B都是C，那么以下哪项一定正确？\nA. 所有C都是A  B. 所有A都",
+              "answer": "B",
+              "score": 1,
+              "detail": "B"
+            },
+            {
+              "q": "小明比小红大3岁，小红比小刚大5岁，那么小明比小刚大几岁？直接回答数字。",
+              "answer": "8",
+              "score": 1,
+              "detail": "8.0"
+            },
+            {
+              "q": "一个数列：2, 6, 12, 20, 30, 下一个数是多少？直接回答数字。",
+              "answer": "42",
+              "score": 1,
+              "detail": "42.0"
+            },
+            {
+              "q": "袋子里有3个红球和2个蓝球，随机摸一个，摸到红球的概率是多少？直接回答分数或小数。",
+              "answer": "0.6",
+              "score": 1,
+              "detail": "0.6"
+            },
+            {
+              "q": "甲乙丙三人中只有一人说真话。甲说：\"乙在说谎\"；乙说：\"丙在说谎\"；丙说：\"甲和乙都在说谎\"。谁说真",
+              "answer": "B",
+              "score": 0,
+              "detail": "B"
+            },
+            {
+              "q": "时钟显示3点15分，时针和分针的夹角约多少度？直接回答数字。",
+              "answer": "7.5",
+              "score": 1,
+              "detail": "7.5"
+            },
+            {
+              "q": "一个正方体有6个面，切一刀最多能把它分成几块？直接回答数字。",
+              "answer": "__ERROR__: timed out",
+              "score": 0,
+              "detail": "__ERROR__: timed out"
+            },
+            {
+              "q": "如果昨天是明天的话就好了，这样今天就周五了。问：句子中的\"今天\"实际上是星期几？\nA. 周三  B.",
+              "answer": "__ERROR__: timed out",
+              "score": 0,
+              "detail": "__ERROR__: timed out"
+            },
+            {
+              "q": "1+2+3+...+100 = ? 直接回答数字。",
+              "answer": "5050",
+              "score": 1,
+              "detail": "5050.0"
+            },
+            {
+              "q": "三个连续奇数之和是57，最大的那个奇数是多少？直接回答数字。",
+              "answer": "21",
+              "score": 1,
+              "detail": "21.0"
+            },
+            {
+              "q": "甲、乙合作一项工程需12天，甲单独做需20天，乙单独做需多少天？直接回答数字。",
+              "answer": "30",
+              "score": 1,
+              "detail": "30.0"
+            },
+            {
+              "q": "以下哪个推理是有效的？\nA. 所有猫都怕水，X怕水，所以X是猫\nB. 所有猫都怕水，X是猫，所以X怕",
+              "answer": "B",
+              "score": 1,
+              "detail": "B"
+            },
+            {
+              "q": "一间房里有4个人，每人都有1只猫，每只猫有4条腿，房间里共有多少条腿（人和猫）？直接回答数字。",
+              "answer": "24",
+              "score": 1,
+              "detail": "24.0"
+            }
+          ],
+          "数学·智商": [
+            {
+              "q": "求解：3x + 7 = 22，x = ? 直接回答数字。",
+              "answer": "5",
+              "score": 1,
+              "detail": "5.0"
+            },
+            {
+              "q": "一个圆的半径是7，面积约是多少？（π取3.14）直接回答数字。",
+              "answer": "153.86",
+              "score": 1,
+              "detail": "153.86"
+            },
+            {
+              "q": "2的10次方等于多少？直接回答数字。",
+              "answer": "1024",
+              "score": 1,
+              "detail": "1024.0"
+            },
+            {
+              "q": "一个三角形三个内角的度数比是1:2:3，最大的角是多少度？直接回答数字。",
+              "answer": "90",
+              "score": 1,
+              "detail": "90.0"
+            },
+            {
+              "q": "某商品原价200元，打八折后又降价10%，现价多少元？直接回答数字。",
+              "answer": "144",
+              "score": 1,
+              "detail": "144.0"
+            },
+            {
+              "q": "log2(64) = ? 直接回答数字。",
+              "answer": "6",
+              "score": 1,
+              "detail": "6.0"
+            },
+            {
+              "q": "一个等差数列首项3，公差4，第10项是多少？直接回答数字。",
+              "answer": "39",
+              "score": 1,
+              "detail": "39.0"
+            },
+            {
+              "q": "计算：7! (7的阶乘) = ? 直接回答数字。",
+              "answer": "5040",
+              "score": 1,
+              "detail": "5040.0"
+            }
+          ],
+          "代码·智商": [
+            {
+              "q": "写一个Python函数 is_palindrome(s)，判断字符串s是否为回文（忽略大小写和空格）",
+              "answer": "def is_palindrome(s):\n    s = s.replace(\" \", \"\").lower()\n   ",
+              "score": 1,
+              "detail": "全部通过"
+            },
+            {
+              "q": "写一个Python函数 fibonacci(n)，返回斐波那契数列的第n项（n从1开始，第1项=0，",
+              "answer": "def fibonacci(n):\n    a, b = 0, 1\n    for _ in range(1, n):\n",
+              "score": 1,
+              "detail": "全部通过"
+            },
+            {
+              "q": "写一个Python函数 count_vowels(s)，返回字符串中元音字母（aeiou，不分大小写",
+              "answer": "def count_vowels(s):\n    return sum(1 for c in s.lower() if ",
+              "score": 1,
+              "detail": "全部通过"
+            },
+            {
+              "q": "写一个Python函数 fizzbuzz(n)，返回1到n的列表：3的倍数输出'Fizz'，5的倍数",
+              "answer": "def fizzbuzz(n):\n    result = []\n    for i in range(1, n + 1",
+              "score": 0,
+              "detail": "(15,): 期望 [1, 2, 'Fizz', 4, 'Buzz', 'Fizz', 7, 8, 'Fizz', 'Buzz', 11, 'Fizz', 13, 14, 'FizzBuzz'] 得到 (1, 2, 'Fizz', 4, 'Buzz', 'Fizz', 7, 8, 'Fizz', 'Buzz', 11, 'Fizz', 13, 14, 'FizzBuzz')"
+            },
+            {
+              "q": "写一个Python函数 longest_word(s)，返回字符串中最长单词（单词以空格分隔，忽略标",
+              "answer": "import string\n\ndef longest_word(s):\n    longest = \"\"\n    max",
+              "score": 1,
+              "detail": "全部通过"
+            },
+            {
+              "q": "写一个Python函数 two_sum(nums, target)，返回两个数下标（从0开始），使得",
+              "answer": "def two_sum(nums, target):\n    seen = {}\n    for i, num in e",
+              "score": 1,
+              "detail": "全部通过"
+            }
+          ]
+        },
+        "bench_categories": {
+          "中医·知识": {
+            "correct": 9,
+            "total": 10
+          },
+          "养生·知识": {
+            "correct": 6,
+            "total": 6
+          },
+          "玄学·知识": {
+            "correct": 8,
+            "total": 8
+          },
+          "生活·知识": {
+            "correct": 5,
+            "total": 6
+          },
+          "逻辑·智商": {
+            "correct": 12,
+            "total": 13
+          },
+          "数学·智商": {
+            "correct": 8,
+            "total": 8
+          },
+          "代码·智商": {
+            "correct": 5,
+            "total": 6
+          }
+        }
+      },
+      {
+        "round": 2,
+        "model": {
+          "correct": 52,
+          "total": 57,
+          "rate": 91.2,
+          "duration_s": 504.4,
+          "usage": {
+            "requests": 57,
+            "prompt_tokens": 3151,
+            "completion_tokens": 45655,
+            "thinking_tokens": 45196
+          }
+        },
+        "bench": {
+          "correct": 52,
+          "total": 57,
+          "rate": 91.2,
+          "duration_s": 29.3,
+          "usage": {
+            "requests": 57,
+            "prompt_tokens": 3761,
+            "completion_tokens": 12977,
+            "thinking_tokens": 12561
+          }
+        },
+        "raw_json": "/tmp/hy4-sweep-2/hy4-preview-high-r2.json",
+        "api_errors": 2,
+        "categories": {
+          "中医·知识": {
+            "correct": 9,
+            "total": 10
+          },
+          "养生·知识": {
+            "correct": 6,
+            "total": 6
+          },
+          "玄学·知识": {
+            "correct": 8,
+            "total": 8
+          },
+          "生活·知识": {
+            "correct": 5,
+            "total": 6
+          },
+          "逻辑·智商": {
+            "correct": 11,
+            "total": 13
+          },
+          "数学·智商": {
+            "correct": 8,
+            "total": 8
+          },
+          "代码·智商": {
+            "correct": 5,
+            "total": 6
+          }
+        },
+        "items": {
+          "中医·知识": [
+            {
+              "q": "中医理论中，\"五行\"指的是金、木、水、火、土五种基本元素及其相互关系。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "中医认为\"肝主疏泄\"，主要功能是调节全身气机。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "下列哪味中药属于补气药？\nA. 当归  B. 黄芪  C. 熟地黄  D. 川芎",
+              "answer": "B",
+              "score": 1,
+              "detail": "B"
+            },
+            {
+              "q": "中医里\"六淫\"指风、寒、暑、湿、燥、火六种外感病邪。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "《黄帝内经》分为《素问》和《灵枢》两部分。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "中医\"四诊\"是望、闻、问、切。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "下列哪项不属于中医\"八纲辨证\"的内容？\nA. 表里  B. 寒热  C. 虚实  D. 阴阳  E.",
+              "answer": "E",
+              "score": 0,
+              "detail": "无法解析: E"
+            },
+            {
+              "q": "中医认为\"肾为先天之本，脾为后天之本\"。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "针灸中的\"足三里\"穴位于小腿外侧，是足阳明胃经的穴位。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "中药\"四气五味\"中的\"四气\"指寒、热、温、凉。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            }
+          ],
+          "养生·知识": [
+            {
+              "q": "中医认为\"子时\"（23:00-1:00）是胆经当令，此时应进入睡眠状态以养肝胆。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "\"饭后百步走，活到九十九\"，饭后立即剧烈运动有助于消化。判断对错。",
+              "answer": "错",
+              "score": 1,
+              "detail": "错"
+            },
+            {
+              "q": "中医养生讲究\"春夏养阳，秋冬养阴\"。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "下列哪种饮品睡前饮用最不利于睡眠？\nA. 温牛奶  B. 淡蜂蜜水  C. 浓茶  D. 菊花茶",
+              "answer": "C",
+              "score": 1,
+              "detail": "C"
+            },
+            {
+              "q": "中医认为\"怒伤肝，喜伤心，思伤脾，忧伤肺，恐伤肾\"。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "三伏天进行艾灸（\"冬病夏治\"）的理论基础是顺应阳气最盛之时驱散寒邪。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            }
+          ],
+          "玄学·知识": [
+            {
+              "q": "八字命理中，天干有十个：甲乙丙丁戊己庚辛壬癸。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "十二地支的第六位是什么？\nA. 卯  B. 辰  C. 巳  D. 午",
+              "answer": "C",
+              "score": 1,
+              "detail": "C"
+            },
+            {
+              "q": "五行相生顺序是：木生火，火生土，土生金，金生水，水生木。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "地支六合中，子与什么相合？\nA. 丑  B. 寅  C. 卯  D. 辰",
+              "answer": "A",
+              "score": 1,
+              "detail": "A"
+            },
+            {
+              "q": "八字中\"日主\"指的是日柱的天干，代表命主自身。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "五行相克顺序是：木克土，土克水，水克火，火克金，金克木。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "十天干中，属于阳干的是甲丙戊庚壬。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "2026年是丙午年（天干地支纪年）。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            }
+          ],
+          "生活·知识": [
+            {
+              "q": "人体正常体温（腋下）大约在36.1°C至37.2°C之间。判断对错。",
+              "answer": "__ERROR__: timed out",
+              "score": 0,
+              "detail": "__ERROR__: timed out"
+            },
+            {
+              "q": "维生素C在高温烹饪中容易被破坏。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "酱油的主要酿造原料是大豆和小麦。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "我国标准电压是220伏，频率50赫兹。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "日常使用的食盐主要成分是氯化钠。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "在室温下，鲜牛奶放置超过4小时容易变质。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            }
+          ],
+          "逻辑·智商": [
+            {
+              "q": "如果所有的A都是B，并且所有的B都是C，那么以下哪项一定正确？\nA. 所有C都是A  B. 所有A都",
+              "answer": "B",
+              "score": 1,
+              "detail": "B"
+            },
+            {
+              "q": "小明比小红大3岁，小红比小刚大5岁，那么小明比小刚大几岁？直接回答数字。",
+              "answer": "8",
+              "score": 1,
+              "detail": "8.0"
+            },
+            {
+              "q": "一个数列：2, 6, 12, 20, 30, 下一个数是多少？直接回答数字。",
+              "answer": "42",
+              "score": 1,
+              "detail": "42.0"
+            },
+            {
+              "q": "袋子里有3个红球和2个蓝球，随机摸一个，摸到红球的概率是多少？直接回答分数或小数。",
+              "answer": "3/5",
+              "score": 1,
+              "detail": "0.6"
+            },
+            {
+              "q": "甲乙丙三人中只有一人说真话。甲说：\"乙在说谎\"；乙说：\"丙在说谎\"；丙说：\"甲和乙都在说谎\"。谁说真",
+              "answer": "B",
+              "score": 0,
+              "detail": "B"
+            },
+            {
+              "q": "时钟显示3点15分，时针和分针的夹角约多少度？直接回答数字。",
+              "answer": "7.5",
+              "score": 1,
+              "detail": "7.5"
+            },
+            {
+              "q": "一个正方体有6个面，切一刀最多能把它分成几块？直接回答数字。",
+              "answer": "2",
+              "score": 1,
+              "detail": "2.0"
+            },
+            {
+              "q": "如果昨天是明天的话就好了，这样今天就周五了。问：句子中的\"今天\"实际上是星期几？\nA. 周三  B.",
+              "answer": "__ERROR__: timed out",
+              "score": 0,
+              "detail": "__ERROR__: timed out"
+            },
+            {
+              "q": "1+2+3+...+100 = ? 直接回答数字。",
+              "answer": "5050",
+              "score": 1,
+              "detail": "5050.0"
+            },
+            {
+              "q": "三个连续奇数之和是57，最大的那个奇数是多少？直接回答数字。",
+              "answer": "21",
+              "score": 1,
+              "detail": "21.0"
+            },
+            {
+              "q": "甲、乙合作一项工程需12天，甲单独做需20天，乙单独做需多少天？直接回答数字。",
+              "answer": "30",
+              "score": 1,
+              "detail": "30.0"
+            },
+            {
+              "q": "以下哪个推理是有效的？\nA. 所有猫都怕水，X怕水，所以X是猫\nB. 所有猫都怕水，X是猫，所以X怕",
+              "answer": "B",
+              "score": 1,
+              "detail": "B"
+            },
+            {
+              "q": "一间房里有4个人，每人都有1只猫，每只猫有4条腿，房间里共有多少条腿（人和猫）？直接回答数字。",
+              "answer": "24",
+              "score": 1,
+              "detail": "24.0"
+            }
+          ],
+          "数学·智商": [
+            {
+              "q": "求解：3x + 7 = 22，x = ? 直接回答数字。",
+              "answer": "5",
+              "score": 1,
+              "detail": "5.0"
+            },
+            {
+              "q": "一个圆的半径是7，面积约是多少？（π取3.14）直接回答数字。",
+              "answer": "153.86",
+              "score": 1,
+              "detail": "153.86"
+            },
+            {
+              "q": "2的10次方等于多少？直接回答数字。",
+              "answer": "1024",
+              "score": 1,
+              "detail": "1024.0"
+            },
+            {
+              "q": "一个三角形三个内角的度数比是1:2:3，最大的角是多少度？直接回答数字。",
+              "answer": "90",
+              "score": 1,
+              "detail": "90.0"
+            },
+            {
+              "q": "某商品原价200元，打八折后又降价10%，现价多少元？直接回答数字。",
+              "answer": "144",
+              "score": 1,
+              "detail": "144.0"
+            },
+            {
+              "q": "log2(64) = ? 直接回答数字。",
+              "answer": "6",
+              "score": 1,
+              "detail": "6.0"
+            },
+            {
+              "q": "一个等差数列首项3，公差4，第10项是多少？直接回答数字。",
+              "answer": "39",
+              "score": 1,
+              "detail": "39.0"
+            },
+            {
+              "q": "计算：7! (7的阶乘) = ? 直接回答数字。",
+              "answer": "5040",
+              "score": 1,
+              "detail": "5040.0"
+            }
+          ],
+          "代码·智商": [
+            {
+              "q": "写一个Python函数 is_palindrome(s)，判断字符串s是否为回文（忽略大小写和空格）",
+              "answer": "def is_palindrome(s):\n    s = s.replace(\" \", \"\").lower()\n   ",
+              "score": 1,
+              "detail": "全部通过"
+            },
+            {
+              "q": "写一个Python函数 fibonacci(n)，返回斐波那契数列的第n项（n从1开始，第1项=0，",
+              "answer": "def fibonacci(n):\n    a, b = 0, 1\n    for _ in range(n - 1):",
+              "score": 1,
+              "detail": "全部通过"
+            },
+            {
+              "q": "写一个Python函数 count_vowels(s)，返回字符串中元音字母（aeiou，不分大小写",
+              "answer": "def count_vowels(s):\n    vowels = set('aeiou')\n    return su",
+              "score": 1,
+              "detail": "全部通过"
+            },
+            {
+              "q": "写一个Python函数 fizzbuzz(n)，返回1到n的列表：3的倍数输出'Fizz'，5的倍数",
+              "answer": "def fizzbuzz(n):\n    result = []\n    for i in range(1, n + 1",
+              "score": 0,
+              "detail": "(15,): 期望 [1, 2, 'Fizz', 4, 'Buzz', 'Fizz', 7, 8, 'Fizz', 'Buzz', 11, 'Fizz', 13, 14, 'FizzBuzz'] 得到 (1, 2, 'Fizz', 4, 'Buzz', 'Fizz', 7, 8, 'Fizz', 'Buzz', 11, 'Fizz', 13, 14, 'FizzBuzz')"
+            },
+            {
+              "q": "写一个Python函数 longest_word(s)，返回字符串中最长单词（单词以空格分隔，忽略标",
+              "answer": "import string\n\ndef longest_word(s):\n    longest = \"\"\n    for",
+              "score": 1,
+              "detail": "全部通过"
+            },
+            {
+              "q": "写一个Python函数 two_sum(nums, target)，返回两个数下标（从0开始），使得",
+              "answer": "def two_sum(nums, target):\n    seen = {}\n    for i, v in enu",
+              "score": 1,
+              "detail": "全部通过"
+            }
+          ]
+        },
+        "bench_categories": {
+          "中医·知识": {
+            "correct": 8,
+            "total": 10
+          },
+          "养生·知识": {
+            "correct": 6,
+            "total": 6
+          },
+          "玄学·知识": {
+            "correct": 8,
+            "total": 8
+          },
+          "生活·知识": {
+            "correct": 5,
+            "total": 6
+          },
+          "逻辑·智商": {
+            "correct": 12,
+            "total": 13
+          },
+          "数学·智商": {
+            "correct": 8,
+            "total": 8
+          },
+          "代码·智商": {
+            "correct": 5,
+            "total": 6
+          }
+        }
+      },
+      {
+        "round": 3,
+        "model": {
+          "correct": 52,
+          "total": 57,
+          "rate": 91.2,
+          "duration_s": 427.8,
+          "usage": {
+            "requests": 56,
+            "prompt_tokens": 3113,
+            "completion_tokens": 25672,
+            "thinking_tokens": 25186
+          }
+        },
+        "bench": {
+          "correct": 52,
+          "total": 57,
+          "rate": 91.2,
+          "duration_s": 61.7,
+          "usage": {
+            "requests": 58,
+            "prompt_tokens": 3844,
+            "completion_tokens": 23370,
+            "thinking_tokens": 22948
+          }
+        },
+        "raw_json": "/tmp/hy4-sweep-2/hy4-preview-high-r3.json",
+        "api_errors": 1,
+        "categories": {
+          "中医·知识": {
+            "correct": 9,
+            "total": 10
+          },
+          "养生·知识": {
+            "correct": 6,
+            "total": 6
+          },
+          "玄学·知识": {
+            "correct": 8,
+            "total": 8
+          },
+          "生活·知识": {
+            "correct": 5,
+            "total": 6
+          },
+          "逻辑·智商": {
+            "correct": 11,
+            "total": 13
+          },
+          "数学·智商": {
+            "correct": 8,
+            "total": 8
+          },
+          "代码·智商": {
+            "correct": 5,
+            "total": 6
+          }
+        },
+        "items": {
+          "中医·知识": [
+            {
+              "q": "中医理论中，\"五行\"指的是金、木、水、火、土五种基本元素及其相互关系。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "中医认为\"肝主疏泄\"，主要功能是调节全身气机。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "下列哪味中药属于补气药？\nA. 当归  B. 黄芪  C. 熟地黄  D. 川芎",
+              "answer": "B",
+              "score": 1,
+              "detail": "B"
+            },
+            {
+              "q": "中医里\"六淫\"指风、寒、暑、湿、燥、火六种外感病邪。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "《黄帝内经》分为《素问》和《灵枢》两部分。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "中医\"四诊\"是望、闻、问、切。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "下列哪项不属于中医\"八纲辨证\"的内容？\nA. 表里  B. 寒热  C. 虚实  D. 阴阳  E.",
+              "answer": "E",
+              "score": 0,
+              "detail": "无法解析: E"
+            },
+            {
+              "q": "中医认为\"肾为先天之本，脾为后天之本\"。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "针灸中的\"足三里\"穴位于小腿外侧，是足阳明胃经的穴位。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "中药\"四气五味\"中的\"四气\"指寒、热、温、凉。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            }
+          ],
+          "养生·知识": [
+            {
+              "q": "中医认为\"子时\"（23:00-1:00）是胆经当令，此时应进入睡眠状态以养肝胆。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "\"饭后百步走，活到九十九\"，饭后立即剧烈运动有助于消化。判断对错。",
+              "answer": "错",
+              "score": 1,
+              "detail": "错"
+            },
+            {
+              "q": "中医养生讲究\"春夏养阳，秋冬养阴\"。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "下列哪种饮品睡前饮用最不利于睡眠？\nA. 温牛奶  B. 淡蜂蜜水  C. 浓茶  D. 菊花茶",
+              "answer": "C",
+              "score": 1,
+              "detail": "C"
+            },
+            {
+              "q": "中医认为\"怒伤肝，喜伤心，思伤脾，忧伤肺，恐伤肾\"。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "三伏天进行艾灸（\"冬病夏治\"）的理论基础是顺应阳气最盛之时驱散寒邪。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            }
+          ],
+          "玄学·知识": [
+            {
+              "q": "八字命理中，天干有十个：甲乙丙丁戊己庚辛壬癸。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "十二地支的第六位是什么？\nA. 卯  B. 辰  C. 巳  D. 午",
+              "answer": "C",
+              "score": 1,
+              "detail": "C"
+            },
+            {
+              "q": "五行相生顺序是：木生火，火生土，土生金，金生水，水生木。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "地支六合中，子与什么相合？\nA. 丑  B. 寅  C. 卯  D. 辰",
+              "answer": "A",
+              "score": 1,
+              "detail": "A"
+            },
+            {
+              "q": "八字中\"日主\"指的是日柱的天干，代表命主自身。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "五行相克顺序是：木克土，土克水，水克火，火克金，金克木。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "十天干中，属于阳干的是甲丙戊庚壬。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "2026年是丙午年（天干地支纪年）。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            }
+          ],
+          "生活·知识": [
+            {
+              "q": "人体正常体温（腋下）大约在36.1°C至37.2°C之间。判断对错。",
+              "answer": "错",
+              "score": 0,
+              "detail": "错"
+            },
+            {
+              "q": "维生素C在高温烹饪中容易被破坏。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "酱油的主要酿造原料是大豆和小麦。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "我国标准电压是220伏，频率50赫兹。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "日常使用的食盐主要成分是氯化钠。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "在室温下，鲜牛奶放置超过4小时容易变质。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            }
+          ],
+          "逻辑·智商": [
+            {
+              "q": "如果所有的A都是B，并且所有的B都是C，那么以下哪项一定正确？\nA. 所有C都是A  B. 所有A都",
+              "answer": "B",
+              "score": 1,
+              "detail": "B"
+            },
+            {
+              "q": "小明比小红大3岁，小红比小刚大5岁，那么小明比小刚大几岁？直接回答数字。",
+              "answer": "8",
+              "score": 1,
+              "detail": "8.0"
+            },
+            {
+              "q": "一个数列：2, 6, 12, 20, 30, 下一个数是多少？直接回答数字。",
+              "answer": "42",
+              "score": 1,
+              "detail": "42.0"
+            },
+            {
+              "q": "袋子里有3个红球和2个蓝球，随机摸一个，摸到红球的概率是多少？直接回答分数或小数。",
+              "answer": "0.6",
+              "score": 1,
+              "detail": "0.6"
+            },
+            {
+              "q": "甲乙丙三人中只有一人说真话。甲说：\"乙在说谎\"；乙说：\"丙在说谎\"；丙说：\"甲和乙都在说谎\"。谁说真",
+              "answer": "B",
+              "score": 0,
+              "detail": "B"
+            },
+            {
+              "q": "时钟显示3点15分，时针和分针的夹角约多少度？直接回答数字。",
+              "answer": "7.5",
+              "score": 1,
+              "detail": "7.5"
+            },
+            {
+              "q": "一个正方体有6个面，切一刀最多能把它分成几块？直接回答数字。",
+              "answer": "2",
+              "score": 1,
+              "detail": "2.0"
+            },
+            {
+              "q": "如果昨天是明天的话就好了，这样今天就周五了。问：句子中的\"今天\"实际上是星期几？\nA. 周三  B.",
+              "answer": "__ERROR__: timed out",
+              "score": 0,
+              "detail": "__ERROR__: timed out"
+            },
+            {
+              "q": "1+2+3+...+100 = ? 直接回答数字。",
+              "answer": "5050",
+              "score": 1,
+              "detail": "5050.0"
+            },
+            {
+              "q": "三个连续奇数之和是57，最大的那个奇数是多少？直接回答数字。",
+              "answer": "21",
+              "score": 1,
+              "detail": "21.0"
+            },
+            {
+              "q": "甲、乙合作一项工程需12天，甲单独做需20天，乙单独做需多少天？直接回答数字。",
+              "answer": "30",
+              "score": 1,
+              "detail": "30.0"
+            },
+            {
+              "q": "以下哪个推理是有效的？\nA. 所有猫都怕水，X怕水，所以X是猫\nB. 所有猫都怕水，X是猫，所以X怕",
+              "answer": "B",
+              "score": 1,
+              "detail": "B"
+            },
+            {
+              "q": "一间房里有4个人，每人都有1只猫，每只猫有4条腿，房间里共有多少条腿（人和猫）？直接回答数字。",
+              "answer": "24",
+              "score": 1,
+              "detail": "24.0"
+            }
+          ],
+          "数学·智商": [
+            {
+              "q": "求解：3x + 7 = 22，x = ? 直接回答数字。",
+              "answer": "5",
+              "score": 1,
+              "detail": "5.0"
+            },
+            {
+              "q": "一个圆的半径是7，面积约是多少？（π取3.14）直接回答数字。",
+              "answer": "153.86",
+              "score": 1,
+              "detail": "153.86"
+            },
+            {
+              "q": "2的10次方等于多少？直接回答数字。",
+              "answer": "1024",
+              "score": 1,
+              "detail": "1024.0"
+            },
+            {
+              "q": "一个三角形三个内角的度数比是1:2:3，最大的角是多少度？直接回答数字。",
+              "answer": "90",
+              "score": 1,
+              "detail": "90.0"
+            },
+            {
+              "q": "某商品原价200元，打八折后又降价10%，现价多少元？直接回答数字。",
+              "answer": "144",
+              "score": 1,
+              "detail": "144.0"
+            },
+            {
+              "q": "log2(64) = ? 直接回答数字。",
+              "answer": "6",
+              "score": 1,
+              "detail": "6.0"
+            },
+            {
+              "q": "一个等差数列首项3，公差4，第10项是多少？直接回答数字。",
+              "answer": "39",
+              "score": 1,
+              "detail": "39.0"
+            },
+            {
+              "q": "计算：7! (7的阶乘) = ? 直接回答数字。",
+              "answer": "5040",
+              "score": 1,
+              "detail": "5040.0"
+            }
+          ],
+          "代码·智商": [
+            {
+              "q": "写一个Python函数 is_palindrome(s)，判断字符串s是否为回文（忽略大小写和空格）",
+              "answer": "def is_palindrome(s):\n    t = s.replace(\" \", \"\").lower()\n   ",
+              "score": 1,
+              "detail": "全部通过"
+            },
+            {
+              "q": "写一个Python函数 fibonacci(n)，返回斐波那契数列的第n项（n从1开始，第1项=0，",
+              "answer": "def fibonacci(n):\n    if n < 1:\n        raise ValueError(\"n ",
+              "score": 1,
+              "detail": "全部通过"
+            },
+            {
+              "q": "写一个Python函数 count_vowels(s)，返回字符串中元音字母（aeiou，不分大小写",
+              "answer": "def count_vowels(s):\n    return sum(1 for ch in s.lower() if",
+              "score": 1,
+              "detail": "全部通过"
+            },
+            {
+              "q": "写一个Python函数 fizzbuzz(n)，返回1到n的列表：3的倍数输出'Fizz'，5的倍数",
+              "answer": "def fizzbuzz(n):\n    result = []\n    for i in range(1, n + 1",
+              "score": 0,
+              "detail": "(15,): 期望 [1, 2, 'Fizz', 4, 'Buzz', 'Fizz', 7, 8, 'Fizz', 'Buzz', 11, 'Fizz', 13, 14, 'FizzBuzz'] 得到 (1, 2, 'Fizz', 4, 'Buzz', 'Fizz', 7, 8, 'Fizz', 'Buzz', 11, 'Fizz', 13, 14, 'FizzBuzz')"
+            },
+            {
+              "q": "写一个Python函数 longest_word(s)，返回字符串中最长单词（单词以空格分隔，忽略标",
+              "answer": "import string\n\ndef longest_word(s):\n    longest = \"\"\n    for",
+              "score": 1,
+              "detail": "全部通过"
+            },
+            {
+              "q": "写一个Python函数 two_sum(nums, target)，返回两个数下标（从0开始），使得",
+              "answer": "def two_sum(nums, target):\n    seen = {}\n    for i, num in e",
+              "score": 1,
+              "detail": "全部通过"
+            }
+          ]
+        },
+        "bench_categories": {
+          "中医·知识": {
+            "correct": 8,
+            "total": 10
+          },
+          "养生·知识": {
+            "correct": 6,
+            "total": 6
+          },
+          "玄学·知识": {
+            "correct": 8,
+            "total": 8
+          },
+          "生活·知识": {
+            "correct": 5,
+            "total": 6
+          },
+          "逻辑·智商": {
+            "correct": 12,
+            "total": 13
+          },
+          "数学·智商": {
+            "correct": 8,
+            "total": 8
+          },
+          "代码·智商": {
+            "correct": 5,
+            "total": 6
+          }
+        }
+      }
+    ],
+    "max": [
+      {
+        "round": 1,
+        "model": {
+          "correct": 52,
+          "total": 57,
+          "rate": 91.2,
+          "duration_s": 548.0,
+          "usage": {
+            "requests": 59,
+            "prompt_tokens": 3251,
+            "completion_tokens": 55755,
+            "thinking_tokens": 55279
+          }
+        },
+        "bench": {
+          "correct": 52,
+          "total": 57,
+          "rate": 91.2,
+          "duration_s": 81.0,
+          "usage": {
+            "requests": 59,
+            "prompt_tokens": 3904,
+            "completion_tokens": 30048,
+            "thinking_tokens": 29628
+          }
+        },
+        "raw_json": "/tmp/hy4-sweep-2/hy4-preview-max-r1.json",
+        "api_errors": 2,
+        "categories": {
+          "中医·知识": {
+            "correct": 9,
+            "total": 10
+          },
+          "养生·知识": {
+            "correct": 6,
+            "total": 6
+          },
+          "玄学·知识": {
+            "correct": 8,
+            "total": 8
+          },
+          "生活·知识": {
+            "correct": 5,
+            "total": 6
+          },
+          "逻辑·智商": {
+            "correct": 11,
+            "total": 13
+          },
+          "数学·智商": {
+            "correct": 8,
+            "total": 8
+          },
+          "代码·智商": {
+            "correct": 5,
+            "total": 6
+          }
+        },
+        "items": {
+          "中医·知识": [
+            {
+              "q": "中医理论中，\"五行\"指的是金、木、水、火、土五种基本元素及其相互关系。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "中医认为\"肝主疏泄\"，主要功能是调节全身气机。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "下列哪味中药属于补气药？\nA. 当归  B. 黄芪  C. 熟地黄  D. 川芎",
+              "answer": "B",
+              "score": 1,
+              "detail": "B"
+            },
+            {
+              "q": "中医里\"六淫\"指风、寒、暑、湿、燥、火六种外感病邪。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "《黄帝内经》分为《素问》和《灵枢》两部分。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "中医\"四诊\"是望、闻、问、切。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "下列哪项不属于中医\"八纲辨证\"的内容？\nA. 表里  B. 寒热  C. 虚实  D. 阴阳  E.",
+              "answer": "E",
+              "score": 0,
+              "detail": "无法解析: E"
+            },
+            {
+              "q": "中医认为\"肾为先天之本，脾为后天之本\"。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "针灸中的\"足三里\"穴位于小腿外侧，是足阳明胃经的穴位。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "中药\"四气五味\"中的\"四气\"指寒、热、温、凉。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            }
+          ],
+          "养生·知识": [
+            {
+              "q": "中医认为\"子时\"（23:00-1:00）是胆经当令，此时应进入睡眠状态以养肝胆。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "\"饭后百步走，活到九十九\"，饭后立即剧烈运动有助于消化。判断对错。",
+              "answer": "错",
+              "score": 1,
+              "detail": "错"
+            },
+            {
+              "q": "中医养生讲究\"春夏养阳，秋冬养阴\"。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "下列哪种饮品睡前饮用最不利于睡眠？\nA. 温牛奶  B. 淡蜂蜜水  C. 浓茶  D. 菊花茶",
+              "answer": "C",
+              "score": 1,
+              "detail": "C"
+            },
+            {
+              "q": "中医认为\"怒伤肝，喜伤心，思伤脾，忧伤肺，恐伤肾\"。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "三伏天进行艾灸（\"冬病夏治\"）的理论基础是顺应阳气最盛之时驱散寒邪。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            }
+          ],
+          "玄学·知识": [
+            {
+              "q": "八字命理中，天干有十个：甲乙丙丁戊己庚辛壬癸。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "十二地支的第六位是什么？\nA. 卯  B. 辰  C. 巳  D. 午",
+              "answer": "C",
+              "score": 1,
+              "detail": "C"
+            },
+            {
+              "q": "五行相生顺序是：木生火，火生土，土生金，金生水，水生木。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "地支六合中，子与什么相合？\nA. 丑  B. 寅  C. 卯  D. 辰",
+              "answer": "A",
+              "score": 1,
+              "detail": "A"
+            },
+            {
+              "q": "八字中\"日主\"指的是日柱的天干，代表命主自身。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "五行相克顺序是：木克土，土克水，水克火，火克金，金克木。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "十天干中，属于阳干的是甲丙戊庚壬。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "2026年是丙午年（天干地支纪年）。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            }
+          ],
+          "生活·知识": [
+            {
+              "q": "人体正常体温（腋下）大约在36.1°C至37.2°C之间。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "维生素C在高温烹饪中容易被破坏。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "酱油的主要酿造原料是大豆和小麦。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "我国标准电压是220伏，频率50赫兹。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "日常使用的食盐主要成分是氯化钠。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "在室温下，鲜牛奶放置超过4小时容易变质。判断对错。",
+              "answer": "__ERROR__: empty content",
+              "score": 0,
+              "detail": "__ERROR__: empty content"
+            }
+          ],
+          "逻辑·智商": [
+            {
+              "q": "如果所有的A都是B，并且所有的B都是C，那么以下哪项一定正确？\nA. 所有C都是A  B. 所有A都",
+              "answer": "B",
+              "score": 1,
+              "detail": "B"
+            },
+            {
+              "q": "小明比小红大3岁，小红比小刚大5岁，那么小明比小刚大几岁？直接回答数字。",
+              "answer": "8",
+              "score": 1,
+              "detail": "8.0"
+            },
+            {
+              "q": "一个数列：2, 6, 12, 20, 30, 下一个数是多少？直接回答数字。",
+              "answer": "42",
+              "score": 1,
+              "detail": "42.0"
+            },
+            {
+              "q": "袋子里有3个红球和2个蓝球，随机摸一个，摸到红球的概率是多少？直接回答分数或小数。",
+              "answer": "3/5",
+              "score": 1,
+              "detail": "0.6"
+            },
+            {
+              "q": "甲乙丙三人中只有一人说真话。甲说：\"乙在说谎\"；乙说：\"丙在说谎\"；丙说：\"甲和乙都在说谎\"。谁说真",
+              "answer": "B",
+              "score": 0,
+              "detail": "B"
+            },
+            {
+              "q": "时钟显示3点15分，时针和分针的夹角约多少度？直接回答数字。",
+              "answer": "7.5",
+              "score": 1,
+              "detail": "7.5"
+            },
+            {
+              "q": "一个正方体有6个面，切一刀最多能把它分成几块？直接回答数字。",
+              "answer": "2",
+              "score": 1,
+              "detail": "2.0"
+            },
+            {
+              "q": "如果昨天是明天的话就好了，这样今天就周五了。问：句子中的\"今天\"实际上是星期几？\nA. 周三  B.",
+              "answer": "__ERROR__: timed out",
+              "score": 0,
+              "detail": "__ERROR__: timed out"
+            },
+            {
+              "q": "1+2+3+...+100 = ? 直接回答数字。",
+              "answer": "5050",
+              "score": 1,
+              "detail": "5050.0"
+            },
+            {
+              "q": "三个连续奇数之和是57，最大的那个奇数是多少？直接回答数字。",
+              "answer": "21",
+              "score": 1,
+              "detail": "21.0"
+            },
+            {
+              "q": "甲、乙合作一项工程需12天，甲单独做需20天，乙单独做需多少天？直接回答数字。",
+              "answer": "30",
+              "score": 1,
+              "detail": "30.0"
+            },
+            {
+              "q": "以下哪个推理是有效的？\nA. 所有猫都怕水，X怕水，所以X是猫\nB. 所有猫都怕水，X是猫，所以X怕",
+              "answer": "B",
+              "score": 1,
+              "detail": "B"
+            },
+            {
+              "q": "一间房里有4个人，每人都有1只猫，每只猫有4条腿，房间里共有多少条腿（人和猫）？直接回答数字。",
+              "answer": "24",
+              "score": 1,
+              "detail": "24.0"
+            }
+          ],
+          "数学·智商": [
+            {
+              "q": "求解：3x + 7 = 22，x = ? 直接回答数字。",
+              "answer": "5",
+              "score": 1,
+              "detail": "5.0"
+            },
+            {
+              "q": "一个圆的半径是7，面积约是多少？（π取3.14）直接回答数字。",
+              "answer": "153.86",
+              "score": 1,
+              "detail": "153.86"
+            },
+            {
+              "q": "2的10次方等于多少？直接回答数字。",
+              "answer": "1024",
+              "score": 1,
+              "detail": "1024.0"
+            },
+            {
+              "q": "一个三角形三个内角的度数比是1:2:3，最大的角是多少度？直接回答数字。",
+              "answer": "90",
+              "score": 1,
+              "detail": "90.0"
+            },
+            {
+              "q": "某商品原价200元，打八折后又降价10%，现价多少元？直接回答数字。",
+              "answer": "144",
+              "score": 1,
+              "detail": "144.0"
+            },
+            {
+              "q": "log2(64) = ? 直接回答数字。",
+              "answer": "6",
+              "score": 1,
+              "detail": "6.0"
+            },
+            {
+              "q": "一个等差数列首项3，公差4，第10项是多少？直接回答数字。",
+              "answer": "39",
+              "score": 1,
+              "detail": "39.0"
+            },
+            {
+              "q": "计算：7! (7的阶乘) = ? 直接回答数字。",
+              "answer": "5040",
+              "score": 1,
+              "detail": "5040.0"
+            }
+          ],
+          "代码·智商": [
+            {
+              "q": "写一个Python函数 is_palindrome(s)，判断字符串s是否为回文（忽略大小写和空格）",
+              "answer": "def is_palindrome(s):\n    cleaned = s.replace(\" \", \"\").lower",
+              "score": 1,
+              "detail": "全部通过"
+            },
+            {
+              "q": "写一个Python函数 fibonacci(n)，返回斐波那契数列的第n项（n从1开始，第1项=0，",
+              "answer": "def fibonacci(n):\n    a, b = 0, 1\n    for _ in range(n - 1):",
+              "score": 1,
+              "detail": "全部通过"
+            },
+            {
+              "q": "写一个Python函数 count_vowels(s)，返回字符串中元音字母（aeiou，不分大小写",
+              "answer": "def count_vowels(s):\n    return sum(1 for ch in s.lower() if",
+              "score": 1,
+              "detail": "全部通过"
+            },
+            {
+              "q": "写一个Python函数 fizzbuzz(n)，返回1到n的列表：3的倍数输出'Fizz'，5的倍数",
+              "answer": "def fizzbuzz(n):\n    result = []\n    for i in range(1, n + 1",
+              "score": 0,
+              "detail": "(15,): 期望 [1, 2, 'Fizz', 4, 'Buzz', 'Fizz', 7, 8, 'Fizz', 'Buzz', 11, 'Fizz', 13, 14, 'FizzBuzz'] 得到 (1, 2, 'Fizz', 4, 'Buzz', 'Fizz', 7, 8, 'Fizz', 'Buzz', 11, 'Fizz', 13, 14, 'FizzBuzz')"
+            },
+            {
+              "q": "写一个Python函数 longest_word(s)，返回字符串中最长单词（单词以空格分隔，忽略标",
+              "answer": "import string\n\ndef longest_word(s):\n    translator = str.mak",
+              "score": 1,
+              "detail": "全部通过"
+            },
+            {
+              "q": "写一个Python函数 two_sum(nums, target)，返回两个数下标（从0开始），使得",
+              "answer": "def two_sum(nums, target):\n    num_map = {}\n    for i, num i",
+              "score": 1,
+              "detail": "全部通过"
+            }
+          ]
+        },
+        "bench_categories": {
+          "中医·知识": {
+            "correct": 8,
+            "total": 10
+          },
+          "养生·知识": {
+            "correct": 6,
+            "total": 6
+          },
+          "玄学·知识": {
+            "correct": 8,
+            "total": 8
+          },
+          "生活·知识": {
+            "correct": 5,
+            "total": 6
+          },
+          "逻辑·智商": {
+            "correct": 12,
+            "total": 13
+          },
+          "数学·智商": {
+            "correct": 8,
+            "total": 8
+          },
+          "代码·智商": {
+            "correct": 5,
+            "total": 6
+          }
+        }
+      },
+      {
+        "round": 2,
+        "model": {
+          "correct": 52,
+          "total": 57,
+          "rate": 91.2,
+          "duration_s": 438.9,
+          "usage": {
+            "requests": 55,
+            "prompt_tokens": 3063,
+            "completion_tokens": 28833,
+            "thinking_tokens": 28354
+          }
+        },
+        "bench": {
+          "correct": 53,
+          "total": 57,
+          "rate": 93.0,
+          "duration_s": 101.4,
+          "usage": {
+            "requests": 59,
+            "prompt_tokens": 3927,
+            "completion_tokens": 25380,
+            "thinking_tokens": 24992
+          }
+        },
+        "raw_json": "/tmp/hy4-sweep-2/hy4-preview-max-r2.json",
+        "api_errors": 2,
+        "categories": {
+          "中医·知识": {
+            "correct": 9,
+            "total": 10
+          },
+          "养生·知识": {
+            "correct": 6,
+            "total": 6
+          },
+          "玄学·知识": {
+            "correct": 8,
+            "total": 8
+          },
+          "生活·知识": {
+            "correct": 6,
+            "total": 6
+          },
+          "逻辑·智商": {
+            "correct": 10,
+            "total": 13
+          },
+          "数学·智商": {
+            "correct": 8,
+            "total": 8
+          },
+          "代码·智商": {
+            "correct": 5,
+            "total": 6
+          }
+        },
+        "items": {
+          "中医·知识": [
+            {
+              "q": "中医理论中，\"五行\"指的是金、木、水、火、土五种基本元素及其相互关系。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "中医认为\"肝主疏泄\"，主要功能是调节全身气机。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "下列哪味中药属于补气药？\nA. 当归  B. 黄芪  C. 熟地黄  D. 川芎",
+              "answer": "B",
+              "score": 1,
+              "detail": "B"
+            },
+            {
+              "q": "中医里\"六淫\"指风、寒、暑、湿、燥、火六种外感病邪。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "《黄帝内经》分为《素问》和《灵枢》两部分。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "中医\"四诊\"是望、闻、问、切。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "下列哪项不属于中医\"八纲辨证\"的内容？\nA. 表里  B. 寒热  C. 虚实  D. 阴阳  E.",
+              "answer": "E",
+              "score": 0,
+              "detail": "无法解析: E"
+            },
+            {
+              "q": "中医认为\"肾为先天之本，脾为后天之本\"。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "针灸中的\"足三里\"穴位于小腿外侧，是足阳明胃经的穴位。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "中药\"四气五味\"中的\"四气\"指寒、热、温、凉。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            }
+          ],
+          "养生·知识": [
+            {
+              "q": "中医认为\"子时\"（23:00-1:00）是胆经当令，此时应进入睡眠状态以养肝胆。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "\"饭后百步走，活到九十九\"，饭后立即剧烈运动有助于消化。判断对错。",
+              "answer": "错",
+              "score": 1,
+              "detail": "错"
+            },
+            {
+              "q": "中医养生讲究\"春夏养阳，秋冬养阴\"。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "下列哪种饮品睡前饮用最不利于睡眠？\nA. 温牛奶  B. 淡蜂蜜水  C. 浓茶  D. 菊花茶",
+              "answer": "C",
+              "score": 1,
+              "detail": "C"
+            },
+            {
+              "q": "中医认为\"怒伤肝，喜伤心，思伤脾，忧伤肺，恐伤肾\"。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "三伏天进行艾灸（\"冬病夏治\"）的理论基础是顺应阳气最盛之时驱散寒邪。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            }
+          ],
+          "玄学·知识": [
+            {
+              "q": "八字命理中，天干有十个：甲乙丙丁戊己庚辛壬癸。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "十二地支的第六位是什么？\nA. 卯  B. 辰  C. 巳  D. 午",
+              "answer": "C",
+              "score": 1,
+              "detail": "C"
+            },
+            {
+              "q": "五行相生顺序是：木生火，火生土，土生金，金生水，水生木。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "地支六合中，子与什么相合？\nA. 丑  B. 寅  C. 卯  D. 辰",
+              "answer": "A",
+              "score": 1,
+              "detail": "A"
+            },
+            {
+              "q": "八字中\"日主\"指的是日柱的天干，代表命主自身。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "五行相克顺序是：木克土，土克水，水克火，火克金，金克木。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "十天干中，属于阳干的是甲丙戊庚壬。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "2026年是丙午年（天干地支纪年）。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            }
+          ],
+          "生活·知识": [
+            {
+              "q": "人体正常体温（腋下）大约在36.1°C至37.2°C之间。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "维生素C在高温烹饪中容易被破坏。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "酱油的主要酿造原料是大豆和小麦。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "我国标准电压是220伏，频率50赫兹。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "日常使用的食盐主要成分是氯化钠。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "在室温下，鲜牛奶放置超过4小时容易变质。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            }
+          ],
+          "逻辑·智商": [
+            {
+              "q": "如果所有的A都是B，并且所有的B都是C，那么以下哪项一定正确？\nA. 所有C都是A  B. 所有A都",
+              "answer": "B",
+              "score": 1,
+              "detail": "B"
+            },
+            {
+              "q": "小明比小红大3岁，小红比小刚大5岁，那么小明比小刚大几岁？直接回答数字。",
+              "answer": "8",
+              "score": 1,
+              "detail": "8.0"
+            },
+            {
+              "q": "一个数列：2, 6, 12, 20, 30, 下一个数是多少？直接回答数字。",
+              "answer": "42",
+              "score": 1,
+              "detail": "42.0"
+            },
+            {
+              "q": "袋子里有3个红球和2个蓝球，随机摸一个，摸到红球的概率是多少？直接回答分数或小数。",
+              "answer": "3/5",
+              "score": 1,
+              "detail": "0.6"
+            },
+            {
+              "q": "甲乙丙三人中只有一人说真话。甲说：\"乙在说谎\"；乙说：\"丙在说谎\"；丙说：\"甲和乙都在说谎\"。谁说真",
+              "answer": "B",
+              "score": 0,
+              "detail": "B"
+            },
+            {
+              "q": "时钟显示3点15分，时针和分针的夹角约多少度？直接回答数字。",
+              "answer": "7.5",
+              "score": 1,
+              "detail": "7.5"
+            },
+            {
+              "q": "一个正方体有6个面，切一刀最多能把它分成几块？直接回答数字。",
+              "answer": "__ERROR__: timed out",
+              "score": 0,
+              "detail": "__ERROR__: timed out"
+            },
+            {
+              "q": "如果昨天是明天的话就好了，这样今天就周五了。问：句子中的\"今天\"实际上是星期几？\nA. 周三  B.",
+              "answer": "__ERROR__: timed out",
+              "score": 0,
+              "detail": "__ERROR__: timed out"
+            },
+            {
+              "q": "1+2+3+...+100 = ? 直接回答数字。",
+              "answer": "5050",
+              "score": 1,
+              "detail": "5050.0"
+            },
+            {
+              "q": "三个连续奇数之和是57，最大的那个奇数是多少？直接回答数字。",
+              "answer": "21",
+              "score": 1,
+              "detail": "21.0"
+            },
+            {
+              "q": "甲、乙合作一项工程需12天，甲单独做需20天，乙单独做需多少天？直接回答数字。",
+              "answer": "30",
+              "score": 1,
+              "detail": "30.0"
+            },
+            {
+              "q": "以下哪个推理是有效的？\nA. 所有猫都怕水，X怕水，所以X是猫\nB. 所有猫都怕水，X是猫，所以X怕",
+              "answer": "B",
+              "score": 1,
+              "detail": "B"
+            },
+            {
+              "q": "一间房里有4个人，每人都有1只猫，每只猫有4条腿，房间里共有多少条腿（人和猫）？直接回答数字。",
+              "answer": "24",
+              "score": 1,
+              "detail": "24.0"
+            }
+          ],
+          "数学·智商": [
+            {
+              "q": "求解：3x + 7 = 22，x = ? 直接回答数字。",
+              "answer": "5",
+              "score": 1,
+              "detail": "5.0"
+            },
+            {
+              "q": "一个圆的半径是7，面积约是多少？（π取3.14）直接回答数字。",
+              "answer": "153.86",
+              "score": 1,
+              "detail": "153.86"
+            },
+            {
+              "q": "2的10次方等于多少？直接回答数字。",
+              "answer": "1024",
+              "score": 1,
+              "detail": "1024.0"
+            },
+            {
+              "q": "一个三角形三个内角的度数比是1:2:3，最大的角是多少度？直接回答数字。",
+              "answer": "90",
+              "score": 1,
+              "detail": "90.0"
+            },
+            {
+              "q": "某商品原价200元，打八折后又降价10%，现价多少元？直接回答数字。",
+              "answer": "144",
+              "score": 1,
+              "detail": "144.0"
+            },
+            {
+              "q": "log2(64) = ? 直接回答数字。",
+              "answer": "6",
+              "score": 1,
+              "detail": "6.0"
+            },
+            {
+              "q": "一个等差数列首项3，公差4，第10项是多少？直接回答数字。",
+              "answer": "39",
+              "score": 1,
+              "detail": "39.0"
+            },
+            {
+              "q": "计算：7! (7的阶乘) = ? 直接回答数字。",
+              "answer": "5040",
+              "score": 1,
+              "detail": "5040.0"
+            }
+          ],
+          "代码·智商": [
+            {
+              "q": "写一个Python函数 is_palindrome(s)，判断字符串s是否为回文（忽略大小写和空格）",
+              "answer": "def is_palindrome(s):\n    cleaned = s.lower().replace(\" \", \"",
+              "score": 1,
+              "detail": "全部通过"
+            },
+            {
+              "q": "写一个Python函数 fibonacci(n)，返回斐波那契数列的第n项（n从1开始，第1项=0，",
+              "answer": "def fibonacci(n):\n    a, b = 0, 1\n    for _ in range(n - 1):",
+              "score": 1,
+              "detail": "全部通过"
+            },
+            {
+              "q": "写一个Python函数 count_vowels(s)，返回字符串中元音字母（aeiou，不分大小写",
+              "answer": "def count_vowels(s):\n    return sum(1 for c in s.lower() if ",
+              "score": 1,
+              "detail": "全部通过"
+            },
+            {
+              "q": "写一个Python函数 fizzbuzz(n)，返回1到n的列表：3的倍数输出'Fizz'，5的倍数",
+              "answer": "def fizzbuzz(n):\n    result = []\n    for i in range(1, n + 1",
+              "score": 0,
+              "detail": "(15,): 期望 [1, 2, 'Fizz', 4, 'Buzz', 'Fizz', 7, 8, 'Fizz', 'Buzz', 11, 'Fizz', 13, 14, 'FizzBuzz'] 得到 (1, 2, 'Fizz', 4, 'Buzz', 'Fizz', 7, 8, 'Fizz', 'Buzz', 11, 'Fizz', 13, 14, 'FizzBuzz')"
+            },
+            {
+              "q": "写一个Python函数 longest_word(s)，返回字符串中最长单词（单词以空格分隔，忽略标",
+              "answer": "import string\n\ndef longest_word(s):\n    longest = \"\"\n    max",
+              "score": 1,
+              "detail": "全部通过"
+            },
+            {
+              "q": "写一个Python函数 two_sum(nums, target)，返回两个数下标（从0开始），使得",
+              "answer": "def two_sum(nums, target):\n    seen = {}\n    for i, num in e",
+              "score": 1,
+              "detail": "全部通过"
+            }
+          ]
+        },
+        "bench_categories": {
+          "中医·知识": {
+            "correct": 9,
+            "total": 10
+          },
+          "养生·知识": {
+            "correct": 6,
+            "total": 6
+          },
+          "玄学·知识": {
+            "correct": 8,
+            "total": 8
+          },
+          "生活·知识": {
+            "correct": 5,
+            "total": 6
+          },
+          "逻辑·智商": {
+            "correct": 12,
+            "total": 13
+          },
+          "数学·智商": {
+            "correct": 8,
+            "total": 8
+          },
+          "代码·智商": {
+            "correct": 5,
+            "total": 6
+          }
+        }
+      },
+      {
+        "round": 3,
+        "model": {
+          "correct": 52,
+          "total": 57,
+          "rate": 91.2,
+          "duration_s": 463.1,
+          "usage": {
+            "requests": 57,
+            "prompt_tokens": 3165,
+            "completion_tokens": 38600,
+            "thinking_tokens": 38131
+          }
+        },
+        "bench": {
+          "correct": 54,
+          "total": 57,
+          "rate": 94.7,
+          "duration_s": 56.4,
+          "usage": {
+            "requests": 58,
+            "prompt_tokens": 3826,
+            "completion_tokens": 17777,
+            "thinking_tokens": 17392
+          }
+        },
+        "raw_json": "/tmp/hy4-sweep-2/hy4-preview-max-r3.json",
+        "api_errors": 1,
+        "categories": {
+          "中医·知识": {
+            "correct": 9,
+            "total": 10
+          },
+          "养生·知识": {
+            "correct": 6,
+            "total": 6
+          },
+          "玄学·知识": {
+            "correct": 8,
+            "total": 8
+          },
+          "生活·知识": {
+            "correct": 5,
+            "total": 6
+          },
+          "逻辑·智商": {
+            "correct": 11,
+            "total": 13
+          },
+          "数学·智商": {
+            "correct": 8,
+            "total": 8
+          },
+          "代码·智商": {
+            "correct": 5,
+            "total": 6
+          }
+        },
+        "items": {
+          "中医·知识": [
+            {
+              "q": "中医理论中，\"五行\"指的是金、木、水、火、土五种基本元素及其相互关系。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "中医认为\"肝主疏泄\"，主要功能是调节全身气机。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "下列哪味中药属于补气药？\nA. 当归  B. 黄芪  C. 熟地黄  D. 川芎",
+              "answer": "B",
+              "score": 1,
+              "detail": "B"
+            },
+            {
+              "q": "中医里\"六淫\"指风、寒、暑、湿、燥、火六种外感病邪。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "《黄帝内经》分为《素问》和《灵枢》两部分。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "中医\"四诊\"是望、闻、问、切。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "下列哪项不属于中医\"八纲辨证\"的内容？\nA. 表里  B. 寒热  C. 虚实  D. 阴阳  E.",
+              "answer": "E",
+              "score": 0,
+              "detail": "无法解析: E"
+            },
+            {
+              "q": "中医认为\"肾为先天之本，脾为后天之本\"。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "针灸中的\"足三里\"穴位于小腿外侧，是足阳明胃经的穴位。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "中药\"四气五味\"中的\"四气\"指寒、热、温、凉。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            }
+          ],
+          "养生·知识": [
+            {
+              "q": "中医认为\"子时\"（23:00-1:00）是胆经当令，此时应进入睡眠状态以养肝胆。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "\"饭后百步走，活到九十九\"，饭后立即剧烈运动有助于消化。判断对错。",
+              "answer": "错",
+              "score": 1,
+              "detail": "错"
+            },
+            {
+              "q": "中医养生讲究\"春夏养阳，秋冬养阴\"。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "下列哪种饮品睡前饮用最不利于睡眠？\nA. 温牛奶  B. 淡蜂蜜水  C. 浓茶  D. 菊花茶",
+              "answer": "C",
+              "score": 1,
+              "detail": "C"
+            },
+            {
+              "q": "中医认为\"怒伤肝，喜伤心，思伤脾，忧伤肺，恐伤肾\"。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "三伏天进行艾灸（\"冬病夏治\"）的理论基础是顺应阳气最盛之时驱散寒邪。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            }
+          ],
+          "玄学·知识": [
+            {
+              "q": "八字命理中，天干有十个：甲乙丙丁戊己庚辛壬癸。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "十二地支的第六位是什么？\nA. 卯  B. 辰  C. 巳  D. 午",
+              "answer": "C",
+              "score": 1,
+              "detail": "C"
+            },
+            {
+              "q": "五行相生顺序是：木生火，火生土，土生金，金生水，水生木。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "地支六合中，子与什么相合？\nA. 丑  B. 寅  C. 卯  D. 辰",
+              "answer": "A",
+              "score": 1,
+              "detail": "A"
+            },
+            {
+              "q": "八字中\"日主\"指的是日柱的天干，代表命主自身。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "五行相克顺序是：木克土，土克水，水克火，火克金，金克木。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "十天干中，属于阳干的是甲丙戊庚壬。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "2026年是丙午年（天干地支纪年）。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            }
+          ],
+          "生活·知识": [
+            {
+              "q": "人体正常体温（腋下）大约在36.1°C至37.2°C之间。判断对错。",
+              "answer": "错",
+              "score": 0,
+              "detail": "错"
+            },
+            {
+              "q": "维生素C在高温烹饪中容易被破坏。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "酱油的主要酿造原料是大豆和小麦。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "我国标准电压是220伏，频率50赫兹。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "日常使用的食盐主要成分是氯化钠。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            },
+            {
+              "q": "在室温下，鲜牛奶放置超过4小时容易变质。判断对错。",
+              "answer": "对",
+              "score": 1,
+              "detail": "对"
+            }
+          ],
+          "逻辑·智商": [
+            {
+              "q": "如果所有的A都是B，并且所有的B都是C，那么以下哪项一定正确？\nA. 所有C都是A  B. 所有A都",
+              "answer": "B",
+              "score": 1,
+              "detail": "B"
+            },
+            {
+              "q": "小明比小红大3岁，小红比小刚大5岁，那么小明比小刚大几岁？直接回答数字。",
+              "answer": "8",
+              "score": 1,
+              "detail": "8.0"
+            },
+            {
+              "q": "一个数列：2, 6, 12, 20, 30, 下一个数是多少？直接回答数字。",
+              "answer": "42",
+              "score": 1,
+              "detail": "42.0"
+            },
+            {
+              "q": "袋子里有3个红球和2个蓝球，随机摸一个，摸到红球的概率是多少？直接回答分数或小数。",
+              "answer": "3/5",
+              "score": 1,
+              "detail": "0.6"
+            },
+            {
+              "q": "甲乙丙三人中只有一人说真话。甲说：\"乙在说谎\"；乙说：\"丙在说谎\"；丙说：\"甲和乙都在说谎\"。谁说真",
+              "answer": "B",
+              "score": 0,
+              "detail": "B"
+            },
+            {
+              "q": "时钟显示3点15分，时针和分针的夹角约多少度？直接回答数字。",
+              "answer": "7.5",
+              "score": 1,
+              "detail": "7.5"
+            },
+            {
+              "q": "一个正方体有6个面，切一刀最多能把它分成几块？直接回答数字。",
+              "answer": "2",
+              "score": 1,
+              "detail": "2.0"
+            },
+            {
+              "q": "如果昨天是明天的话就好了，这样今天就周五了。问：句子中的\"今天\"实际上是星期几？\nA. 周三  B.",
+              "answer": "__ERROR__: timed out",
+              "score": 0,
+              "detail": "__ERROR__: timed out"
+            },
+            {
+              "q": "1+2+3+...+100 = ? 直接回答数字。",
+              "answer": "5050",
+              "score": 1,
+              "detail": "5050.0"
+            },
+            {
+              "q": "三个连续奇数之和是57，最大的那个奇数是多少？直接回答数字。",
+              "answer": "21",
+              "score": 1,
+              "detail": "21.0"
+            },
+            {
+              "q": "甲、乙合作一项工程需12天，甲单独做需20天，乙单独做需多少天？直接回答数字。",
+              "answer": "30",
+              "score": 1,
+              "detail": "30.0"
+            },
+            {
+              "q": "以下哪个推理是有效的？\nA. 所有猫都怕水，X怕水，所以X是猫\nB. 所有猫都怕水，X是猫，所以X怕",
+              "answer": "B",
+              "score": 1,
+              "detail": "B"
+            },
+            {
+              "q": "一间房里有4个人，每人都有1只猫，每只猫有4条腿，房间里共有多少条腿（人和猫）？直接回答数字。",
+              "answer": "24",
+              "score": 1,
+              "detail": "24.0"
+            }
+          ],
+          "数学·智商": [
+            {
+              "q": "求解：3x + 7 = 22，x = ? 直接回答数字。",
+              "answer": "5",
+              "score": 1,
+              "detail": "5.0"
+            },
+            {
+              "q": "一个圆的半径是7，面积约是多少？（π取3.14）直接回答数字。",
+              "answer": "153.86",
+              "score": 1,
+              "detail": "153.86"
+            },
+            {
+              "q": "2的10次方等于多少？直接回答数字。",
+              "answer": "1024",
+              "score": 1,
+              "detail": "1024.0"
+            },
+            {
+              "q": "一个三角形三个内角的度数比是1:2:3，最大的角是多少度？直接回答数字。",
+              "answer": "90",
+              "score": 1,
+              "detail": "90.0"
+            },
+            {
+              "q": "某商品原价200元，打八折后又降价10%，现价多少元？直接回答数字。",
+              "answer": "144",
+              "score": 1,
+              "detail": "144.0"
+            },
+            {
+              "q": "log2(64) = ? 直接回答数字。",
+              "answer": "6",
+              "score": 1,
+              "detail": "6.0"
+            },
+            {
+              "q": "一个等差数列首项3，公差4，第10项是多少？直接回答数字。",
+              "answer": "39",
+              "score": 1,
+              "detail": "39.0"
+            },
+            {
+              "q": "计算：7! (7的阶乘) = ? 直接回答数字。",
+              "answer": "5040",
+              "score": 1,
+              "detail": "5040.0"
+            }
+          ],
+          "代码·智商": [
+            {
+              "q": "写一个Python函数 is_palindrome(s)，判断字符串s是否为回文（忽略大小写和空格）",
+              "answer": "def is_palindrome(s):\n    cleaned = s.replace(\" \", \"\").lower",
+              "score": 1,
+              "detail": "全部通过"
+            },
+            {
+              "q": "写一个Python函数 fibonacci(n)，返回斐波那契数列的第n项（n从1开始，第1项=0，",
+              "answer": "def fibonacci(n):\n    a, b = 0, 1\n    for _ in range(n - 1):",
+              "score": 1,
+              "detail": "全部通过"
+            },
+            {
+              "q": "写一个Python函数 count_vowels(s)，返回字符串中元音字母（aeiou，不分大小写",
+              "answer": "def count_vowels(s):\n    return sum(1 for c in s.lower() if ",
+              "score": 1,
+              "detail": "全部通过"
+            },
+            {
+              "q": "写一个Python函数 fizzbuzz(n)，返回1到n的列表：3的倍数输出'Fizz'，5的倍数",
+              "answer": "def fizzbuzz(n):\n    result = []\n    for i in range(1, n + 1",
+              "score": 0,
+              "detail": "(15,): 期望 [1, 2, 'Fizz', 4, 'Buzz', 'Fizz', 7, 8, 'Fizz', 'Buzz', 11, 'Fizz', 13, 14, 'FizzBuzz'] 得到 (1, 2, 'Fizz', 4, 'Buzz', 'Fizz', 7, 8, 'Fizz', 'Buzz', 11, 'Fizz', 13, 14, 'FizzBuzz')"
+            },
+            {
+              "q": "写一个Python函数 longest_word(s)，返回字符串中最长单词（单词以空格分隔，忽略标",
+              "answer": "import string\n\ndef longest_word(s):\n    longest = \"\"\n    for",
+              "score": 1,
+              "detail": "全部通过"
+            },
+            {
+              "q": "写一个Python函数 two_sum(nums, target)，返回两个数下标（从0开始），使得",
+              "answer": "def two_sum(nums, target):\n    seen = {}\n    for i, num in e",
+              "score": 1,
+              "detail": "全部通过"
+            }
+          ]
+        },
+        "bench_categories": {
+          "中医·知识": {
+            "correct": 9,
+            "total": 10
+          },
+          "养生·知识": {
+            "correct": 6,
+            "total": 6
+          },
+          "玄学·知识": {
+            "correct": 8,
+            "total": 8
+          },
+          "生活·知识": {
+            "correct": 6,
+            "total": 6
+          },
+          "逻辑·智商": {
+            "correct": 12,
+            "total": 13
+          },
+          "数学·智商": {
+            "correct": 8,
+            "total": 8
+          },
+          "代码·智商": {
+            "correct": 5,
+            "total": 6
+          }
+        }
+      }
+    ]
+  },
+  "summary": {
+    "low": {
+      "rounds": 3,
+      "scores": [
+        52,
+        52,
+        51
+      ],
+      "mean_correct": 51.67,
+      "spread": 1,
+      "total": 57,
+      "mean_rate": 90.6,
+      "mean_duration_s": 467.3,
+      "api_errors": 7,
+      "usage_mean": {
+        "requests": 55.3,
+        "prompt_tokens": 3075.7,
+        "completion_tokens": 33020.7,
+        "thinking_tokens": 32536.3
+      },
+      "bench_scores": [
+        52,
+        53,
+        54
+      ],
+      "bench_mean_correct": 53,
+      "bench_total": 57,
+      "categories": {
+        "中医·知识": {
+          "mean_correct": 9,
+          "total": 10
+        },
+        "养生·知识": {
+          "mean_correct": 6,
+          "total": 6
+        },
+        "玄学·知识": {
+          "mean_correct": 8,
+          "total": 8
+        },
+        "生活·知识": {
+          "mean_correct": 5.67,
+          "total": 6
+        },
+        "逻辑·智商": {
+          "mean_correct": 10,
+          "total": 13
+        },
+        "数学·智商": {
+          "mean_correct": 8,
+          "total": 8
+        },
+        "代码·智商": {
+          "mean_correct": 5,
+          "total": 6
+        }
+      },
+      "stable": {
+        "中医·知识": {
+          "all_rounds_ok": 9,
+          "total": 10
+        },
+        "养生·知识": {
+          "all_rounds_ok": 6,
+          "total": 6
+        },
+        "玄学·知识": {
+          "all_rounds_ok": 8,
+          "total": 8
+        },
+        "生活·知识": {
+          "all_rounds_ok": 5,
+          "total": 6
+        },
+        "逻辑·智商": {
+          "all_rounds_ok": 10,
+          "total": 13
+        },
+        "数学·智商": {
+          "all_rounds_ok": 8,
+          "total": 8
+        },
+        "代码·智商": {
+          "all_rounds_ok": 5,
+          "total": 6
+        }
+      }
+    },
+    "medium": {
+      "rounds": 3,
+      "scores": [
+        51,
+        52,
+        53
+      ],
+      "mean_correct": 52,
+      "spread": 2,
+      "total": 57,
+      "mean_rate": 91.2,
+      "mean_duration_s": 464.4,
+      "api_errors": 4,
+      "usage_mean": {
+        "requests": 56.3,
+        "prompt_tokens": 3127,
+        "completion_tokens": 35983,
+        "thinking_tokens": 35512
+      },
+      "bench_scores": [
+        53,
+        52,
+        52
+      ],
+      "bench_mean_correct": 52.33,
+      "bench_total": 57,
+      "categories": {
+        "中医·知识": {
+          "mean_correct": 9,
+          "total": 10
+        },
+        "养生·知识": {
+          "mean_correct": 6,
+          "total": 6
+        },
+        "玄学·知识": {
+          "mean_correct": 8,
+          "total": 8
+        },
+        "生活·知识": {
+          "mean_correct": 5.33,
+          "total": 6
+        },
+        "逻辑·智商": {
+          "mean_correct": 10.67,
+          "total": 13
+        },
+        "数学·智商": {
+          "mean_correct": 8,
+          "total": 8
+        },
+        "代码·智商": {
+          "mean_correct": 5,
+          "total": 6
+        }
+      },
+      "stable": {
+        "中医·知识": {
+          "all_rounds_ok": 9,
+          "total": 10
+        },
+        "养生·知识": {
+          "all_rounds_ok": 6,
+          "total": 6
+        },
+        "玄学·知识": {
+          "all_rounds_ok": 8,
+          "total": 8
+        },
+        "生活·知识": {
+          "all_rounds_ok": 5,
+          "total": 6
+        },
+        "逻辑·智商": {
+          "all_rounds_ok": 10,
+          "total": 13
+        },
+        "数学·智商": {
+          "all_rounds_ok": 8,
+          "total": 8
+        },
+        "代码·智商": {
+          "all_rounds_ok": 5,
+          "total": 6
+        }
+      }
+    },
+    "high": {
+      "rounds": 3,
+      "scores": [
+        52,
+        52,
+        52
+      ],
+      "mean_correct": 52,
+      "spread": 0,
+      "total": 57,
+      "mean_rate": 91.2,
+      "mean_duration_s": 451.4,
+      "api_errors": 5,
+      "usage_mean": {
+        "requests": 56,
+        "prompt_tokens": 3109,
+        "completion_tokens": 30397.7,
+        "thinking_tokens": 29927.3
+      },
+      "bench_scores": [
+        53,
+        52,
+        52
+      ],
+      "bench_mean_correct": 52.33,
+      "bench_total": 57,
+      "categories": {
+        "中医·知识": {
+          "mean_correct": 9,
+          "total": 10
+        },
+        "养生·知识": {
+          "mean_correct": 6,
+          "total": 6
+        },
+        "玄学·知识": {
+          "mean_correct": 8,
+          "total": 8
+        },
+        "生活·知识": {
+          "mean_correct": 5.33,
+          "total": 6
+        },
+        "逻辑·智商": {
+          "mean_correct": 10.67,
+          "total": 13
+        },
+        "数学·智商": {
+          "mean_correct": 8,
+          "total": 8
+        },
+        "代码·智商": {
+          "mean_correct": 5,
+          "total": 6
+        }
+      },
+      "stable": {
+        "中医·知识": {
+          "all_rounds_ok": 9,
+          "total": 10
+        },
+        "养生·知识": {
+          "all_rounds_ok": 6,
+          "total": 6
+        },
+        "玄学·知识": {
+          "all_rounds_ok": 8,
+          "total": 8
+        },
+        "生活·知识": {
+          "all_rounds_ok": 5,
+          "total": 6
+        },
+        "逻辑·智商": {
+          "all_rounds_ok": 10,
+          "total": 13
+        },
+        "数学·智商": {
+          "all_rounds_ok": 8,
+          "total": 8
+        },
+        "代码·智商": {
+          "all_rounds_ok": 5,
+          "total": 6
+        }
+      }
+    },
+    "max": {
+      "rounds": 3,
+      "scores": [
+        52,
+        52,
+        52
+      ],
+      "mean_correct": 52,
+      "spread": 0,
+      "total": 57,
+      "mean_rate": 91.2,
+      "mean_duration_s": 483.3,
+      "api_errors": 5,
+      "usage_mean": {
+        "requests": 57,
+        "prompt_tokens": 3159.7,
+        "completion_tokens": 41062.7,
+        "thinking_tokens": 40588
+      },
+      "bench_scores": [
+        52,
+        53,
+        54
+      ],
+      "bench_mean_correct": 53,
+      "bench_total": 57,
+      "categories": {
+        "中医·知识": {
+          "mean_correct": 9,
+          "total": 10
+        },
+        "养生·知识": {
+          "mean_correct": 6,
+          "total": 6
+        },
+        "玄学·知识": {
+          "mean_correct": 8,
+          "total": 8
+        },
+        "生活·知识": {
+          "mean_correct": 5.33,
+          "total": 6
+        },
+        "逻辑·智商": {
+          "mean_correct": 10.67,
+          "total": 13
+        },
+        "数学·智商": {
+          "mean_correct": 8,
+          "total": 8
+        },
+        "代码·智商": {
+          "mean_correct": 5,
+          "total": 6
+        }
+      },
+      "stable": {
+        "中医·知识": {
+          "all_rounds_ok": 9,
+          "total": 10
+        },
+        "养生·知识": {
+          "all_rounds_ok": 6,
+          "total": 6
+        },
+        "玄学·知识": {
+          "all_rounds_ok": 8,
+          "total": 8
+        },
+        "生活·知识": {
+          "all_rounds_ok": 4,
+          "total": 6
+        },
+        "逻辑·智商": {
+          "all_rounds_ok": 10,
+          "total": 13
+        },
+        "数学·智商": {
+          "all_rounds_ok": 8,
+          "total": 8
+        },
+        "代码·智商": {
+          "all_rounds_ok": 5,
+          "total": 6
+        }
+      }
+    }
+  },
+  "notes": {
+    "gateway": "http://127.0.0.1:3001 （本次任务书写 3002，实测璇玑实际监听 3001）",
+    "auth": "api_tokens 表 dev token（admin.api_key 不能过 /v1 代理鉴权）",
+    "db": "/ssd/migrated/xuanji/xuanji.db（运行进程 --db 指向；/data/xjwg 与 /data/xuanji/xuanji.db 非活动库）",
+    "upstream": "codebuddy (https://copilot.tencent.com/v2)",
+    "bank": "tools/eval_models.py 内置 57 题（无 138 题库；138 为历史口径）",
+    "params": "temperature=0, max_tokens=8192, workers=6, 单请求超时 180s, 档间间隔 10s, 3 轮/档",
+    "best_effort": "high",
+    "best_reason": "high/max/medium 均 52，优先取波动最小档；high 波动 0 且 thinking 最少(29927)，故取 high",
+    "caveat": "各档 api_errors（超时）约 4-7/171；hy4-preview 为高思考模型，实测延迟约为基准 deepseek-v4.1-flash 的 12 倍（451s vs 38s / 57题）",
+    "client_ver": "eval_models.py 新增 --max-tokens/--timeout/--json-out 与 usage 统计；eval_models_sweep.py 档位扫描"
+  }
+}

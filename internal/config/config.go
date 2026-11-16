@@ -1,0 +1,913 @@
+// Package config 负责加载与校验璇玑网关的 YAML 配置。
+package config
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/icefairy/xuanji/internal/store"
+	"gopkg.in/yaml.v3"
+)
+
+// Duration 是带单位的时间长度（如 "30s"、"5h"），用于 YAML 配置反序列化。
+type Duration time.Duration
+
+// UnmarshalYAML 将 "30s" 之类的时间字符串解析为 Duration，空值视为 0。
+func (d *Duration) UnmarshalYAML(node *yaml.Node) error {
+	var raw string
+	if err := node.Decode(&raw); err != nil {
+		return fmt.Errorf("invalid duration: %w", err)
+	}
+	if strings.TrimSpace(raw) == "" {
+		*d = 0
+		return nil
+	}
+	v, err := time.ParseDuration(strings.TrimSpace(raw))
+	if err != nil {
+		return fmt.Errorf("invalid duration %q: %w", raw, err)
+	}
+	*d = Duration(v)
+	return nil
+}
+
+// String 返回 duration 的标准字符串形式。
+func (d Duration) String() string { return time.Duration(d).String() }
+
+// Retry 描述重试策略。
+type Retry struct {
+	MaxRetries           int      `yaml:"max_retries"`             // 最多重试次数（跨上游切换），默认 3
+	RetryStatuses        []int    `yaml:"retry_statuses"`          // 触发重试的 HTTP 状态码，默认 [429, 500, 502, 503, 504]
+	RetryKeywords        []string `yaml:"retry_keywords"`          // 响应体中含这些关键词则触发重试
+	FastFailMinutes      int      `yaml:"fast_fail_minutes"`       // 上游失败后跳过尝试的分钟数，默认 5
+	FastFailProbeMinutes int      `yaml:"fast_fail_probe_minutes"` // 后台探测被禁用上游的间隔分钟数，默认 35
+	UpstreamTimeout      int      `yaml:"upstream_timeout"`        // 上游请求超时秒数（连接+非流式整体），默认 60
+}
+
+// Config 是网关的根配置结构。
+//
+// 【配置来源】运行时唯一来源是数据库（LoadFromDB）：server/retry/proxy 等
+// 标量配置来自 config 表，上游来自 upstreams 表，路由规则来自 routing_rules 表。
+//
+// 结构体上的 `yaml:"..."` tag 属于**历史遗留**（配置库化之前用 YAML 文件），
+// 唯一消费者是已无生产调用点的 Load()。新增配置项请直接在 LoadFromDB 里映射
+// config 表键，不要依赖 yaml tag。
+type Config struct {
+	Server    Server     `yaml:"server"`
+	Upstreams []Upstream `yaml:"upstreams"`
+	Routing   Routing    `yaml:"routing"`
+	Retry     Retry      `yaml:"retry"`
+	Proxy     Proxy      `yaml:"proxy"`
+	Storage   Storage    `yaml:"storage"`
+	Alert     Alert      `yaml:"alert"`
+}
+
+// Alert 是上游健康告警配置。健康检查发现上游转为 degraded / dead（或恢复健康）时
+// 推送一条 JSON 到 WebhookURL，便于在黑洞、欠费、上游倒闭等故障发生时及时发现，
+// 而不是等用户报错。
+type Alert struct {
+	// WebhookURL 是告警接收地址（POST JSON）。留空则关闭告警。
+	// 兼容通用 Webhook（如企业微信/钉钉/飞书机器人、自建通知服务）。
+	WebhookURL string `yaml:"webhook_url"`
+	// ConsecutiveFails 是触发告警所需的连续失败轮数（默认 3，且不低于阈值的硬下限 3）。
+	// 设为 1 即第一次失败就告警；探测失败 2 次才 degraded、5 次才 dead，
+	// 默认 3 次意味着在刚恶化为 degraded 时就提前知会，早于真正 dead。
+	ConsecutiveFails int `yaml:"consecutive_fails"`
+}
+
+// Proxy 描述转发层的可选行为开关。
+type Proxy struct {
+	// AutoBestEffort 开启后，客户端未传 reasoning_effort 时，
+	// 自动按 EffortConfigs 的推荐值补上（默认 false）。
+	AutoBestEffort bool `yaml:"auto_best_effort"`
+	// ForceBestEffort 开启后，强制用 EffortConfigs 的强制值覆盖客户端传的 reasoning_effort（默认 false）。
+	ForceBestEffort bool `yaml:"force_best_effort"`
+	// VideoPassThrough 开启后，允许 content 中的 video_url 透传给上游（多模态视频，默认 false）。
+	// 关闭时请求含 video_url 直接返回 400——视频流量大，需显式开启。
+	VideoPassThrough bool `yaml:"video_pass_through"`
+	// CacheReasoningContent 开启后，缓存上游响应中 assistant 消息的 reasoning_content
+	// （按 tool_call_id），并在后续请求中为丢失该字段的 assistant 消息自动补回
+	// （DeepSeek thinking 模式 tool-calling 要求 reasoning_content 原样回传，否则上游
+	// 400；默认 true）。关闭时缓存不写、注入不执行，body 原样透传。
+	CacheReasoningContent bool `yaml:"cache_reasoning_content"`
+	// DebugRequestLog 异常请求完整诊断日志开关（默认 false）。
+	// 开启后把失败候选的**完整原始请求体**与上游实际发出的请求体写成 NDJSON，
+	// 落到 <数据库目录>/debug-logs/ 下（0600），单文件 100MB 轮转、保留 7 天。
+	// ⚠ 日志含完整提示词（可能含个人/机密数据），仅用于短时排障，排查完请关闭。
+	// 存储键：proxy.debug_request_log。
+	DebugRequestLog bool `yaml:"debug_request_log"`
+	// NormalizeDeveloperRole 开启后，转发前把 messages 中的 role=developer 归一化为 role=system（默认 true）。
+	// 部分上游（商汤/基元律动等）不认 OpenAI 新角色 developer，只认 system/user/assistant/tool。
+	NormalizeDeveloperRole bool `yaml:"normalize_developer_role"`
+	// CooldownUpstreams 是需要 per-key 冷却的上游名称前缀列表。
+	// 同一上游每次成功响应后，暂停 CooldownSeconds 秒不再被分配新请求，
+	// 防止同一 API key 被并发打爆触发 429。
+	// 例：["商汤"] 会匹配 "商汤陈永鹏""商汤-陈俊" 等所有商汤上游。
+	CooldownUpstreams []string `yaml:"cooldown_upstreams"`
+	// CooldownSeconds 是每个上游成功请求后的冷却秒数，默认 1。
+	CooldownSeconds int `yaml:"cooldown_seconds"`
+	// EffortConfigs 是最佳思考等级配置（模型 pattern → 推荐/强制等级）。
+	EffortConfigs []EffortConfig `yaml:"effort_configs"`
+	// ClientAnalysis 开启后，定期分析 client_addr 对应的调用程序（默认 false）。
+	// 聚合最近 N 分钟去重的 client_addr，按 User-Agent → 端口查进程识别程序名，
+	// 结果存 client_profiles 表。
+	ClientAnalysis bool `yaml:"client_analysis"`
+	// ClientAnalysisInterval 分析间隔秒数（默认 600，即 10 分钟）。
+	ClientAnalysisInterval int `yaml:"client_analysis_interval"`
+	// UserAgent 是转发到上游时设置的 User-Agent。留空时用 DefaultUpstreamUserAgent
+	// （pi agent 的 UA）。改动机：部分上游用 UA 判断调用方是否官方客户端，
+	// 设置自定义 UA 可避免 Go 默认的 Go-http-client/1.1 被误判为脚本/网关程序。
+	UserAgent string `yaml:"user_agent"`
+	// TimeContext 时间线注入：让模型对「两条消息之间过了多久」有感知（默认关闭）。
+	// 开启后在最后一条 user 消息前附上时间与距上轮间隔，历史消息保持字节稳定
+	// 以保住上游前缀缓存。详见 internal/proxy/time_context.go。
+	TimeContext TimeContextConfig `yaml:"time_context"`
+	// AdaptivePriority 开启后按真实请求成功率动态调整上游有效权重（默认 true）。
+	// 有效权重 = upstreams.weight * 惩罚系数，原 weight 永不被改写；关闭时行为与未引入
+	// 本功能完全一致（EffectiveWeight 原样返回 Weight）。
+	AdaptivePriority bool `yaml:"adaptive_priority"`
+	// AdaptiveWindowHours 成功率统计窗口小时数，0 表示当天（默认 5）。
+	AdaptiveWindowHours int `yaml:"adaptive_window_hours"`
+	// AdaptiveThreshold 降权阈值：窗口成功率低于该值才降权（默认 0.6）。
+	AdaptiveThreshold float64 `yaml:"adaptive_threshold"`
+	// AdaptiveRecover 恢复阈值：试探期成功率回到该值才完全恢复（默认 0.7）。
+	// 与 AdaptiveThreshold 之间形成迟滞带，避免阈值附近抖动。
+	AdaptiveRecover float64 `yaml:"adaptive_recover"`
+	// AdaptiveMinSamples 最小样本数：窗口样本不足时不调权（默认 10）。
+	AdaptiveMinSamples int `yaml:"adaptive_min_samples"`
+	// AdaptiveRefreshSeconds 统计刷新间隔秒（默认 60）。
+	AdaptiveRefreshSeconds int `yaml:"adaptive_refresh_seconds"`
+}
+
+// 自适应权重的配置默认值（与需求书一致）。
+const (
+	DefaultAdaptiveWindowHours    = 5
+	DefaultAdaptiveThreshold      = 0.6
+	DefaultAdaptiveRecover        = 0.7
+	DefaultAdaptiveMinSamples     = 10
+	DefaultAdaptiveRefreshSeconds = 60
+)
+
+// TimeContextConfig 是时间线注入的全局配置（系统设置页可修改，均存 config 表）。
+//
+// 注意：这是**全局**开关，不按上游/模型分别配置——会话间隔是会话属性，
+// 与请求最终落到哪个上游无关。
+//
+// 存储键（config 表）：
+//   - proxy.time_context_enabled        true/false
+//   - proxy.time_context_tz             时区（IANA 名）
+//   - proxy.time_context_format         strftime 风格时间格式
+//   - proxy.time_context_template       注入模板（含占位符）
+//   - proxy.time_context_min_gap        间隔显示阈值（分钟）
+//   - proxy.time_context_max_sessions   会话表容量上限
+//   - proxy.time_context_ttl_days       会话过期天数
+//   - proxy.time_context_persist        是否持久化到 SQLite
+//   - proxy.time_context_include_gap    是否显示「距上轮」（默认显示；存 "false" 则隐藏）
+//   - proxy.time_context_sweep_minutes  后台扫描过期会话的间隔分钟数
+//   - proxy.time_context_flush_seconds  内存变更写库的间隔秒数
+//   - proxy.time_context_max_per_key    单个 API key 最多保留的会话数
+
+// 为什么是全局而非每上游：会话间隔是「会话」的属性，与本次请求落在哪个上游无关；
+// 按上游配置只会让同一会话在不同渠道路由时行为不一致。
+//
+// 所有字段都由系统设置页写入 config 表，热重载生效；与 upstream UserAgent 同模式。
+type TimeContextConfig struct {
+	// Enabled 全局总开关（默认 false）。
+	Enabled bool
+	// TZ 时区（默认 Asia/Shanghai）。非法时回退 UTC 并告警，不打断转发。
+	TZ string
+	// Format 时间格式（strftime 风格，默认 "%Y-%m-%d %H:%M"）。
+	Format string
+	// Template 注入模板（默认「【时间】{{datetime}} {{weekday}}（{{tz}}）」）。
+	// 可用占位符：{{datetime}} / {{weekday}} / {{tz}}。
+	Template string
+	// MinGapMinutes 「距上轮」显示阈值（默认 5）：低于该间隔不显示，避免刷屏噪音。
+	MinGapMinutes int
+	// MaxSessions 会话表容量上限（默认 100000）。0 = 不启用（不记录、不注入间隔）。
+	MaxSessions int
+	// TTLDays 会话过期天数（默认 30）。
+	TTLDays int
+	// Persist 是否持久化到 SQLite（默认 true）。关闭后仅内存，重启丢会话记录。
+	Persist bool
+	// HideGap 是否隐藏「距上轮」（默认 false = 显示）。
+	// 用「隐藏」而非「显示」命名：bool 零值是 false，这样未配置时默认为显示，
+	// 不用依赖 DB 里必须写这个键。
+	HideGap bool
+	// SweepMinutes 后台扫描过期会话的间隔分钟数（默认 60）。
+	SweepMinutes int
+	// FlushSeconds 内存变更写库的间隔秒数（默认 10）。
+	FlushSeconds int
+	// MaxPerKey 单个 API Key 最多保留的会话数（默认 1000，防单 key 刷爆表）。
+	MaxPerKey int
+}
+
+// MinGap 返回间隔阈值，未配置时回默认。
+func (c *TimeContextConfig) MinGap() time.Duration {
+	m := c.MinGapMinutes
+	if m <= 0 {
+		m = 5
+	}
+	return time.Duration(m) * time.Minute
+}
+
+// SessionTTL 返回会话过期时长，未配置时回默认 30 天。
+func (c *TimeContextConfig) SessionTTL() time.Duration {
+	d := c.TTLDays
+	if d <= 0 {
+		d = 30
+	}
+	return time.Duration(d) * 24 * time.Hour
+}
+
+// Capacity 返回会话表容量，未配置时回默认 100000。
+func (c *TimeContextConfig) Capacity() int {
+	if c.MaxSessions > 0 {
+		return c.MaxSessions
+	}
+	return 100000
+}
+
+// EffortConfig 描述单个模型的最佳思考等级配置。
+type EffortConfig struct {
+	Model       string `yaml:"model"`       // 模型匹配 pattern（支持 * 通配）
+	Recommended string `yaml:"recommended"` // 推荐等级（客户端未传时自动补）
+	Forced      string `yaml:"forced"`      // 强制等级（覆盖客户端传的）
+}
+
+// Storage 是持久化配置。
+type Storage struct {
+	// SQLitePath 是 SQLite 数据库文件路径；为空则不持久化（仅内存转发）。
+	SQLitePath string `yaml:"sqlite_path"`
+}
+
+// Server 是 HTTP 服务配置。
+type Server struct {
+	Port int `yaml:"port"`
+	// AdminAPIKey 是管理 API（/api/admin/*）的独立鉴权 key。
+	// 供 AI 助手等自动化工具免登录调用动态管理接口；存 config 表 admin.api_key。
+	AdminAPIKey string `yaml:"admin_api_key"`
+}
+
+// Upstream 描述一个上游端点。Type 决定协议：
+//
+//	openai / openai-compatible —— OpenAI 兼容（/v1/chat/completions 等）
+//	anthropic —— Anthropic 原生（/v1/messages）
+//	ollama —— Ollama 原生（/api/chat, /api/generate, /api/embed）
+type Upstream struct {
+	Name string `yaml:"name"`
+	Type string `yaml:"type"`
+	// Kind 上游能力类型（与 Type 协议正交）：chat（默认）| emb | rerank | tts | asr | image。
+	// 健康检查按 Kind 选探测端点（/chat/completions、/embeddings、/rerank、/audio/speech、
+	// /audio/transcriptions、/images/generations），避免把纯 TTS/embedding 等上游用 chat
+	// 探测误判 dead（如无 chat template 的 TTS 模型对 chat 探测返回 400）。
+	Kind            string            `yaml:"kind"`
+	BaseURL         string            `yaml:"base_url"`
+	APIKey          string            `yaml:"api_key"`
+	Tier            string            `yaml:"tier"` // free | subscription | payg（默认 payg）
+	Priority        int               `yaml:"priority"`
+	Weight          int               `yaml:"weight"`
+	Models          []string          `yaml:"models"`
+	ModelMapping    map[string]string `yaml:"model_mapping"`    // 客户端模型名 → 上游真实模型名
+	RequestOverride string            `yaml:"request_override"` // 请求体复写（JSON 字符串）：转发前强制覆盖请求体部分字段，空=不启用
+	Enabled         bool              `yaml:"enabled"`          // 禁用（false）时不参与转发路由
+	MaxTokensCap    int               `yaml:"max_tokens_cap"`   // 上游 max_tokens 上限；0=不限制（客户端传超范围值时 clamp 到该值，防 400）
+	// StripFields 转发前从请求体剥离的顶层字段名列表（空=不剥离）。
+	// 部分上游（基元律动等）对未知字段严格校验，收到即 400 UNKNOWN_FIELD。
+	// 注意：prompt_cache_key / prompt_cache_retention / safety_identifier 已全局
+	// 无条件剥离（见 proxy/prompt_cache.go），无需在此逐上游配置；本机制留给其它字段
+	// （如 reasoning 等特定参数）按需使用。
+	// 存储用 config 表键 upstream.<name>.strip_fields（逗号分隔或 JSON 数组），不动 upstreams 表结构。
+	StripFields []string `yaml:"strip_fields"`
+	// NormalizeImageURL 转发前是否把嵌套 image_url 对象格式拍平为字符串格式。
+	// false（默认）= 保留 OpenAI 标准嵌套格式 {image_url:{url}}；
+	// true = 对非 Dots 上游做拍平，兼容 vllm 等只认平铺字符串 {image_url:"..."} 的接口。
+	NormalizeImageURL bool `yaml:"normalize_image_url"`
+	// Arrears 欠费标记：true=该上游因「余额不足」类错误被自动标记。
+	// 路由硬排除 + 健康检查停止，等待人工充值后经「测试上游」成功自动清除。
+	Arrears bool `yaml:"arrears"`
+	// PerModelBilling 模型独立计费开关：true 时欠费按 (upstream, model) 粒度记录
+	// （阿里云百炼等每模型独立免费额度的平台：A 模型额度耗尽不影响 B 模型），
+	// 路由仅跳过该上游的该模型；false 时欠费记整个上游（默认）。
+	// 存储用 config 表键 upstream.<name>.per_model_billing。
+	PerModelBilling bool `yaml:"per_model_billing"`
+	// Timeout 上游请求超时秒数（连接+非流式整体）；0=跟随全局 retry.upstream_timeout（默认 60）。
+	// 慢速兜底上游（如本地一体机）建议单独调大（如 300），避免响应稍慢就被全局超时误判失败导致 502。
+	Timeout     int          `yaml:"timeout"`
+	Quota       *Quota       `yaml:"quota"`
+	HealthCheck *HealthCheck `yaml:"health_check"`
+}
+
+// IsOllama 判断上游是否为 Ollama 原生协议。
+func (u *Upstream) IsOllama() bool {
+	return strings.EqualFold(u.Type, "ollama")
+}
+
+// IsDots 判断上游是否为 Dots API 开放平台（dots.ai）。
+// Dots 的特殊性：认证用 api-key 请求头（非 Authorization Bearer），
+// 图片要求标准 OpenAI 嵌套格式（image_url:{url}，不接受拍平字符串）。
+func (u *Upstream) IsDots() bool {
+	return strings.EqualFold(u.Type, "dots")
+}
+
+// IsAnthropic 判断上游是否为 Anthropic 原生协议。
+func (u *Upstream) IsAnthropic() bool {
+	return strings.EqualFold(u.Type, "anthropic")
+}
+
+
+// IsGemini 判断上游是否为 Google Gemini 原生协议。
+func (u *Upstream) IsGemini() bool {
+	return strings.EqualFold(u.Type, "gemini")
+}
+
+// IsOpencode 判断上游是否为 opencode（Zen）渠道。
+//
+// 与其它上游的本质区别：opencode 免费模型（*-free / big-pickle）服务端有
+// 「客户端身份」闸门，要求请求同时满足三条件（流式 + tools 声明 + 身份头），
+// 缺失即 403 FreeTierError。差异收敛在 internal/proxy/opencode.go，
+// 本字段只标记走哪条转发路径；免费层无需 api_key（匿名用 Bearer public），
+// 因此 Validate 对该类型豁免 key 必填。
+func (u *Upstream) IsOpencode() bool {
+	return strings.EqualFold(u.Type, "opencode")
+}
+
+// IsAnonymous 判断上游是否允许不配 api_key（凭证内置或匿名）。
+func (u *Upstream) IsAnonymous() bool {
+	return u.IsOllama() || u.IsOpencode()
+}
+
+// TierWeight 返回上游的成本层级权重，用于路由排序：subscription(0) < free(1) < payg(2)。
+// 包月（订阅）优先——用户付费的官方服务质量最高，先用完包月额度；
+// 免费次之；按量付费最不优先（按量花钱，能省则省）。
+// 未配置 tier 视为 payg（按量计费，最不优先，安全默认）。
+func (u *Upstream) TierWeight() int {
+	switch u.Tier {
+	case "subscription":
+		return 0
+	case "free":
+		return 1
+	default:
+		return 2
+	}
+}
+
+// Quota 描述上游的配额余量配置。
+type Quota struct {
+	Rolling Duration `yaml:"rolling"`
+	Weekly  Duration `yaml:"weekly"`
+	Monthly Duration `yaml:"monthly"`
+}
+
+// HealthCheck 描述上游的健康检查配置。
+type HealthCheck struct {
+	Path     string   `yaml:"path"`
+	Interval Duration `yaml:"interval"`
+	Timeout  Duration `yaml:"timeout"`
+}
+
+// Routing 描述模型路由与分流策略配置。
+type Routing struct {
+	DefaultStrategy string `yaml:"default_strategy"`
+	Rules           []Rule `yaml:"rules"`
+}
+
+// Rule 是模型到上游组的单条路由规则。
+type Rule struct {
+	Model     string   `yaml:"model"`
+	Upstreams []string `yaml:"upstreams"`
+	Strategy  string   `yaml:"strategy"`
+	// Vision 是否支持多模态（默认 false=不支持）。请求带图且命中本规则时，
+	// 若 VisionFallback 非空则把 model 改写为兜底模型重新路由。
+	Vision bool `yaml:"vision"`
+	// VisionFallback 多模态兜底转发的聚合模型名（如 "flash"），
+	// 由对应上游的 model_mapping 映射到上游真实模型名；空=不兜底。
+	VisionFallback string `yaml:"vision_fallback"`
+}
+
+// DefaultPort 是 server.port 未配置时的默认监听端口。
+const DefaultPort = 8787
+
+// DefaultStrategy 是 routing.default_strategy 未配置时的默认分流策略。
+const DefaultStrategy = "primary_backup"
+
+// validKinds 是可选的上游能力类型枚举。Kind 留空时默认 chat（聊天/多模态对话，最常见能力）。
+var validKinds = map[string]bool{
+	"chat":   true,
+	"emb":    true,
+	"rerank": true,
+	"tts":    true,
+	"asr":    true,
+	"image":  true,
+}
+
+// validStrategies 是可选的分流策略枚举。
+var validStrategies = map[string]bool{
+	"quota":          true,
+	"latency":        true,
+	"primary_backup": true,
+	"weighted":       true,
+}
+
+// Load 从 path 读取 YAML 配置：先加载 .env 到进程环境，再展开 ${VAR} 占位符，
+// 最后反序列化并校验。.env 路径默认取配置同目录的 .env，可用环境变量
+// XUANJI_ENV_FILE 覆盖；已存在的环境变量不会被 .env 覆盖。
+//
+// 【已废弃，勿用】运行时不再从 YAML 取配置：唯一入口是 LoadFromDB（见下）。
+// 本函数目前**无任何生产调用点**，仅由 config_test.go 覆盖，保留是因为：
+//   - 它同时验证了 .env 加载与 ${VAR} 占位符展开这两块仍被复用的逻辑；
+//   - 删掉会连带影响结构体上的 yaml tag（69 处），改动面大于收益。
+//
+// 新增配置项请改 LoadFromDB 的 config 表键映射，**不要**在这里加字段。
+func Load(path string) (*Config, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read config: %w", err)
+	}
+
+	envFile := os.Getenv("XUANJI_ENV_FILE")
+	if envFile == "" {
+		envFile = filepath.Join(filepath.Dir(path), ".env")
+	}
+	if err := loadDotEnv(envFile); err != nil {
+		return nil, fmt.Errorf("load env file: %w", err)
+	}
+
+	var node yaml.Node
+	if err := yaml.Unmarshal(data, &node); err != nil {
+		return nil, fmt.Errorf("parse config: %w", err)
+	}
+	expandEnvNodes(&node)
+
+	var cfg Config
+	if err := node.Decode(&cfg); err != nil {
+		return nil, fmt.Errorf("decode config: %w", err)
+	}
+	if err := cfg.validate(); err != nil {
+		return nil, err
+	}
+	return &cfg, nil
+}
+
+// validate 应用默认值并校验配置完整性。
+func (c *Config) validate() error {
+	if c.Server.Port == 0 {
+		c.Server.Port = DefaultPort
+	}
+
+	if len(c.Upstreams) == 0 {
+		return errors.New("config: upstreams requires at least one upstream")
+	}
+	for i := range c.Upstreams {
+		u := &c.Upstreams[i]
+		if strings.TrimSpace(u.Name) == "" {
+			return fmt.Errorf("config: upstreams[%d]: name is required", i)
+		}
+		if strings.TrimSpace(u.BaseURL) == "" {
+			return fmt.Errorf("config: upstreams[%d] %q: base_url is required", i, u.Name)
+		}
+		// Ollama 本地实例、opencode 免费层可无 key；其余上游必须配置 api_key
+		if !u.IsAnonymous() && strings.TrimSpace(u.APIKey) == "" {
+			return fmt.Errorf("config: upstreams[%d] %q: api_key is required", i, u.Name)
+		}
+		if len(u.Models) == 0 {
+			return fmt.Errorf("config: upstreams[%d] %q: models must not be empty", i, u.Name)
+		}
+		for j, m := range u.Models {
+			if strings.TrimSpace(m) == "" {
+				return fmt.Errorf("config: upstreams[%d] %q: models[%d] is empty", i, u.Name, j)
+			}
+		}
+		// kind 留空默认 chat；非空必须合法（chat|emb|rerank|tts|asr|image）
+		if u.Kind == "" {
+			u.Kind = "chat"
+		}
+		if !validKinds[u.Kind] {
+			return fmt.Errorf("config: upstreams[%d] %q: kind %q is invalid (want chat|emb|rerank|tts|asr|image)", i, u.Name, u.Kind)
+		}
+	}
+
+	if c.Retry.MaxRetries <= 0 {
+		c.Retry.MaxRetries = 3
+	}
+	if len(c.Retry.RetryStatuses) == 0 {
+		c.Retry.RetryStatuses = []int{404, 429, 500, 502, 503, 504}
+	}
+	if c.Retry.FastFailMinutes <= 0 {
+		c.Retry.FastFailMinutes = 5
+	}
+	if c.Retry.FastFailProbeMinutes <= 0 {
+		c.Retry.FastFailProbeMinutes = 5
+	}
+
+	if c.Routing.DefaultStrategy == "" {
+		c.Routing.DefaultStrategy = DefaultStrategy
+	}
+	if !validStrategies[c.Routing.DefaultStrategy] {
+		return fmt.Errorf("config: routing.default_strategy %q is invalid (want quota|latency|primary_backup|weighted)", c.Routing.DefaultStrategy)
+	}
+	for i := range c.Routing.Rules {
+		r := &c.Routing.Rules[i]
+		if strings.TrimSpace(r.Model) == "" {
+			return fmt.Errorf("config: routing.rules[%d]: model is required", i)
+		}
+		if len(r.Upstreams) == 0 {
+			return fmt.Errorf("config: routing.rules[%d] %q: upstreams must not be empty", i, r.Model)
+		}
+		if r.Strategy == "" {
+			r.Strategy = c.Routing.DefaultStrategy
+		}
+		if !validStrategies[r.Strategy] {
+			return fmt.Errorf("config: routing.rules[%d] %q: strategy %q is invalid", i, r.Model, r.Strategy)
+		}
+	}
+	return nil
+}
+
+// expandEnvNodes 递归展开 YAML 树中所有标量节点的环境变量占位符。
+func expandEnvNodes(n *yaml.Node) {
+	if n.Kind == yaml.ScalarNode {
+		n.Value = os.ExpandEnv(n.Value)
+		return
+	}
+	for _, child := range n.Content {
+		expandEnvNodes(child)
+	}
+}
+
+// LoadFromDB 从数据库加载完整配置：server/retry 键值来自 config 表，
+// 上游与路由规则来自 upstreams/routing_rules 表。
+func LoadFromDB(s *store.Store) (*Config, error) {
+	all, err := s.GetAllConfig()
+	if err != nil {
+		return nil, fmt.Errorf("get all config: %w", err)
+	}
+
+	cfg := &Config{
+		Routing: Routing{
+			DefaultStrategy: DefaultStrategy,
+		},
+	}
+
+	// 解析端口
+	if v, ok := all["server.port"]; ok {
+		if port, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && port > 0 {
+			cfg.Server.Port = port
+		}
+	}
+
+	// 解析管理 API key（/api/admin/* 独立鉴权，供 AI 助手调用）
+	if v, ok := all["admin.api_key"]; ok {
+		cfg.Server.AdminAPIKey = strings.TrimSpace(v)
+	}
+
+	// 解析重试配置
+	if v, ok := all["retry.max_retries"]; ok {
+		if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && n > 0 {
+			cfg.Retry.MaxRetries = n
+		}
+	}
+	if v, ok := all["retry.retry_statuses"]; ok {
+		var statuses []int
+		for _, s := range strings.Split(v, ",") {
+			s = strings.TrimSpace(s)
+			if code, err := strconv.Atoi(s); err == nil {
+				statuses = append(statuses, code)
+			}
+		}
+		if len(statuses) > 0 {
+			cfg.Retry.RetryStatuses = statuses
+		}
+	}
+	if v, ok := all["retry.retry_keywords"]; ok {
+		var keywords []string
+		for _, kw := range strings.Split(v, ",") {
+			if kw = strings.TrimSpace(kw); kw != "" {
+				keywords = append(keywords, kw)
+			}
+		}
+		if len(keywords) > 0 {
+			cfg.Retry.RetryKeywords = keywords
+		}
+	}
+	if v, ok := all["retry.fast_fail_minutes"]; ok {
+		if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && n > 0 {
+			cfg.Retry.FastFailMinutes = n
+		}
+	}
+	if v, ok := all["retry.fast_fail_probe_minutes"]; ok {
+		if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && n > 0 {
+			cfg.Retry.FastFailProbeMinutes = n
+		}
+	}
+	if v, ok := all["retry.upstream_timeout"]; ok {
+		if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && n > 0 {
+			cfg.Retry.UpstreamTimeout = n
+		}
+	}
+
+	// 解析转发层开关
+	if v, ok := all["proxy.auto_best_effort"]; ok {
+		cfg.Proxy.AutoBestEffort = strings.TrimSpace(v) == "true" || strings.TrimSpace(v) == "1"
+	}
+	if v, ok := all["proxy.force_best_effort"]; ok {
+		cfg.Proxy.ForceBestEffort = strings.TrimSpace(v) == "true" || strings.TrimSpace(v) == "1"
+	}
+	if v, ok := all["proxy.video_pass_through"]; ok {
+		cfg.Proxy.VideoPassThrough = strings.TrimSpace(v) == "true" || strings.TrimSpace(v) == "1"
+	}
+	if v, ok := all["proxy.cache_reasoning_content"]; ok {
+		cfg.Proxy.CacheReasoningContent = strings.TrimSpace(v) == "true" || strings.TrimSpace(v) == "1"
+	}
+	if v, ok := all["proxy.debug_request_log"]; ok {
+		cfg.Proxy.DebugRequestLog = strings.TrimSpace(v) == "true" || strings.TrimSpace(v) == "1"
+	}
+	if v, ok := all["proxy.normalize_developer_role"]; ok {
+		cfg.Proxy.NormalizeDeveloperRole = strings.TrimSpace(v) == "true" || strings.TrimSpace(v) == "1"
+	}
+	if v, ok := all["proxy.client_analysis"]; ok {
+		cfg.Proxy.ClientAnalysis = strings.TrimSpace(v) == "true" || strings.TrimSpace(v) == "1"
+	}
+	if v, ok := all["proxy.client_analysis_interval"]; ok {
+		if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && n >= 60 {
+			cfg.Proxy.ClientAnalysisInterval = n
+		}
+	}
+	if v, ok := all["proxy.cooldown_seconds"]; ok {
+		if s, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && s > 0 {
+			cfg.Proxy.CooldownSeconds = s
+		}
+	}
+	// CooldownUpstreams：JSON 数组，支持逗号分隔 fallback（兼容旧格式）
+	if v, ok := all["proxy.cooldown_upstreams"]; ok {
+		v = strings.TrimSpace(v)
+		if v != "" {
+			var names []string
+			if jsonErr := json.Unmarshal([]byte(v), &names); jsonErr != nil {
+				// 降级为逗号分隔：逗号前后都可能有空格
+				for _, n := range strings.Split(v, ",") {
+					n = strings.TrimSpace(n)
+					if n != "" {
+						names = append(names, n)
+					}
+				}
+			}
+			cfg.Proxy.CooldownUpstreams = names
+		}
+	}
+	// 解析转发 User-Agent（上游看到的客户端标识；空 = 用内置默认 pi agent UA）
+	if v, ok := all["proxy.user_agent"]; ok {
+		cfg.Proxy.UserAgent = strings.TrimSpace(v)
+	}
+	// 时间线注入（全局开关 + 渲染参数）：所有项均可缺省，缺省即为默认行为。
+	loadTimeContextConfig(&cfg.Proxy.TimeContext, all)
+	// 成功率自适应权重：注意开关默认 true（与其他 bool 配置默认 false 不同）。
+	// 默认值与显式键的覆盖都在 applyAdaptiveDefaults 里完成（见 adaptive.go），
+	// 它在下方「默认值」区末尾调用——顺序保证显式配置不会被默认值覆盖。
+	// 上游健康告警（alert.webhook_url / alert.consecutive_fails）
+	if v, ok := all["alert.webhook_url"]; ok {
+		cfg.Alert.WebhookURL = strings.TrimSpace(v)
+	}
+	if v, ok := all["alert.consecutive_fails"]; ok {
+		if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil {
+			cfg.Alert.ConsecutiveFails = n
+		}
+	}
+	if cfg.Alert.ConsecutiveFails < 1 {
+		cfg.Alert.ConsecutiveFails = 3
+	}
+
+	// 默认值
+	if cfg.Server.Port == 0 {
+		cfg.Server.Port = DefaultPort
+	}
+	if cfg.Retry.MaxRetries <= 0 {
+		cfg.Retry.MaxRetries = 3
+	}
+	if len(cfg.Retry.RetryStatuses) == 0 {
+		cfg.Retry.RetryStatuses = []int{404, 429, 500, 502, 503, 504}
+	}
+	if len(cfg.Retry.RetryKeywords) == 0 {
+		cfg.Retry.RetryKeywords = []string{"套餐用完了", "余额不足", "quota", "rate limit"}
+	}
+	if cfg.Retry.FastFailMinutes <= 0 {
+		cfg.Retry.FastFailMinutes = 60
+	}
+	if cfg.Retry.FastFailProbeMinutes <= 0 {
+		cfg.Retry.FastFailProbeMinutes = 35
+	}
+	if cfg.Retry.UpstreamTimeout <= 0 {
+		cfg.Retry.UpstreamTimeout = 60
+	}
+	// developer 角色兼容默认开启：config 表里没有该 key（含旧库升级）时补默认 true；
+	// 显式存了 "false" 则上面解析区已覆盖为 false，这里不再动。
+	if _, ok := all["proxy.normalize_developer_role"]; !ok {
+		cfg.Proxy.NormalizeDeveloperRole = true
+	}
+	// reasoning_content 回传缓存默认开启：config 表里没有该 key（含旧库升级）时补默认 true
+	// （DeepSeek thinking 模式多轮 tool-calling 要求回传，默认开启兜底上游 400）。
+	if _, ok := all["proxy.cache_reasoning_content"]; !ok {
+		cfg.Proxy.CacheReasoningContent = true
+	}
+	// 客户端分析间隔默认 600 秒（10 分钟）；分析开关默认关闭（false）。
+	if cfg.Proxy.ClientAnalysisInterval <= 0 {
+		cfg.Proxy.ClientAnalysisInterval = 600
+	}
+	// 成功率自适应权重默认值（开关默认 true，其余参数见需求书第六节 6.3）。
+	applyAdaptiveDefaults(&cfg.Proxy, all)
+
+	// 加载上游
+	upstreams, err := s.ListUpstreams()
+	if err != nil {
+		return nil, fmt.Errorf("list upstreams: %w", err)
+	}
+	for _, u := range upstreams {
+		up := Upstream{
+			Name:     u.Name,
+			Type:     u.Type,
+			Kind:     u.Kind,
+			BaseURL:  u.BaseURL,
+			APIKey:   u.APIKey,
+			Tier:     u.Tier,
+			Priority: u.Priority,
+			Weight:   u.Weight,
+			Enabled:  u.Enabled == 1,
+		}
+		if up.Kind == "" {
+			up.Kind = "chat" // 旧库无 kind 列或未配置：默认 chat
+		}
+		if u.Models != "" {
+			up.Models = ParseModelsString(u.Models)
+		}
+		if u.ModelMapping != "" {
+			// 语法错误时 json.Unmarshal 不做事部分填充（实测 len(map)==0）：
+			// 该上游的全部模型映射会静默丢失，后续把客户端短名原样透传给上游。
+			// 2026-09-14 实测事故：admin 表单把 model_mapping 写成了缺逗号的非法 JSON，
+			// 导致该上游 rerank/embeddings/asr 全部 400 "Model does not exist"。
+			// 这里必须告警，否则故障现场只能看到下游 400，看不到根因。
+			if err := json.Unmarshal([]byte(u.ModelMapping), &up.ModelMapping); err != nil {
+				slog.Error("upstream model_mapping 不是合法 JSON，该上游全部模型映射将失效",
+					"upstream", u.Name, "error", err, "model_mapping", u.ModelMapping)
+			}
+		}
+		up.RequestOverride = u.RequestOverride
+		up.Timeout = u.Timeout
+		up.Arrears = u.Arrears == 1
+		// 每上游 max_tokens 上限：config 表键 upstream.<name>.max_tokens_cap
+		// （不落 upstreams 表，避免动表结构；0=不限制，默认行为不变）
+		if v, ok := all["upstream."+u.Name+".max_tokens_cap"]; ok {
+			if cap, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && cap > 0 {
+				up.MaxTokensCap = cap
+			}
+		}
+		// 每上游 strip_fields：config 表键 upstream.<name>.strip_fields
+		// （不落表；逗号分隔或 JSON 数组）。部分上游对未知字段严格校验（收到即 400 UNKNOWN_FIELD），
+		// 配置后转发前按字段名剥离请求体，标准上游原样透传。
+		if v, ok := all["upstream."+u.Name+".strip_fields"]; ok {
+			if fields := ParseModelsString(v); len(fields) > 0 {
+				up.StripFields = fields
+			}
+		}
+		// 每上游 per_model_billing 开关：config 表键 upstream.<name>.per_model_billing
+		if v, ok := all["upstream."+u.Name+".per_model_billing"]; ok {
+			up.PerModelBilling = strings.TrimSpace(v) == "true" || strings.TrimSpace(v) == "1"
+		}
+		cfg.Upstreams = append(cfg.Upstreams, up)
+	}
+
+	// 加载路由规则
+	rules, err := s.ListRoutingRules()
+	if err != nil {
+		return nil, fmt.Errorf("list routing rules: %w", err)
+	}
+	for _, r := range rules {
+		rule := Rule{
+			Model:          r.Model,
+			Strategy:       r.Strategy,
+			Vision:         r.Vision == 1,
+			VisionFallback: r.VisionFallback,
+		}
+		if r.Upstreams != "" {
+			// 正常存储是 JSON 数组字符串；兜底兼容历史脏数据（纯逗号串），
+			// 避免 json.Unmarshal 失败后 rule.Upstreams 为空导致规则失效（404）。
+			rule.Upstreams = ParseModelsString(r.Upstreams)
+		}
+		cfg.Routing.Rules = append(cfg.Routing.Rules, rule)
+	}
+
+	// 加载最佳思考等级配置
+	efforts, err := s.ListEffortConfig()
+	if err != nil {
+		return nil, fmt.Errorf("list effort config: %w", err)
+	}
+	for _, e := range efforts {
+		cfg.Proxy.EffortConfigs = append(cfg.Proxy.EffortConfigs, EffortConfig{
+			Model:       e.Model,
+			Recommended: e.Recommended,
+			Forced:      e.Forced,
+		})
+	}
+
+	return cfg, nil
+}
+
+// ParseModelsString 解析模型列表字符串，兼容两种存储格式：
+//  1. JSON 数组：["model1","model2"]
+//  2. 逗号分隔：model1, model2
+//
+// 逗号分隔为主推格式（前端编辑框统一逗号风格）；兼容历史 JSON 数据。
+func ParseModelsString(s string) []string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+	// 先试 JSON（历史数据/旧格式）
+	if strings.HasPrefix(s, "[") {
+		var out []string
+		if err := json.Unmarshal([]byte(s), &out); err == nil {
+			return out
+		}
+	}
+	// 逗号分隔
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// ===== 上游 User-Agent 注入 =====
+//
+// 转发到上游时，各协议 handler（OpenAI proxy / Gemini / Anthropic / Ollama）
+// 构造完上游请求后统一调用 ApplyUpstreamUserAgent：它同时完成 User-Agent
+// 与 pi 指纹头的注入（实现见 fingerprint.go）。
+// 用包级 atomic 而不是把 cfg 传进每个 handler 结构，避免大改签名，
+// 并保证配置热重载后立即生效。
+
+// ForwardTransportIdleTimeout 是真实转发连接池中空闲连接的存活时间。
+//
+// 上游或中间 NAT/LB 常在连接空闲几十秒后静默回收（不发 FIN/RST），
+// 复用这样的「幽灵连接」会卡住请求直到超时（详见 NewUpstreamTransport 注释中的
+// 2026-09-12 黑洞复盘）。30s 后主动关闭空闲连接，代价仅是空闲后首个请求多一次
+// TLS 握手（毫秒级），远小于复用死连接等到上游超时的开销。
+const ForwardTransportIdleTimeout = 30 * time.Second
+
+// NewForwardTransport 构造真实转发（chat/completions、anthropic、gemini、ollama）
+// 使用的 http.Transport。与 NewUpstreamTransport（旁路探测，逐次新建连接）不同，
+// 转发请求频率高、连接复用收益大，因此保留 keep-alive，仅限制空闲连接寿命。
+//
+// DialTLSContext 承担 pi 指纹的连接层伪装：它返回的 Conn 会在首个请求的
+// 头部块写入时按 pi 顺序重排（详见 fingerprint.go）。因为始终返回已 TLS 的
+// Conn，net/http 不会重复握手，连接复用（keep-alive）不受影响。
+//
+// 注意：此处显式声明 NextProtos=http/1.1（与 pi 实测一致）。若要启用
+// accept-encoding 伪装，必须用 NewClientWithPiFingerprint 包装 client ——
+// 因为 Go 的「透明 gzip」仅在未显式设置 Accept-Encoding 时生效。
+func NewForwardTransport(dialTimeout time.Duration) *http.Transport {
+	tr := &http.Transport{
+		DialContext:     (&net.Dialer{Timeout: dialTimeout}).DialContext,
+		IdleConnTimeout: ForwardTransportIdleTimeout,
+	}
+	// 闭包在拨号时读取 tr.TLSClientConfig，确保调用方对 TLSClientConfig 的
+	// 自定义（如 InsecureSkipVerify）依然生效（piTLSConfig 会克隆它）。
+	tr.DialTLSContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		return dialTLSWithPiFingerprint(ctx, network, addr, dialTimeout, tr.TLSClientConfig)
+	}
+	return tr
+}
+
+// NewUpstreamTransport 构造一个直连上游的独立 http.Transport，供健康探测 / 管理端
+// 「测试上游」等旁路请求使用，不复用包级 http.DefaultTransport 的全局连接池。
+//
+// 背景（2026-09-12 生产实例）：8 个 agnes 上游 BaseURL 相同，健康检查与测试接口此前
+// 共用 http.Client{}（→ http.DefaultTransport），同 host 连接池里一条被网络静默黑洞的
+// 连接（无 FIN/RST，TCP 重传成倍退避，实测 bytes_retrans 17KB / cwnd=1 / recv-q 持续
+// 积压）会被同一轮的全部探测复用，导致 8 个上游在同一秒锁步超时判 dead（日志实测
+// 11:17~11:30 每轮都是 8 条同时失败），恢复也在同一秒——而真实对话转发走自定义
+// Transport 从未受影响。
+//
+// 两道防线：
+//   - DisableKeepAlives：每次请求新建连接，彻底消除「复用到已死空闲连接」的可能。
+//     旁路请求频率低（健康探测 120s 一轮、测试为人工触发），握手开销可忽略。
+//   - 自定义 DialContext：net/http 会因此自动禁用 HTTP/2（实测降级 HTTP/1.1），
+//     避免多路复用连接被单点黑洞时同时拖垮多个在途请求。
+func NewUpstreamTransport() *http.Transport {
+	return &http.Transport{
+		DialContext:         (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		TLSHandshakeTimeout: 10 * time.Second,
+		DisableKeepAlives:   true,
+		MaxIdleConnsPerHost: 1,
+	}
+}

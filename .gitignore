@@ -1,0 +1,48 @@
+# 环境变量（含密钥，禁止提交）
+.env
+*.env
+!.env.example
+
+# 本地运行配置（含真实上游地址/密钥，禁止提交）
+config.yaml
+config.local.yaml
+
+# 数据库文件（含 API Key 等敏感数据）
+*.db
+*.db-shm
+*.db-wal
+data/
+
+# 构建产物
+/bin/
+/dist/
+*.exe
+
+# Go
+/vendor/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# 系统
+.DS_Store
+
+# 临时调试
+cmd/dbgconv/
+
+# 本地文章/草稿（不对外发布）
+docs/articles/server
+
+# 编译产物（任何位置的 xuanji-server* 二进制，防误提交）
+/xuanji-server
+xuanji-server-new
+xuanji-server-deploy
+/xuanji-fallback
+# 仓库根下的 server 二进制（必须带前导斜杠：裸 server 会连 cmd/server 目录一起忽略）
+/server
+
+# 运行时数据库备份残留（临时文件，禁止提交）
+backups/
+__pycache__/

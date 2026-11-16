@@ -1,0 +1,487 @@
+package proxy
+
+import (
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync/atomic"
+	"testing"
+
+	"github.com/icefairy/xuanji/internal/config"
+	"github.com/icefairy/xuanji/internal/health"
+	"github.com/icefairy/xuanji/internal/router"
+	"github.com/tidwall/gjson"
+)
+
+// healthCfg 构造一个含 model 路由到指定上游的配置。
+func healthCfg(upstreams []config.Upstream, model string, names []string) *config.Config {
+	return &config.Config{
+		Upstreams: upstreams,
+		Routing: config.Routing{
+			DefaultStrategy: "primary_backup",
+			Rules: []config.Rule{
+				{Model: model, Upstreams: names, Strategy: "primary_backup"},
+			},
+		},
+		Retry: config.Retry{
+			MaxRetries:    3,
+			RetryStatuses: []int{429, 500, 502, 503, 504},
+		},
+	}
+}
+
+func TestChatCompletions_FiltersDeadUpstream(t *testing.T) {
+	var deadCalled atomic.Bool
+	live := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, `{"id":"live","object":"chat.completion","choices":[]}`)
+	}))
+	defer live.Close()
+	deadSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		deadCalled.Store(true)
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, `{"id":"dead","object":"chat.completion","choices":[]}`)
+	}))
+	defer deadSrv.Close()
+
+	cfg := healthCfg([]config.Upstream{
+		{Name: "dead", BaseURL: deadSrv.URL, APIKey: "k", Priority: 10},
+		{Name: "live", BaseURL: live.URL, APIKey: "k", Priority: 20},
+	}, "m", []string{"dead", "live"})
+
+	hc := health.New(cfg)
+	for i := 0; i < 5; i++ {
+		hc.MarkFailure("dead")
+	}
+	defer hc.Close()
+
+	h := New(cfg, router.New(cfg), hc)
+	rec := doChat(t, h, `{"model":"m","messages":[{"role":"user","content":"hi"}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if deadCalled.Load() {
+		t.Error("dead upstream should not be called")
+	}
+	if got := gjson.Get(rec.Body.String(), "id").String(); got != "live" {
+		t.Errorf("response id = %q, want live", got)
+	}
+}
+
+func TestChatCompletions_FailoverOn5xx(t *testing.T) {
+	var up1Hits, up2Hits atomic.Int32
+	srv1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		up1Hits.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprint(w, `{"error":{"message":"boom","type":"server_error"}}`)
+	}))
+	defer srv1.Close()
+	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		up2Hits.Add(1)
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, `{"id":"ok2","object":"chat.completion","choices":[]}`)
+	}))
+	defer srv2.Close()
+
+	cfg := healthCfg([]config.Upstream{
+		{Name: "up1", BaseURL: srv1.URL, APIKey: "x", Priority: 10, Weight: 100},
+		{Name: "up2", BaseURL: srv2.URL, APIKey: "x", Priority: 20, Weight: 50},
+	}, "m", []string{"up1", "up2"})
+
+	hc := health.New(cfg)
+	defer hc.Close()
+	h := New(cfg, router.New(cfg), hc)
+
+	rec := doChat(t, h, `{"model":"m","messages":[{"role":"user","content":"hi"}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if got := gjson.Get(rec.Body.String(), "id").String(); got != "ok2" {
+		t.Errorf("response id = %q, want ok2 (failover)", got)
+	}
+	if up1Hits.Load() != 1 || up2Hits.Load() != 1 {
+		t.Errorf("hits = up1:%d up2:%d, want 1/1", up1Hits.Load(), up2Hits.Load())
+	}
+	if got := hc.Status("up1"); got != health.StateDegraded {
+		t.Errorf("up1 status = %q, want degraded after one forward failure", got)
+	}
+}
+
+func TestChatCompletions_FailoverOn429(t *testing.T) {
+	srv1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		fmt.Fprint(w, `{"error":{"message":"quota","type":"rate_limit_error"}}`)
+	}))
+	defer srv1.Close()
+	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, `{"id":"ok2","object":"chat.completion","choices":[]}`)
+	}))
+	defer srv2.Close()
+
+	cfg := healthCfg([]config.Upstream{
+		{Name: "up1", BaseURL: srv1.URL, APIKey: "x", Priority: 10, Weight: 100},
+		{Name: "up2", BaseURL: srv2.URL, APIKey: "x", Priority: 20, Weight: 50},
+	}, "m", []string{"up1", "up2"})
+
+	hc := health.New(cfg)
+	defer hc.Close()
+	h := New(cfg, router.New(cfg), hc)
+
+	rec := doChat(t, h, `{"model":"m","messages":[{"role":"user","content":"hi"}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if got := gjson.Get(rec.Body.String(), "id").String(); got != "ok2" {
+		t.Errorf("response id = %q, want ok2 (failover on 429)", got)
+	}
+}
+
+func TestChatCompletions_FailoverOnConnectionError(t *testing.T) {
+	deadSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {}))
+	deadSrv.Close() // 连接失败
+
+	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, `{"id":"ok2","object":"chat.completion","choices":[]}`)
+	}))
+	defer srv2.Close()
+
+	cfg := healthCfg([]config.Upstream{
+		{Name: "up1", BaseURL: deadSrv.URL, APIKey: "k", Priority: 10},
+		{Name: "up2", BaseURL: srv2.URL, APIKey: "x", Priority: 20, Weight: 50},
+	}, "m", []string{"up1", "up2"})
+
+	hc := health.New(cfg)
+	defer hc.Close()
+	h := New(cfg, router.New(cfg), hc)
+
+	rec := doChat(t, h, `{"model":"m","messages":[{"role":"user","content":"hi"}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if got := gjson.Get(rec.Body.String(), "id").String(); got != "ok2" {
+		t.Errorf("response id = %q, want ok2 (failover on connect error)", got)
+	}
+}
+
+func TestChatCompletions_AllDeadFallsBackToFirst(t *testing.T) {
+	srv1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, `{"id":"first","object":"chat.completion","choices":[]}`)
+	}))
+	defer srv1.Close()
+	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, `{"id":"second","object":"chat.completion","choices":[]}`)
+	}))
+	defer srv2.Close()
+
+	cfg := healthCfg([]config.Upstream{
+		{Name: "up1", BaseURL: srv1.URL, APIKey: "x", Priority: 10, Weight: 100},
+		{Name: "up2", BaseURL: srv2.URL, APIKey: "x", Priority: 20, Weight: 50},
+	}, "m", []string{"up1", "up2"})
+
+	hc := health.New(cfg)
+	for _, name := range []string{"up1", "up2"} {
+		for i := 0; i < 5; i++ {
+			hc.MarkFailure(name)
+		}
+	}
+	defer hc.Close()
+
+	h := New(cfg, router.New(cfg), hc)
+	rec := doChat(t, h, `{"model":"m","messages":[{"role":"user","content":"hi"}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	// 健康列表为空，回退到全部上游里第一个（up1）
+	if got := gjson.Get(rec.Body.String(), "id").String(); got != "first" {
+		t.Errorf("response id = %q, want first (fallback to first upstream)", got)
+	}
+}
+
+func TestChatCompletions_StreamFailoverOn5xx(t *testing.T) {
+	srv1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprint(w, `{"error":{"message":"boom","type":"server_error"}}`)
+	}))
+	defer srv1.Close()
+	const sse = "data: {\"id\":\"s2\",\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":null}]}\n\ndata: [DONE]\n\n"
+	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, sse)
+	}))
+	defer srv2.Close()
+
+	cfg := healthCfg([]config.Upstream{
+		{Name: "up1", BaseURL: srv1.URL, APIKey: "x", Priority: 10, Weight: 100},
+		{Name: "up2", BaseURL: srv2.URL, APIKey: "x", Priority: 20, Weight: 50},
+	}, "m", []string{"up1", "up2"})
+
+	hc := health.New(cfg)
+	defer hc.Close()
+	h := New(cfg, router.New(cfg), hc)
+
+	rec := doChat(t, h, `{"model":"m","stream":true,"messages":[{"role":"user","content":"hi"}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Content-Type"); got != "text/event-stream" {
+		t.Errorf("Content-Type = %q, want text/event-stream", got)
+	}
+	if got := rec.Body.String(); got != sse {
+		t.Errorf("SSE body = %q, want sse from up2 (stream failover)", got)
+	}
+}
+
+func TestChatCompletions_NoHealthCheckerKeepsOldBehavior(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, `{"id":"plain","object":"chat.completion","choices":[]}`)
+	}))
+	defer srv.Close()
+
+	cfg := healthCfg([]config.Upstream{
+		{Name: "up", BaseURL: srv.URL, APIKey: "k"},
+	}, "m", []string{"up"})
+
+	h := New(cfg, router.New(cfg), nil)
+	rec := doChat(t, h, `{"model":"m","messages":[{"role":"user","content":"hi"}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if got := gjson.Get(rec.Body.String(), "id").String(); got != "plain" {
+		t.Errorf("response id = %q, want plain", got)
+	}
+}
+
+func TestChatCompletions_ModelMappingAppliedPerCandidate(t *testing.T) {
+	var gotModel string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		data := make([]byte, r.ContentLength)
+		_, _ = r.Body.Read(data)
+		gotModel = gjson.GetBytes(data, "model").String()
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, `{"id":"mapped","object":"chat.completion","choices":[]}`)
+	}))
+	defer srv.Close()
+
+	cfg := healthCfg([]config.Upstream{
+		{Name: "up", BaseURL: srv.URL, APIKey: "k",
+			ModelMapping: map[string]string{"m": "mapped-model"}},
+	}, "m", []string{"up"})
+
+	h := New(cfg, router.New(cfg), nil)
+	rec := doChat(t, h, `{"model":"m","messages":[{"role":"user","content":"hi"}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	if gotModel != "mapped-model" {
+		t.Errorf("upstream received model = %q, want mapped-model", gotModel)
+	}
+	if !strings.Contains(rec.Body.String(), "mapped") {
+		t.Errorf("response body = %q, want passthrough", rec.Body.String())
+	}
+}
+
+// TestChatCompletions_FailoverOn524 验证未列入 retry_statuses 白名单的 5xx 也应触发
+// 故障转移：524 是 Cloudflare「A Timeout Occurred」，语义等同 504（上游侧瞬态超时）。
+// 修复前只按配置白名单判断（默认 401,403,404,429,500,502,503,504），524 命中不了
+// 也不匹配关键词 → 原样透传 Cloudflare 错误页给客户端（2026-08-30 日志实测 bai 524 两例
+// 无 fastfail 无 failover）。修复后所有 5xx 一律可重试。
+func TestChatCompletions_FailoverOn524(t *testing.T) {
+	var up1Hits, up2Hits atomic.Int32
+	srv1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		up1Hits.Add(1)
+		w.WriteHeader(524) // Cloudflare timeout，不在 retry_statuses 白名单
+		fmt.Fprint(w, "error code: 524")
+	}))
+	defer srv1.Close()
+	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		up2Hits.Add(1)
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, `{"id":"ok524","object":"chat.completion","choices":[]}`)
+	}))
+	defer srv2.Close()
+
+	// healthCfg 的 RetryStatuses 为 [429,500,502,503,504]，不含 524
+	cfg := healthCfg([]config.Upstream{
+		{Name: "up524", BaseURL: srv1.URL, APIKey: "x", Priority: 10, Weight: 100},
+		{Name: "upOk", BaseURL: srv2.URL, APIKey: "x", Priority: 20, Weight: 50},
+	}, "m", []string{"up524", "upOk"})
+
+	hc := health.New(cfg)
+	defer hc.Close()
+	h := New(cfg, router.New(cfg), hc)
+
+	rec := doChat(t, h, `{"model":"m","messages":[{"role":"user","content":"hi"}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (5xx not in whitelist must still failover); body=%s", rec.Code, rec.Body.String())
+	}
+	if got := gjson.Get(rec.Body.String(), "id").String(); got != "ok524" {
+		t.Errorf("response id = %q, want ok524 (failover on 524)", got)
+	}
+	if up1Hits.Load() != 1 || up2Hits.Load() != 1 {
+		t.Errorf("hits = up1:%d up2:%d, want 1/1", up1Hits.Load(), up2Hits.Load())
+	}
+}
+
+// TestRerankFailoverOnNonWhitelisted5xx 验证 rerank 链路同样对白名单外 5xx 触发故障转移。
+func TestRerankFailoverOnNonWhitelisted5xx(t *testing.T) {
+	srv1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(524)
+		fmt.Fprint(w, "error code: 524")
+	}))
+	defer srv1.Close()
+	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, `{"results":[{"index":0,"relevance_score":0.9}]}`)
+	}))
+	defer srv2.Close()
+
+	cfg := &config.Config{
+		Upstreams: []config.Upstream{
+			// weight 保证 524 上游排第一（同 tier 内 weight 降序），真实验证 failover 路径
+			{Name: "r524", BaseURL: srv1.URL, APIKey: "x", Priority: 10, Weight: 100},
+			{Name: "rOk", BaseURL: srv2.URL, APIKey: "x", Priority: 20, Weight: 50},
+		},
+		Routing: config.Routing{
+			DefaultStrategy: "primary_backup",
+			Rules:           []config.Rule{{Model: "m", Upstreams: []string{"r524", "rOk"}, Strategy: "primary_backup"}},
+		},
+		Retry: config.Retry{MaxRetries: 3, RetryStatuses: []int{429, 500}},
+	}
+	h := New(cfg, router.New(cfg), nil)
+	rec := doRerank(t, h, `{"model":"m","query":"q","documents":["a"]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (rerank must failover on non-whitelisted 5xx); body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestChatCompletions_ClientErrorNotMarkFailure 验证不可重试 4xx（客户端请求问题，
+// 如 nginx 413 请求体过大/400 参数错误）不触发 MarkFailure 降级：
+// 413 是客户端图像请求体过大、上游正常拒绝并回 413，不是上游故障。
+// 修复前：forwardOnce 透传 413 返回 handled=true+ferr 非 nil，
+// 循环无条件 MarkFailure 把 bai 降级 degraded（2026-09-01 日志实测 413→degraded）。
+// 修复后：仅真实上游故障（连接错误/重试失败的 5xx/超时）才计入健康失败。
+func TestChatCompletions_ClientErrorNotMarkFailure(t *testing.T) {
+	var upHits atomic.Int32
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upHits.Add(1)
+		// nginx 风格 413：客户端请求体过大被拒
+		w.WriteHeader(http.StatusRequestEntityTooLarge)
+		fmt.Fprint(w, `<html><head><title>413 Request Entity Too Large</title></head></html>`)
+	}))
+	defer up.Close()
+
+	// 单上游 + 健康检查器：确保 status 变化完全来自 MarkFailure
+	cfg := &config.Config{
+		Upstreams: []config.Upstream{
+			{Name: "up413", BaseURL: up.URL, APIKey: "x", Priority: 10, Weight: 100},
+		},
+		Routing: config.Routing{
+			DefaultStrategy: "primary_backup",
+			Rules:           []config.Rule{{Model: "m", Upstreams: []string{"up413"}, Strategy: "primary_backup"}},
+		},
+		Retry: config.Retry{MaxRetries: 3, RetryStatuses: []int{429, 500, 502, 503, 504}},
+	}
+	hc := health.New(cfg)
+	defer hc.Close()
+	h := New(cfg, router.New(cfg), hc)
+
+	// 请求 413（透传给客户端）
+	rec := doChat(t, h, `{"model":"m","messages":[{"role":"user","content":"hi"}]}`)
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want 413 passthrough", rec.Code)
+	}
+
+	// 客户端错误不应把上游降级：健康状态必须保持 healthy
+	if st := hc.Status("up413"); st != health.StateHealthy {
+		t.Errorf("health status = %q, want healthy (4xx client error must not mark upstream failure)", st)
+	}
+	if upHits.Load() != 1 {
+		t.Errorf("upstream hits = %d, want 1", upHits.Load())
+	}
+}
+
+// TestChatCompletions_UpstreamModelNotFoundNotMarkFailure 验证上游报「模型名不存在」
+// （400 invalid model: model name not found）时不计入上游健康失败。
+//
+// 背景（2026-09-12 日志实测）：路由规则把 glm-5.3 指向 wechat，但 wechat 只声明支持
+// deepseek 系模型 → 客户端每次请求 glm-5.3 都收到 400 invalid model。400 在
+// retry_statuses 白名单内（可重试），forwardOnce 走可重试分支无条件标记上游失败，
+// ChatCompletions 循环又 MarkFailure → wechat 被拉到 state=dead fails=30
+// （当天 150 次 mark_failed），而同一天 wechat 健康探测 704 次全部 healthy
+// ——上游本身完全正常，只是合法拒绝了它不提供的模型。
+//
+// 修复：客户端请求本身的问题（模型名不存在/输入超长）识别为 client request error，
+// 不计入上游健康失败（health 保持 healthy）。
+func TestChatCompletions_UpstreamModelNotFoundNotMarkFailure(t *testing.T) {
+	var upHits atomic.Int32
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upHits.Add(1)
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprint(w, `{"error":{"message":"invalid model: model name not found","code":400}}`)
+	}))
+	defer up.Close()
+
+	cfg := &config.Config{
+		Upstreams: []config.Upstream{
+			{Name: "up-model-miss", BaseURL: up.URL, APIKey: "x", Priority: 10, Weight: 100},
+		},
+		Routing: config.Routing{
+			DefaultStrategy: "primary_backup",
+			Rules:           []config.Rule{{Model: "m", Upstreams: []string{"up-model-miss"}, Strategy: "primary_backup"}},
+		},
+		// 400 在重试白名单内（与线上 retry_statuses 一致）：走可重试分支
+		Retry: config.Retry{MaxRetries: 1, RetryStatuses: []int{400, 429, 500, 502, 503, 504}},
+	}
+	hc := health.New(cfg)
+	defer hc.Close()
+	h := New(cfg, router.New(cfg), hc)
+
+	rec := doChat(t, h, `{"model":"m","messages":[{"role":"user","content":"hi"}]}`)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502 (all candidates failed); body=%s", rec.Code, rec.Body.String())
+	}
+	if st := hc.Status("up-model-miss"); st != health.StateHealthy {
+		t.Errorf("health status = %q, want healthy (400 invalid model 是客户端模型名问题，不是上游故障)", st)
+	}
+	if n := upHits.Load(); n != 1 {
+		t.Errorf("upstream hits = %d, want 1", n)
+	}
+}
+
+// TestChatCompletions_InputTooLongNotMarkFailure 验证上游报「输入超长」
+// （400 The input (N tokens) is longer than the model's context length (M tokens)）
+// 时同样不计入上游健康失败——该错误 2026-09-04 起持续出现，属客户端输入问题，
+// 网关透传设计（tokenlimit 只 clamp completion 数值），但不应把上游打成 degraded/dead。
+func TestChatCompletions_InputTooLongNotMarkFailure(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprint(w, `{"object":"error","message":"The input (277702 tokens) is longer than the model's context length (262144 tokens).","type":"BadRequestError","code":400}`)
+	}))
+	defer up.Close()
+
+	cfg := &config.Config{
+		Upstreams: []config.Upstream{
+			{Name: "up-too-long", BaseURL: up.URL, APIKey: "x", Priority: 10, Weight: 100},
+		},
+		Routing: config.Routing{
+			DefaultStrategy: "primary_backup",
+			Rules:           []config.Rule{{Model: "m", Upstreams: []string{"up-too-long"}, Strategy: "primary_backup"}},
+		},
+		Retry: config.Retry{MaxRetries: 1, RetryStatuses: []int{400, 429, 500, 502, 503, 504}},
+	}
+	hc := health.New(cfg)
+	defer hc.Close()
+	h := New(cfg, router.New(cfg), hc)
+
+	doChat(t, h, `{"model":"m","messages":[{"role":"user","content":"hi"}]}`)
+	if st := hc.Status("up-too-long"); st != health.StateHealthy {
+		t.Errorf("health status = %q, want healthy (输入超长是客户端问题，不应把上游打成 dead/degraded)", st)
+	}
+}
